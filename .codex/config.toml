@@ -1,0 +1,26 @@
+# Codex CLI — Project Configuration
+# Ref: https://developers.openai.com/codex/config-basic
+
+model = "gpt-5.4"
+# GPT-5.4 supports a 1,050,000-token context window in OpenAI's official model docs.
+model_context_window = 1050000
+# Compact before the hard limit so Codex preserves headroom for the next response.
+model_auto_compact_token_limit = 1000000
+# Use scripts/codex-*.sh for task-specific overrides.
+# Project-local profile blocks are intentionally omitted because current Codex CLI
+# builds do not resolve them consistently across subcommands.
+
+project_doc_max_bytes = 65536
+project_doc_fallback_filenames = ["AGENTS.md", "CLAUDE.md", ".agent/SYSTEM.md"]
+
+[features]
+multi_agent = true
+
+[agents.reviewer]
+description = "Kod incelemesi, mimari, guvenlik, performans ve test risk analizi"
+
+[agents.explorer]
+description = "Hızlı codebase keşfi (read-only)"
+
+[agents.researcher]
+description = "Guncel dokumantasyon, web arastirmasi ve kaynak dogrulama"

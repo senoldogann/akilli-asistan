@@ -1,0 +1,49 @@
+# Codex CLI — Sandbox Rules (Starlark)
+# Ref: https://developers.openai.com/codex/rules
+# Controls which commands can run outside the sandbox.
+
+# Allow npm/pnpm/yarn commands
+prefix_rule(
+    pattern = ["npm"],
+    decision = "allow",
+    justification = "npm komutları güvenli — build, test, lint",
+)
+
+prefix_rule(
+    pattern = ["pnpm"],
+    decision = "allow",
+    justification = "pnpm komutları güvenli",
+)
+
+# Allow Python verification scripts
+prefix_rule(
+    pattern = ["python3"],
+    decision = "allow",
+    justification = "Maestro doğrulama scriptlerini çalıştırma izni",
+    match = [
+        "python3 scripts/verify_all.py",
+        "python3 scripts/checklist.py",
+        "python3 scripts/generate_skill_index.py",
+    ],
+)
+
+# Allow git read operations
+prefix_rule(
+    pattern = ["git", ["status", "log", "diff", "branch", "show"]],
+    decision = "allow",
+    justification = "Git okuma komutları güvenli",
+)
+
+# Prompt before git write operations
+prefix_rule(
+    pattern = ["git", ["push", "merge", "rebase", "reset"]],
+    decision = "prompt",
+    justification = "Git yazma komutları onay gerektirir",
+)
+
+# Block dangerous commands
+prefix_rule(
+    pattern = ["rm", "-rf", "/"],
+    decision = "forbidden",
+    justification = "Kök dizin silme kesinlikle yasak",
+)

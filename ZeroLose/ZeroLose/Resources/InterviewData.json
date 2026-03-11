@@ -1,0 +1,62 @@
+[
+    {
+        "id": "1",
+        "category": "Frontend (React)",
+        "question": "Miten optimoit React render performansı?",
+        "answer": "No siis, Reactin kaa se perussääntö on välttää turhat re-renderit. Mä käytän `useMemo` ja `useCallback` hookeja silleen harkitusti, ettei joka renderillä lasketa raskaita juttuja uusiks. Sit tietty `React.memo` komponenteille, jos propsit ei muutu. Jos on isoja listoja, niin nää virtualisointikirjastot (esim. TanStack Virtual) on ihan must, et DOM pysyy kevyenä."
+    },
+    {
+        "id": "2",
+        "category": "Frontend (React)",
+        "question": "Next.js: SSR vs CSR – milloin kumpaakin?",
+        "answer": "Tää riippuu ihan casesta. SSR (Server-Side Rendering) on paras SEO:n ja 'Initial Paint' nopeuden kannalta, eli esim. tuotesivuille tai landing pagelle. Mut sit taas joku dashboard tai admin-paneli, missä SEO ei kiinnosta ja data elää koko ajan, niin puhdas CSR (Client-Side Rendering) on usein smoothimpi käyttökokemus ja vähentää serverin kuormaa."
+    },
+    {
+        "id": "3",
+        "category": "Backend (Node/PHP)",
+        "question": "Miten handlaat Race Conditionin huutokaupassa?",
+        "answer": "Joo tää on kriittinen huutokaupoissa. Jos kaks tyyppiä huutaa samaan aikaan, niin database transactionit on avainasemassa. Mä käyttäisin `SELECT FOR UPDATE` lukitusta SQL:ssä tai sit optimistista lukitusta (Optimistic Locking) versionumerolla. Redis voi toimia myös, mut lopullinen totuus pitää olla kannassa transaktion sisällä, ettei tuote mee kahteen kertaan tai väärällä hinnalla."
+    },
+    {
+        "id": "4",
+        "category": "Backend (Node/PHP)",
+        "question": "Microservices vs Monolith (Legacy Migration)",
+        "answer": "No teillä kun on toi legacy-tausta, niin en lähtis heti räjäyttää monoliittia mikropalveluiks. 'Strangler Fig' pattern on tässä paras. Eli irrotetaan pikkuhiljaa selkeitä kokonaisuuksia (esim. notifikaatiot tai kuvien käsittely) omiksi Node.js servuiksi, samalla kun core (esim. Symfony) pyörii rinnalla. Näin vältetään se 'big bang' rewriten riski."
+    },
+    {
+        "id": "5",
+        "category": "System Design",
+        "question": "Miten skaalaat järjestelmän miljoonalle käyttäjälle?",
+        "answer": "Täs pitää miettiä pullonkauloja. Ensinnäkin load balancer (esim. AWS ALB) jakamaan liikennettä. Database on yleensä se eka mikä kyykkää, eli Read Replicat lukukyselyille ja kunnon Caching-kerros (Redis) kaikelle mikä ei muutu usein. Staattiset assetit (kuvat, JS) ehdottomasti CDN:n kautta. Ja sit autoscaling groupit EC2:lle tai k8s podit skaalautumaan kuorman mukaan."
+    },
+    {
+        "id": "6",
+        "category": "System Design",
+        "question": "Miten varmistat tietokannan eheyden (ACID)?",
+        "answer": "No siis relational datoissa (MariaDB/MySQL) se on sisäänrakennettu, kunhan käyttää transaktioita (`BEGIN`, `COMMIT`, `ROLLBACK`). Eli jos rahat lähtee tililtä A mut ei tuu tilille B, niin koko homma perutaan. NoSQL-puolella tää on vaikeempaa ja joutuu usein tyytymään 'eventual consistencyyn', mut maksuissa ja huudoissa mä luotan kyl SQL:n ACID-ominaisuuksiin."
+    },
+    {
+        "id": "7",
+        "category": "Behavioral",
+        "question": "Kerro haastavasta bugista.",
+        "answer": "Oli kerran yks keissi missä tuotannossa muisti vuoti (Memory Leak) Node.js servulla. Se oli super vaikee jäljittää kun devissä ei toistunu. Lopulta otettiin heap dumpit ja analysoitiin ne Chromen devtoolsilla. Paljastu et yks event listener ei siivonnu itseään websocket-yhteyden katketessa. Fiksattiin se ja lisättiin paremmat metriikat (Prometheus) et nähdään heti jos muisti alkaa kiipeemään."
+    },
+    {
+        "id": "8",
+        "category": "Behavioral",
+        "question": "Miksi Huutokaupat.fi?",
+        "answer": "Mua kiinnostaa teissä se skaala ja reaaliaikaisuus. On eri asia koodata perus CRUD-appi kun sellanen systeemi missä tuhannet ihmiset huutaa kilpaa viime sekunneilla. Teillä on mielenkiintonen stäkki (Symfony + Moderni Node/React) ja selkee visio modernisoida sitä. Mä tykkään ratkoo just tällasia korkean kuorman haasteita."
+    },
+    {
+        "id": "9",
+        "category": "Frontend (React)",
+        "question": "Redux vs Context API?",
+        "answer": "Context API on ihan jees johonkin teeman vaihtoon tai käyttäjän kieleen, eli globaaleihin staattisiin datoihin. Mut jos on monimutkainen state, joka päivittyy tiheesti (esim. ostoskori tai huutojen tila), niin Redux (tai nykyään Zustand) on parempi kun se estää turhat renderit paremmin. Contextilla helposti koko puu renderöityy uusiks jos ei oo varovainen."
+    },
+    {
+        "id": "10",
+        "category": "Backend (Node/PHP)",
+        "question": "REST vs GraphQL?",
+        "answer": "GraphQL on frontendille kiva kun saa just sen datan mitä tarvii, ei 'over-fetching' ongelmaa. Mut se tuo monimutkaisuutta (caching on vaikeempaa, N+1 queryt). REST on taas yksinkertanen ja 'battle-tested', HTTP caching toimii suoraan. Jos on julkinen API, tekisin RESTin. Jos on oma complex SPA, niin GraphQL voi olla perusteltu."
+    }
+]

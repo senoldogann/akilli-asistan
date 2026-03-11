@@ -1,0 +1,133 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "opencode/minimax-m2.5-free",
+  "small_model": "opencode/minimax-m2.5-free",
+  "default_agent": "build",
+  "instructions": [
+    ".agent/SYSTEM.md",
+    ".agent/rules/GEMINI.md"
+  ],
+  "permission": {
+    "*": "ask",
+    "external_directory": "deny",
+    "doom_loop": "deny",
+    "webfetch": "allow",
+    "websearch": "allow",
+    "bash": {
+      "*": "ask",
+      "pwd": "allow",
+      "ls *": "allow",
+      "readlink *": "allow",
+      "find *": "allow",
+      "rg *": "allow",
+      "cat *": "allow",
+      "sed *": "allow",
+      "head *": "allow",
+      "tail *": "allow",
+      "wc *": "allow",
+      "git status*": "allow",
+      "git diff*": "allow",
+      "python3 scripts/sync_agents.py*": "allow",
+      "python3 scripts/verify_all.py*": "allow",
+      "python3 scripts/generate_skill_index.py*": "allow",
+      "python3 scripts/provider_config_validator.py*": "allow",
+      "python3 scripts/checklist.py*": "allow",
+      "python3 scripts/dependency_analyzer.py*": "allow",
+      "scripts/skill.sh*": "allow",
+      "rm *": "deny",
+      "sudo *": "deny"
+    },
+    "read": {
+      "*": "allow",
+      ".env": "deny",
+      ".env.*": "deny",
+      "secrets/**": "deny",
+      "*.pem": "deny",
+      "*.key": "deny",
+      "config/credentials.json": "deny"
+    },
+    "edit": {
+      "*": "ask",
+      "AGENTS.md": "allow",
+      ".agent/**": "allow",
+      ".codex/**": "allow",
+      ".claude/**": "allow",
+      ".opencode/**": "allow",
+      "opencode.json": "allow",
+      "scripts/**": "allow"
+    }
+  },
+  "agent": {
+    "review": {
+      "description": "Read-only review for provider rules, drift, security, and verification gaps",
+      "mode": "subagent",
+      "temperature": 0.1,
+      "permission": {
+        "edit": "deny",
+        "webfetch": "allow",
+        "bash": {
+          "*": "ask",
+          "git status*": "allow",
+          "git diff*": "allow",
+          "find *": "allow",
+          "rg *": "allow",
+          "cat *": "allow",
+          "sed *": "allow",
+          "head *": "allow",
+          "tail *": "allow",
+          "wc *": "allow",
+          "python3 scripts/checklist.py*": "allow",
+          "python3 scripts/dependency_analyzer.py*": "allow",
+          "python3 scripts/provider_config_validator.py*": "allow",
+          "python3 scripts/verify_all.py*": "allow"
+        }
+      },
+      "prompt": "Review changes to this rules repository. Focus on provider-doc drift, unsupported config keys, architecture regressions, security exposure, performance blind spots, missing edge-case coverage, and verification gaps. Do not modify files."
+    },
+    "verify": {
+      "description": "Run Maestro sync and verification workflow with minimal drift risk",
+      "mode": "subagent",
+      "temperature": 0.1,
+      "permission": {
+        "webfetch": "allow",
+        "edit": "ask",
+        "bash": {
+          "*": "ask",
+          "pwd": "allow",
+          "ls *": "allow",
+          "rg *": "allow",
+          "cat *": "allow",
+          "sed *": "allow",
+          "python3 scripts/sync_agents.py*": "allow",
+          "python3 scripts/verify_all.py*": "allow",
+          "python3 scripts/generate_skill_index.py*": "allow",
+          "python3 scripts/provider_config_validator.py*": "allow",
+          "python3 scripts/checklist.py*": "allow",
+          "python3 scripts/dependency_analyzer.py*": "allow",
+          "scripts/skill.sh*": "allow"
+        }
+      },
+      "prompt": "Run the repository sync and verification workflow. If a check fails, identify the exact file or config mismatch before making any fix."
+    },
+    "research": {
+      "description": "Current-docs and web research specialist for stale, comparative, or uncertain tasks",
+      "mode": "subagent",
+      "temperature": 0.1,
+      "permission": {
+        "edit": "deny",
+        "webfetch": "allow",
+        "bash": {
+          "*": "ask",
+          "pwd": "allow",
+          "ls *": "allow",
+          "find *": "allow",
+          "rg *": "allow",
+          "cat *": "allow",
+          "sed *": "allow",
+          "scripts/skill.sh search*": "allow"
+        }
+      },
+      "prompt": "When a task depends on current facts, official guidance, or the best available option, search the web and read primary-source documentation before answering. Do not loop on the same failed attempt; change evidence source immediately."
+    }
+  }
+}

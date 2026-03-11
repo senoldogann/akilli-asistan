@@ -1,0 +1,434 @@
+import SwiftUI
+
+struct MessageContent: View {
+    let text: String
+    let isUser: Bool
+    
+    @AppStorage("fontSize") private var fontSize: Double = 14.0
+    @AppStorage("fontDesign") private var fontDesignStr: String = "monospaced"
+    
+    var fontDesign: Font.Design {
+        switch fontDesignStr {
+        case "serif": return .serif
+        case "rounded": return .rounded
+        case "default": return .default
+        default: return .monospaced
+        }
+    }
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(MessageParser.parse(text), id: \.id) { segment in
+                switch segment.type {
+                case .heading(let level, let content):
+                    Text(verbatim: content)
+                        .font(headingFont(level))
+                        .foregroundColor(isUser ? .black : .white)
+                        .fixedSize(horizontal: false, vertical: true)
+                case .paragraph(let content):
+                    Text(verbatim: content)
+                        .font(.system(size: fontSize, weight: .regular, design: fontDesign))
+                        .foregroundColor(isUser ? .black : .white.opacity(0.9))
+                        .fixedSize(horizontal: false, vertical: true)
+                case .table(let headers, let rows):
+                    MarkdownTableView(headers: headers, rows: rows, fontSize: fontSize, isUser: isUser)
+                case .code(let language, let code):
+                    CodeBlockView(language: language, code: code, fontSize: fontSize)
+                case .searchIndicator(let content):
+                    HStack(spacing: 8) {
+                        ZeroLoseIcon(type: .globe, color: .brandPrimary, size: 14)
+                        Text(content)
+                            .font(.system(size: fontSize - 2, weight: .bold, design: .rounded))
+                            .foregroundColor(.brandPrimary)
+                            .kerning(0.5)
+                    }
+                    .padding(.vertical, 4)
+                case .slashCommand(let content):
+                    HStack(spacing: 8) {
+                        Image(systemName: "terminal")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(.brandPrimary)
+                        Text(verbatim: content)
+                            .font(.system(size: fontSize - 1, weight: .semibold, design: .monospaced))
+                            .foregroundColor(.white.opacity(0.96))
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                        Text("SLASH")
+                            .font(.system(size: 9, weight: .bold, design: .rounded))
+                            .foregroundColor(.brandPrimary)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.brandPrimary.opacity(0.14))
+                            .cornerRadius(4)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(Color.white.opacity(0.05))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(Color.brandPrimary.opacity(0.35), lineWidth: 1)
+                    )
+                    .cornerRadius(8)
+                }
+            }
+        }
+        .textSelection(.enabled)
+    }
+    
+    private func headingFont(_ level: Int) -> Font {
+        switch level {
+        case 1: return .system(size: fontSize + 6, weight: .bold, design: .rounded)
+        case 2: return .system(size: fontSize + 4, weight: .bold, design: .rounded)
+        case 3: return .system(size: fontSize + 2, weight: .bold, design: .rounded)
+        default: return .system(size: fontSize + 1, weight: .bold, design: .rounded)
+        }
+    }
+}
+
+struct CodeBlockView: View {
+    let language: String
+    let code: String
+    let fontSize: Double
+    @State private var isCopied = false
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                Text(language.isEmpty ? "code" : language)
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundColor(.gray)
+                
+                Spacer()
+                
+                Button(action: {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(code, forType: .string)
+                    withAnimation { isCopied = true }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                        isCopied = false
+                    }
+                }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
+                        Text(isCopied ? "Copied" : "Copy")
+                    }
+                    .font(.system(size: 10))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.white.opacity(0.1))
+                    .cornerRadius(4)
+                }
+                .buttonStyle(.interactive)
+                .pointerCursor()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Color(white: 0.15))
+            
+            // Code Content
+            ScrollView(.horizontal, showsIndicators: true) {
+                Text(code)
+                    .font(.system(size: max(10, fontSize - 2), design: .monospaced))
+                    .foregroundColor(Color(red: 0.8, green: 0.8, blue: 0.8))
+                    .padding(12)
+                    .frame(minWidth: 400, alignment: .leading)
+                    .textSelection(.enabled)
+            }
+            .background(Color(white: 0.1))
+        }
+        .cornerRadius(8)
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.white.opacity(0.1), lineWidth: 1)
+        )
+        .padding(.vertical, 4)
+    }
+}
+
+struct MarkdownTableView: View {
+    let headers: [String]
+    let rows: [[String]]
+    let fontSize: Double
+    let isUser: Bool
+    
+    private var columnCount: Int {
+        max(headers.count, rows.map(\.count).max() ?? 0)
+    }
+    
+    private var normalizedHeaders: [String] {
+        normalized(headers, to: columnCount)
+    }
+    
+    private var normalizedRows: [[String]] {
+        rows.map { normalized($0, to: columnCount) }
+    }
+    
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: true) {
+            VStack(spacing: 0) {
+                rowView(normalizedHeaders, isHeader: true)
+                ForEach(Array(normalizedRows.enumerated()), id: \.offset) { _, row in
+                    rowView(row, isHeader: false)
+                }
+            }
+            .background(Color.white.opacity(0.03))
+            .cornerRadius(8)
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.white.opacity(0.1), lineWidth: 1)
+            )
+        }
+        .padding(.vertical, 4)
+    }
+    
+    @ViewBuilder
+    private func rowView(_ cells: [String], isHeader: Bool) -> some View {
+        HStack(spacing: 0) {
+            ForEach(Array(cells.enumerated()), id: \.offset) { _, cell in
+                Text(verbatim: cell)
+                    .font(.system(size: max(11, fontSize - 1), weight: isHeader ? .bold : .regular, design: .rounded))
+                    .foregroundColor(isHeader ? .white : (isUser ? .black : .white.opacity(0.9)))
+                    .frame(minWidth: 130, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(isHeader ? Color.brandPrimary.opacity(0.25) : Color.clear)
+                    .overlay(alignment: .trailing) {
+                        Rectangle()
+                            .fill(Color.white.opacity(0.08))
+                            .frame(width: 1)
+                    }
+            }
+        }
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Color.white.opacity(0.08))
+                .frame(height: 1)
+        }
+    }
+    
+    private func normalized(_ values: [String], to count: Int) -> [String] {
+        guard count > 0 else { return values }
+        if values.count == count { return values }
+        if values.count > count { return Array(values.prefix(count)) }
+        return values + Array(repeating: "", count: count - values.count)
+    }
+}
+
+// MARK: - Parser Logic
+
+struct MessageSegment: Identifiable {
+    let id = UUID()
+    let type: SegmentType
+    
+    enum SegmentType {
+        case heading(level: Int, text: String)
+        case paragraph(String)
+        case table(headers: [String], rows: [[String]])
+        case code(language: String, code: String)
+        case searchIndicator(String)
+        case slashCommand(String)
+    }
+}
+
+class MessageParser {
+    static func parse(_ text: String) -> [MessageSegment] {
+        var segments: [MessageSegment] = []
+        let lines = text.components(separatedBy: .newlines)
+        
+        var inCodeBlock = false
+        var currentBlockLanguage = ""
+        var currentBlockContent = ""
+        var currentTextContent = ""
+        
+        for line in lines {
+            if line.trimmingCharacters(in: .whitespaces).hasPrefix("```") {
+                if inCodeBlock {
+                    // End of block
+                    segments.append(MessageSegment(type: .code(language: currentBlockLanguage, code: currentBlockContent.trimmingCharacters(in: .newlines))))
+                    currentBlockContent = ""
+                    inCodeBlock = false
+                } else {
+                    // Start of block
+                    // Flush existing text
+                    if !currentTextContent.isEmpty {
+                        segments.append(contentsOf: parseTextBlock(currentTextContent))
+                        currentTextContent = ""
+                    }
+                    
+                    let suffix = line.trimmingCharacters(in: .whitespaces).dropFirst(3)
+                    currentBlockLanguage = String(suffix).trimmingCharacters(in: .whitespaces)
+                    inCodeBlock = true
+                }
+            } else {
+                if inCodeBlock {
+                    currentBlockContent += line + "\n"
+                } else if line.contains("[WEB_SEARCH]") {
+                    // Flush existing text
+                    if !currentTextContent.isEmpty {
+                        segments.append(contentsOf: parseTextBlock(currentTextContent))
+                        currentTextContent = ""
+                    }
+                    let content = line.replacingOccurrences(of: "[WEB_SEARCH]", with: "").trimmingCharacters(in: .whitespaces)
+                    segments.append(MessageSegment(type: .searchIndicator(content)))
+                } else if line.contains("[SLASH_COMMAND]") {
+                    if !currentTextContent.isEmpty {
+                        segments.append(contentsOf: parseTextBlock(currentTextContent))
+                        currentTextContent = ""
+                    }
+                    let content = line.replacingOccurrences(of: "[SLASH_COMMAND]", with: "").trimmingCharacters(in: .whitespaces)
+                    segments.append(MessageSegment(type: .slashCommand(content)))
+                } else {
+                    currentTextContent += line + "\n"
+                }
+            }
+        }
+        
+        // Flush remaining text
+        if !currentTextContent.isEmpty {
+            segments.append(contentsOf: parseTextBlock(currentTextContent))
+        }
+        // If code block wasn't closed, flush it as text or code?
+        if !currentBlockContent.isEmpty {
+             segments.append(MessageSegment(type: .code(language: currentBlockLanguage, code: currentBlockContent.trimmingCharacters(in: .newlines))))
+        }
+        
+        return segments
+    }
+    
+    private static func parseTextBlock(_ text: String) -> [MessageSegment] {
+        var segments: [MessageSegment] = []
+        let lines = text.components(separatedBy: .newlines)
+        var paragraphBuffer: [String] = []
+        var index = 0
+        
+        func flushParagraph() {
+            let paragraph = paragraphBuffer.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !paragraph.isEmpty else {
+                paragraphBuffer.removeAll()
+                return
+            }
+            segments.append(MessageSegment(type: .paragraph(normalizeInlineMarkdown(paragraph))))
+            paragraphBuffer.removeAll()
+        }
+        
+        while index < lines.count {
+            let line = lines[index]
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            
+            if trimmed.isEmpty {
+                flushParagraph()
+                index += 1
+                continue
+            }
+            
+            if let heading = parseHeading(from: trimmed) {
+                flushParagraph()
+                segments.append(MessageSegment(type: .heading(level: heading.level, text: normalizeInlineMarkdown(heading.text))))
+                index += 1
+                continue
+            }
+            
+            if index + 1 < lines.count {
+                let nextTrimmed = lines[index + 1].trimmingCharacters(in: .whitespaces)
+                if looksLikeTableHeader(line) && isTableDivider(nextTrimmed) {
+                    flushParagraph()
+                    let headers = parseTableRow(line).map { normalizeInlineMarkdown($0) }
+                    index += 2 // Skip header + separator
+                    
+                    var rows: [[String]] = []
+                    while index < lines.count {
+                        let rowLine = lines[index]
+                        let rowTrimmed = rowLine.trimmingCharacters(in: .whitespaces)
+                        
+                        if rowTrimmed.isEmpty || !rowLine.contains("|") {
+                            break
+                        }
+                        if isTableDivider(rowTrimmed) {
+                            index += 1
+                            continue
+                        }
+                        
+                        let rowValues = parseTableRow(rowLine).map { normalizeInlineMarkdown($0) }
+                        if rowValues.isEmpty {
+                            break
+                        }
+                        rows.append(rowValues)
+                        index += 1
+                    }
+                    
+                    if !headers.isEmpty {
+                        segments.append(MessageSegment(type: .table(headers: headers, rows: rows)))
+                    }
+                    continue
+                }
+            }
+            
+            paragraphBuffer.append(line)
+            index += 1
+        }
+        
+        flushParagraph()
+        return segments
+    }
+    
+    private static func parseHeading(from line: String) -> (level: Int, text: String)? {
+        guard line.hasPrefix("#") else { return nil }
+        let level = line.prefix(while: { $0 == "#" }).count
+        guard level > 0 && level <= 6 else { return nil }
+        
+        let remainder = line.dropFirst(level).trimmingCharacters(in: .whitespaces)
+        guard !remainder.isEmpty else { return nil }
+        return (level, remainder)
+    }
+    
+    private static func looksLikeTableHeader(_ line: String) -> Bool {
+        guard line.contains("|") else { return false }
+        return parseTableRow(line).count >= 2
+    }
+    
+    private static func parseTableRow(_ line: String) -> [String] {
+        var normalized = line.trimmingCharacters(in: .whitespaces)
+        guard normalized.contains("|") else { return [] }
+        
+        if normalized.hasPrefix("|") {
+            normalized.removeFirst()
+        }
+        if normalized.hasSuffix("|") {
+            normalized.removeLast()
+        }
+        
+        return normalized
+            .split(separator: "|", omittingEmptySubsequences: false)
+            .map { String($0).trimmingCharacters(in: .whitespaces) }
+    }
+    
+    private static func isTableDivider(_ line: String) -> Bool {
+        let cells = parseTableRow(line)
+        guard !cells.isEmpty else { return false }
+        
+        for cell in cells {
+            let dashCount = cell.filter { $0 == "-" }.count
+            let remainder = cell
+                .replacingOccurrences(of: ":", with: "")
+                .replacingOccurrences(of: "-", with: "")
+                .trimmingCharacters(in: .whitespaces)
+            
+            if dashCount < 3 || !remainder.isEmpty {
+                return false
+            }
+        }
+        
+        return true
+    }
+    
+    private static func normalizeInlineMarkdown(_ text: String) -> String {
+        var normalized = text
+        normalized = normalized.replacingOccurrences(of: #"\[([^\]]+)\]\(([^)]+)\)"#, with: "$1 ($2)", options: .regularExpression)
+        normalized = normalized.replacingOccurrences(of: #"`([^`]+)`"#, with: "$1", options: .regularExpression)
+        normalized = normalized.replacingOccurrences(of: "**", with: "")
+        normalized = normalized.replacingOccurrences(of: "__", with: "")
+        return normalized.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
