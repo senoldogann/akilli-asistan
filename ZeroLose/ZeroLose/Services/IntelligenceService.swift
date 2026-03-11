@@ -33,6 +33,11 @@ class IntelligenceService {
         case detailedNarrative
         case detailedTable
     }
+
+    private struct MultiQuestionResolution {
+        let directAnswer: String?
+        let promptContext: String
+    }
     
     func clearHistory() {
         conversationHistory.removeAll()
@@ -83,6 +88,15 @@ class IntelligenceService {
             recognizer.processString(query)
             return recognizer.dominantLanguage?.rawValue.lowercased()
         }()
+        let normalizedQueryTokenCount = InterviewKnowledgeMatcher
+            .normalize(query)
+            .split(separator: " ")
+            .count
+        let normalizedQueryForIntent = InterviewKnowledgeMatcher.normalize(query)
+        let compensationIntent = isCompensationIntent(normalizedQueryForIntent)
+        let selfIntroIntent = isSelfIntroIntent(normalizedQueryForIntent)
+        let questionSegments = Self.splitQuestionSegments(query)
+        let isMultiQuestionQuery = questionSegments.count >= 2
 
         let searchDecision: SearchDecision
         if imageData != nil {
@@ -96,23 +110,83 @@ class IntelligenceService {
             }
         }
 
-        var vaultMatches: [InterviewKnowledgeMatch] = []
+        var interviewMatches: [InterviewKnowledgeMatch] = []
+        var interviewFallbackAnchors: [InterviewKnowledgeMatch] = []
+        var multiQuestionPromptContext = ""
         if imageData == nil {
-            await MainActor.run { onStatusUpdate("Checking interview vault...") }
-            vaultMatches = await retrieveVaultMatches(
+            await MainActor.run { onStatusUpdate("Checking interview notes + vault...") }
+            let vaultResultLimit: Int = {
+                if responseProfile == .interviewConcise {
+                    return normalizedQueryTokenCount <= 5 ? 2 : 3
+                }
+                return 5
+            }()
+            interviewMatches = await retrieveInterviewMatches(
                 for: query,
-                maxResults: responseProfile == .interviewConcise ? 3 : 5
+                maxResults: vaultResultLimit,
+                minimumScore: 0.16
             )
+
+            let strongestPrimaryScore = interviewMatches.first?.score ?? 0
+            if responseProfile == .interviewConcise {
+                if strongestPrimaryScore < 0.28 {
+                    interviewFallbackAnchors = await retrieveInterviewMatches(
+                        for: query,
+                        maxResults: normalizedQueryTokenCount <= 5 ? 3 : 4,
+                        minimumScore: 0.0
+                    )
+                } else {
+                    interviewFallbackAnchors = Array(interviewMatches.prefix(3))
+                }
+
+                if isMultiQuestionQuery {
+                    let resolution = await resolveMultiQuestionQuery(
+                        segments: questionSegments,
+                        expectedLanguageCode: finalLanguageCode
+                    )
+                    multiQuestionPromptContext = resolution.promptContext
+
+                    if searchDecision != .required, let direct = resolution.directAnswer {
+                        let userMessage = OllamaService.ChatMessage(role: "user", content: query, images: nil)
+                        let assistantMessage = OllamaService.ChatMessage(role: "assistant", content: direct, images: nil)
+                        conversationHistory.append(userMessage)
+                        conversationHistory.append(assistantMessage)
+                        if conversationHistory.count > maxHistoryLimit * 2 {
+                            conversationHistory.removeFirst(2)
+                        }
+                        await MainActor.run {
+                            onStatusUpdate("Ready (Interview x\(questionSegments.count))")
+                            onPartialResponse(direct)
+                        }
+                        return direct
+                    }
+                }
+            }
         }
-        let strongestVaultScore = vaultMatches.first?.score ?? 0
-        let hasStrongVaultMatch = strongestVaultScore >= 0.50
-        let vaultContext = buildVaultContext(from: vaultMatches)
+        let strongestInterviewScore = interviewMatches.first?.score ?? 0
+        let shouldPreferInterviewKnowledgeOverCache =
+            isMultiQuestionQuery ||
+            strongestInterviewScore >= 0.34 ||
+            (compensationIntent && strongestInterviewScore >= 0.20) ||
+            (selfIntroIntent && strongestInterviewScore >= 0.28)
+        let interviewContext = buildVaultContext(
+            from: interviewMatches,
+            maxEntries: responseProfile == .interviewConcise ? 1 : 4,
+            questionLimit: responseProfile == .interviewConcise ? 160 : 220,
+            answerLimit: responseProfile == .interviewConcise ? 260 : 420
+        )
+        let interviewFallbackContext = buildVaultContext(
+            from: interviewFallbackAnchors,
+            maxEntries: responseProfile == .interviewConcise ? 2 : 3,
+            questionLimit: responseProfile == .interviewConcise ? 120 : 180,
+            answerLimit: responseProfile == .interviewConcise ? 200 : 320,
+            header: "[INTERVIEW FALLBACK ANCHORS]"
+        )
 
         let bypassCache = shouldBypassCache(for: searchDecision)
-        let shouldPreferVaultOverCache = hasStrongVaultMatch
         
         // 0. CACHE CHECK
-        if !bypassCache, !shouldPreferVaultOverCache, let cachedAnswer = cacheService.getResponse(for: query) {
+        if !bypassCache, !shouldPreferInterviewKnowledgeOverCache, let cachedAnswer = cacheService.getResponse(for: query) {
             logger.info("Cache HIT for query: \(self.sanitize(query))")
             await MainActor.run {
                 onStatusUpdate("Ready")
@@ -121,35 +195,55 @@ class IntelligenceService {
             return cachedAnswer
         } else if bypassCache {
             logger.info("Cache bypassed due to freshness-sensitive query")
-        } else if shouldPreferVaultOverCache {
-            logger.info("Cache bypassed due to strong interview vault match")
+        } else if shouldPreferInterviewKnowledgeOverCache {
+            logger.info("Cache bypassed due to interview notes/vault priority")
         }
 
-        // Variant-aware direct vault answer for low-latency interview flow.
+        // Variant-aware direct interview answer for low-latency interview flow.
         if imageData == nil,
            searchDecision != .required,
            responseProfile == .interviewConcise,
-           let topVaultMatch = vaultMatches.first,
-           topVaultMatch.score >= 0.64 {
-            let directVaultAnswer = topVaultMatch.record.answer.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !directVaultAnswer.isEmpty,
+           let topInterviewMatch = interviewMatches.first {
+            let secondInterviewScore = interviewMatches.dropFirst().first?.score ?? 0
+            let directInterviewAnswer = topInterviewMatch.record.answer.trimmingCharacters(in: .whitespacesAndNewlines)
+            let introIntentFastPath =
+                selfIntroIntent &&
+                topInterviewMatch.score >= 0.36 &&
+                topInterviewMatch.matchedTokenCount >= 1
+            let compensationIntentFastPath =
+                compensationIntent &&
+                isCompensationRecord(topInterviewMatch.record) &&
+                topInterviewMatch.score >= 0.20
+            let generalInterviewFastPath =
+                topInterviewMatch.score >= 0.56 &&
+                topInterviewMatch.matchedTokenCount >= 1 &&
+                (topInterviewMatch.score - secondInterviewScore) >= 0.03
+
+            if !directInterviewAnswer.isEmpty,
+               (
+                canUseDirectVaultFastPath(
+                queryTokenCount: normalizedQueryTokenCount,
+                topMatch: topInterviewMatch,
+                secondBestScore: secondInterviewScore
+                ) || introIntentFastPath || compensationIntentFastPath || generalInterviewFastPath
+               ),
                canUseDirectVaultAnswer(
                 queryLanguageCode: finalLanguageCode,
-                answer: directVaultAnswer
+                answer: directInterviewAnswer
                ) {
-                logger.info("Direct vault reply used (score: \(topVaultMatch.score, privacy: .public))")
+                logger.info("Direct interview-knowledge reply used (score: \(topInterviewMatch.score, privacy: .public))")
                 let userMessage = OllamaService.ChatMessage(role: "user", content: query, images: nil)
-                let assistantMessage = OllamaService.ChatMessage(role: "assistant", content: directVaultAnswer, images: nil)
+                let assistantMessage = OllamaService.ChatMessage(role: "assistant", content: directInterviewAnswer, images: nil)
                 conversationHistory.append(userMessage)
                 conversationHistory.append(assistantMessage)
                 if conversationHistory.count > maxHistoryLimit * 2 {
                     conversationHistory.removeFirst(2)
                 }
                 await MainActor.run {
-                    onStatusUpdate("Ready (Vault)")
-                    onPartialResponse(directVaultAnswer)
+                    onStatusUpdate("Ready (Interview)")
+                    onPartialResponse(directInterviewAnswer)
                 }
-                return directVaultAnswer
+                return directInterviewAnswer
             }
         }
         
@@ -287,9 +381,12 @@ class IntelligenceService {
         }
 
         let responseStyleInstruction = responseStyleInstruction(for: responseProfile)
-        let vaultPriorityHint = hasStrongVaultMatch
-            ? "Strong vault match detected (score: \(String(format: "%.2f", strongestVaultScore))). Base the answer primarily on vault content, then adapt naturally."
-            : "If vault match is weak or absent, use memory/web/general reasoning in that order."
+        let interviewPriorityHint = strongestInterviewScore >= 0.30
+            ? "Strong interview match detected (score: \(String(format: "%.2f", strongestInterviewScore))). Use Interview Notes/Vault content first and do not invent numbers."
+            : "If interview match is weak or absent, use persona/memory/web/general reasoning in that order."
+        let interviewFallbackHint = interviewFallbackContext.isEmpty
+            ? "If there is no direct interview answer, generate a cautious answer from [USER PERSONA] only and keep uncertainty explicit."
+            : "If there is no direct interview answer, synthesize from [USER PERSONA] and [INTERVIEW FALLBACK ANCHORS] without inventing precise facts."
         let webSearchStatusHint: String = {
             if webSearchAttempted && webSearchSucceeded {
                 return "[WEB SEARCH STATUS]\nLive web evidence retrieved successfully."
@@ -311,15 +408,18 @@ class IntelligenceService {
         
         [INSTRUCTIONS]
         1. KNOWLEDGE PRIORITY:
-           - First: [USER PERSONA]
-           - Second: [INTERVIEW VAULT MATCHES]
+           - First: [INTERVIEW VAULT MATCHES] (includes Interview Notes + Interview Vault)
+           - Second: [USER PERSONA]
            - Third: [RETRIEVED FROM MEMORY]
            - Fourth: CONTEXT FROM SEARCH
            - Fifth: General reasoning fallback
-           - \(vaultPriorityHint)
-           - If there is no direct answer in vault/memory, produce a sensible best-practice answer.
+           - \(interviewPriorityHint)
+           - \(interviewFallbackHint)
+           - If query is unclear/noise, ask one short clarification question instead of guessing.
         2. CONTEXTUAL INTELLIGENCE:
-           \(vaultContext)
+           \(interviewContext)
+           \(interviewFallbackContext)
+           \(multiQuestionPromptContext)
            \(ragContext)
            \(searchContext.isEmpty ? "" : "CONTEXT FROM SEARCH:\n\(searchContext)\n")
            \(webSearchStatusHint.isEmpty ? "" : "\(webSearchStatusHint)\n")
@@ -333,6 +433,9 @@ class IntelligenceService {
            \(responseStyleInstruction)
            - Write in natural spoken language for read-aloud (not robotic, no slang overload).
            - Understand the exact question before answering; avoid irrelevant detours.
+           - For short interview prompts, use only the single strongest interview match; do not merge unrelated topics.
+           - If user asks multiple questions in one message, answer each question in the same order in separate short paragraphs.
+           - Do not mention private contact details or salary unless explicitly asked.
            - Avoid markdown/list/table unless explicitly requested by the user.
         
         5. FACTUAL SAFETY:
@@ -476,6 +579,196 @@ class IntelligenceService {
             text.contains(token)
         }
     }
+
+    static func splitQuestionSegments(_ query: String) -> [String] {
+        let compact = query
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\t", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !compact.isEmpty else { return [] }
+
+        let questionMarks = compact.filter { $0 == "?" }.count
+        if questionMarks == 0 {
+            return []
+        }
+
+        var segments: [String] = []
+        var seen = Set<String>()
+        let rawSegments = compact.components(separatedBy: "?")
+        for raw in rawSegments {
+            let cleaned = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard cleaned.count >= 4 else { continue }
+            let normalized = InterviewKnowledgeMatcher.normalize(cleaned)
+            guard !normalized.isEmpty, !seen.contains(normalized) else { continue }
+            seen.insert(normalized)
+            segments.append(cleaned + "?")
+        }
+        return Array(segments.prefix(3))
+    }
+
+    private func resolveMultiQuestionQuery(
+        segments: [String],
+        expectedLanguageCode: String?
+    ) async -> MultiQuestionResolution {
+        guard segments.count >= 2 else {
+            return MultiQuestionResolution(directAnswer: nil, promptContext: "")
+        }
+
+        var directAnswers: [String] = []
+        var contextParts: [String] = [
+            "[MULTI-QUESTION BREAKDOWN]",
+            "User asked \(segments.count) questions in one message.",
+            "Answer each question in the same order (Q1, Q2, ...)."
+        ]
+        var hasUnresolvedSegment = false
+
+        for (index, segment) in segments.enumerated() {
+            contextParts.append("Q\(index + 1): \(segment)")
+            let normalizedSegment = InterviewKnowledgeMatcher.normalize(segment)
+            let tokenCount = normalizedSegment.split(separator: " ").count
+            let segmentIntroIntent = isSelfIntroIntent(normalizedSegment)
+            let segmentCompensationIntent = isCompensationIntent(normalizedSegment)
+
+            let strongMatches = await retrieveInterviewMatches(
+                for: segment,
+                maxResults: 3,
+                minimumScore: 0.16
+            )
+            let topStrong = strongMatches.first
+
+            var anchorMatches = strongMatches
+            if anchorMatches.isEmpty || (anchorMatches.first?.score ?? 0) < 0.24 {
+                anchorMatches = await retrieveInterviewMatches(
+                    for: segment,
+                    maxResults: 2,
+                    minimumScore: 0.0
+                )
+            }
+
+            if let topStrong {
+                let answer = topStrong.record.answer.trimmingCharacters(in: .whitespacesAndNewlines)
+                let canUseDirect = canUseDirectMultiQuestionMatch(
+                    topMatch: topStrong,
+                    queryTokenCount: tokenCount,
+                    isIntroIntent: segmentIntroIntent,
+                    isCompensationIntent: segmentCompensationIntent
+                ) && canUseDirectVaultAnswer(
+                    queryLanguageCode: expectedLanguageCode,
+                    answer: answer
+                )
+                if !answer.isEmpty && canUseDirect {
+                    directAnswers.append(answer)
+                } else {
+                    hasUnresolvedSegment = true
+                }
+            } else {
+                hasUnresolvedSegment = true
+            }
+
+            let anchorContext = buildVaultContext(
+                from: anchorMatches,
+                maxEntries: 2,
+                questionLimit: 120,
+                answerLimit: 190,
+                header: "[Q\(index + 1) ANCHORS]"
+            )
+            if !anchorContext.isEmpty {
+                contextParts.append(anchorContext)
+            }
+        }
+
+        let directAnswer: String?
+        if !hasUnresolvedSegment && directAnswers.count == segments.count {
+            let uniqueAnswerCount = Set(directAnswers.map { InterviewKnowledgeMatcher.normalize($0) }).count
+            if uniqueAnswerCount >= segments.count {
+                directAnswer = mergeMultiQuestionAnswers(directAnswers, expectedLanguageCode: expectedLanguageCode)
+            } else {
+                directAnswer = nil
+            }
+        } else {
+            directAnswer = nil
+        }
+
+        return MultiQuestionResolution(
+            directAnswer: directAnswer,
+            promptContext: contextParts.joined(separator: "\n") + "\n"
+        )
+    }
+
+    private func canUseDirectMultiQuestionMatch(
+        topMatch: InterviewKnowledgeMatch,
+        queryTokenCount: Int,
+        isIntroIntent: Bool,
+        isCompensationIntent: Bool
+    ) -> Bool {
+        if isCompensationIntent && isCompensationRecord(topMatch.record) && topMatch.score >= 0.20 {
+            return true
+        }
+        if isIntroIntent && topMatch.score >= 0.34 && topMatch.matchedTokenCount >= 1 {
+            return true
+        }
+
+        let isShort = queryTokenCount <= 6
+        let threshold = isShort ? 0.30 : 0.42
+        return topMatch.score >= threshold && topMatch.matchedTokenCount >= 1
+    }
+
+    private func mergeMultiQuestionAnswers(_ answers: [String], expectedLanguageCode: String?) -> String {
+        guard answers.count > 1 else { return answers.first ?? "" }
+        let code = expectedLanguageCode?.lowercased() ?? ""
+
+        return answers.enumerated().map { index, answer in
+            let label: String
+            if code.hasPrefix("fi") {
+                label = "Kysymys \(index + 1):"
+            } else if code.hasPrefix("tr") {
+                label = "Soru \(index + 1):"
+            } else {
+                label = "Question \(index + 1):"
+            }
+            return "\(label)\n\(answer)"
+        }.joined(separator: "\n\n")
+    }
+
+    private func isSelfIntroIntent(_ normalizedQuery: String) -> Bool {
+        let introPatterns = [
+            "puhu sinusta", "kerro itsestasi", "kerro itsestäsi",
+            "esittele itsesi", "introduce yourself", "tell me about yourself",
+            "who are you", "kuka sina olet", "kuka sinä olet"
+        ]
+        if introPatterns.contains(where: { normalizedQuery.contains($0) }) {
+            return true
+        }
+
+        let introTokens = [
+            "itsestasi", "itsestäsi", "sinusta", "aboutyourself", "yourself", "introduce", "intro"
+        ]
+        return containsAnyToken(in: normalizedQuery, tokens: introTokens)
+    }
+
+    private func isCompensationIntent(_ normalizedQuery: String) -> Bool {
+        let compensationTokens = [
+            "palkka", "palkkatoive", "palkkatavoite", "palkkavaatimus", "palkkataso",
+            "salary", "compensation", "wage", "brutto", "euro"
+        ]
+        if containsAnyToken(in: normalizedQuery, tokens: compensationTokens) {
+            return true
+        }
+
+        let canonicalKeywords = InterviewKnowledgeMatcher.canonicalKeywords(from: normalizedQuery)
+        return canonicalKeywords.contains("salary")
+    }
+
+    private func isCompensationRecord(_ record: InterviewKnowledgeRecord) -> Bool {
+        let corpus = [
+            record.category,
+            record.question,
+            record.answer,
+            record.keyPoints.joined(separator: " ")
+        ].joined(separator: " ")
+        let canonicalKeywords = InterviewKnowledgeMatcher.canonicalKeywords(from: corpus)
+        return canonicalKeywords.contains("salary")
+    }
     
     private func decideWebSearchUsingLLMGate(query: String) async throws -> Bool {
         let searchDecisionPrompt = """
@@ -591,17 +884,26 @@ class IntelligenceService {
             responseProfile: responseProfile,
             structuredOutputRequested: structuredOutputRequested
         )
-        guard needsLanguageFix || needsCondense || needsExpansion else { return trimmed }
+        let needsReadabilityPolish = shouldPolishForReadability(
+            trimmed,
+            responseProfile: responseProfile,
+            structuredOutputRequested: structuredOutputRequested
+        )
+        guard needsLanguageFix || needsCondense || needsExpansion || needsReadabilityPolish else { return trimmed }
         
         // Latency guard: avoid second model call for short/acceptable answers.
-        let shouldRewriteForLanguage = needsLanguageFix && trimmed.count > 220
-        let shouldRewriteForLength = needsCondense && trimmed.count > 700
+        let shouldRewriteForLanguage = needsLanguageFix && trimmed.count > 120
+        let shouldRewriteForLength = needsCondense && trimmed.count > 520
         let shouldRewriteForExpansion = needsExpansion && trimmed.count < 180
-        guard shouldRewriteForLanguage || shouldRewriteForLength || shouldRewriteForExpansion else {
+        let shouldRewriteForReadability = needsReadabilityPolish && trimmed.count > 170
+        guard shouldRewriteForLanguage || shouldRewriteForLength || shouldRewriteForExpansion || shouldRewriteForReadability else {
             return trimmed
         }
         let expansionRule = shouldRewriteForExpansion
             ? "- Expand to 2-4 short sentences without adding new facts."
+            : ""
+        let readabilityRule = shouldRewriteForReadability
+            ? "- If answer is a long block, split into short paragraphs with one blank line every 2 sentences."
             : ""
         
         let rewritePrompt = """
@@ -613,9 +915,11 @@ class IntelligenceService {
         
         Rewrite with strict rules:
         - Keep EXACT meaning; do not add any new facts.
+        - Fix malformed wording, spelling, and grammar while preserving facts.
         - Output only \(languageName(for: expectedLanguageCode)).
         \(rewriteStyleRules(for: responseProfile))
         \(expansionRule)
+        \(readabilityRule)
         
         Return only rewritten answer.
         """
@@ -739,41 +1043,186 @@ class IntelligenceService {
         }
     }
 
-    private func retrieveVaultMatches(for query: String, maxResults: Int) async -> [InterviewKnowledgeMatch] {
+    private func retrieveInterviewMatches(
+        for query: String,
+        maxResults: Int,
+        minimumScore: Double = 0.16
+    ) async -> [InterviewKnowledgeMatch] {
         let snapshot = await MainActor.run { VaultService.shared.categories }
-        guard !snapshot.isEmpty else { return [] }
+        let queryLanguageCode = InterviewKnowledgeMatcher.dominantLanguageCode(for: query)
 
-        let records = snapshot.flatMap { category in
+        let notesRecords = loadInterviewNotesRecords()
+        let vaultRecords = snapshot.flatMap { category in
             category.items.map { item in
                 InterviewKnowledgeRecord(
-                    category: category.title,
+                    category: "Interview Vault > \(category.title)",
                     question: item.question,
                     answer: item.answerFinnish,
                     keyPoints: item.keyPoints
                 )
             }
         }
+        
+        var records: [InterviewKnowledgeRecord] = []
+        records.reserveCapacity(notesRecords.count + vaultRecords.count)
+        var seenQuestionKeys = Set<String>()
+        
+        for record in notesRecords {
+            let key = InterviewKnowledgeMatcher.normalize(record.question)
+            guard !key.isEmpty, seenQuestionKeys.insert(key).inserted else { continue }
+            records.append(record)
+        }
+        
+        for record in vaultRecords {
+            let key = InterviewKnowledgeMatcher.normalize(record.question)
+            guard !key.isEmpty, seenQuestionKeys.insert(key).inserted else { continue }
+            records.append(record)
+        }
+        
+        guard !records.isEmpty else { return [] }
 
-        return InterviewKnowledgeMatcher.topMatches(
+        let rawResultLimit: Int = {
+            if minimumScore <= 0.01 {
+                return max(maxResults * 4, maxResults + 6)
+            }
+            return max(maxResults * 2, maxResults + 2)
+        }()
+        let rawMatches = InterviewKnowledgeMatcher.topMatches(
             query: query,
             records: records,
-            maxResults: maxResults,
-            minimumScore: 0.16
+            maxResults: rawResultLimit,
+            minimumScore: minimumScore
         )
+        guard !rawMatches.isEmpty else { return [] }
+
+        let reranked = rawMatches
+            .map { match -> InterviewKnowledgeMatch in
+                let adjusted = adjustedVaultMatchScore(match, queryLanguageCode: queryLanguageCode)
+                return InterviewKnowledgeMatch(
+                    record: match.record,
+                    score: adjusted,
+                    matchedTokenCount: match.matchedTokenCount
+                )
+            }
+            .filter { $0.score >= minimumScore }
+            .sorted { lhs, rhs in
+                if lhs.score == rhs.score {
+                    return lhs.matchedTokenCount > rhs.matchedTokenCount
+                }
+                return lhs.score > rhs.score
+            }
+
+        return Array(reranked.prefix(maxResults))
     }
 
-    private func buildVaultContext(from matches: [InterviewKnowledgeMatch]) -> String {
+    private func loadInterviewNotesRecords() -> [InterviewKnowledgeRecord] {
+        let rawNotes = UserDefaults.standard.string(forKey: "teleprompterText") ?? ""
+        let blocks = parseInterviewNoteBlocks(from: rawNotes)
+        guard !blocks.isEmpty else { return [] }
+        
+        return blocks.map { block in
+            InterviewKnowledgeRecord(
+                category: "Interview Notes",
+                question: block.question,
+                answer: block.details,
+                keyPoints: block.keyPoints
+            )
+        }
+    }
+
+    private func parseInterviewNoteBlocks(from rawText: String) -> [(question: String, details: String, keyPoints: [String])] {
+        let lines = rawText.components(separatedBy: .newlines)
+        var blocks: [(question: String, details: String, keyPoints: [String])] = []
+        var currentQuestion: String?
+        var currentBodyLines: [String] = []
+        
+        func flushCurrent() {
+            guard let currentQuestion else { return }
+            let details = currentBodyLines
+                .joined(separator: "\n")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let keyPoints = extractInterviewNoteKeyPoints(from: currentQuestion + "\n" + details)
+            blocks.append((question: currentQuestion, details: details, keyPoints: keyPoints))
+            currentBodyLines.removeAll(keepingCapacity: true)
+        }
+        
+        for rawLine in lines {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            if isInterviewNoteQuestionLine(line) {
+                flushCurrent()
+                currentQuestion = cleanedInterviewQuestionLine(from: line)
+                continue
+            }
+            
+            guard currentQuestion != nil else { continue }
+            if isInterviewNoteSeparatorLine(line) {
+                currentBodyLines.append("")
+                continue
+            }
+            currentBodyLines.append(rawLine)
+        }
+        
+        flushCurrent()
+        return blocks
+    }
+
+    private func isInterviewNoteQuestionLine(_ line: String) -> Bool {
+        guard !line.isEmpty, line.contains("?"), line.count <= 180 else { return false }
+        let normalized = InterviewKnowledgeMatcher.normalize(line)
+        guard !normalized.isEmpty else { return false }
+        
+        let blockedPrefixes = [
+            "turkcesi", "turkcesi:", "fince cevap", "daha kisa", "daha net", "ornek", "example"
+        ]
+        if blockedPrefixes.contains(where: { normalized.hasPrefix($0) }) {
+            return false
+        }
+        return !isInterviewNoteSeparatorLine(line)
+    }
+
+    private func isInterviewNoteSeparatorLine(_ line: String) -> Bool {
+        guard !line.isEmpty else { return false }
+        let separatorChars = CharacterSet(charactersIn: "-_—–=•*|")
+        let filtered = line.unicodeScalars.filter { !CharacterSet.whitespacesAndNewlines.contains($0) }
+        guard !filtered.isEmpty else { return false }
+        let separatorCount = filtered.filter { separatorChars.contains($0) }.count
+        return separatorCount >= max(8, Int(Double(filtered.count) * 0.8))
+    }
+
+    private func cleanedInterviewQuestionLine(from line: String) -> String {
+        let removedNumbering = line.replacingOccurrences(
+            of: #"^\s*\d+\s*[\.\)]\s*"#,
+            with: "",
+            options: .regularExpression
+        )
+        return removedNumbering.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func extractInterviewNoteKeyPoints(from text: String) -> [String] {
+        let normalized = InterviewKnowledgeMatcher.normalize(text)
+        let tokens = normalized.split(separator: " ").map(String.init)
+        let filtered = tokens.filter { $0.count >= 4 }
+        return Array(Set(filtered)).sorted().prefix(8).map { $0 }
+    }
+
+    private func buildVaultContext(
+        from matches: [InterviewKnowledgeMatch],
+        maxEntries: Int = 3,
+        questionLimit: Int = 220,
+        answerLimit: Int = 420,
+        header: String = "[INTERVIEW VAULT MATCHES]"
+    ) -> String {
         guard !matches.isEmpty else { return "" }
 
         let maxCharacters = 2_600
         var usedCharacters = 0
-        var lines: [String] = ["[INTERVIEW VAULT MATCHES]"]
+        var lines: [String] = [header]
 
-        for (index, match) in matches.enumerated() {
+        for (index, match) in matches.prefix(maxEntries).enumerated() {
             let entry = """
             [\(index + 1)] Category: \(match.record.category) | Score: \(String(format: "%.2f", match.score))
-            Q: \(compactVaultText(match.record.question, limit: 220))
-            A: \(compactVaultText(match.record.answer, limit: 420))
+            Q: \(compactVaultText(match.record.question, limit: questionLimit))
+            A: \(compactVaultText(match.record.answer, limit: answerLimit))
             KeyPoints: \(match.record.keyPoints.isEmpty ? "-" : match.record.keyPoints.joined(separator: ", "))
             """
 
@@ -812,6 +1261,49 @@ class IntelligenceService {
         return shortAnswerCode == shortQueryCode
     }
 
+    private func canUseDirectVaultFastPath(
+        queryTokenCount: Int,
+        topMatch: InterviewKnowledgeMatch,
+        secondBestScore: Double
+    ) -> Bool {
+        let isShortQuery = queryTokenCount <= 3
+        let scoreThreshold = isShortQuery ? 0.72 : 0.64
+        let separationThreshold = isShortQuery ? 0.12 : 0.07
+        guard topMatch.score >= scoreThreshold else { return false }
+        guard (topMatch.score - secondBestScore) >= separationThreshold else { return false }
+        if isShortQuery && topMatch.matchedTokenCount == 0 {
+            return false
+        }
+        return true
+    }
+
+    private func adjustedVaultMatchScore(
+        _ match: InterviewKnowledgeMatch,
+        queryLanguageCode: String?
+    ) -> Double {
+        var adjusted = match.score
+        if match.record.category.hasPrefix("Interview Notes") {
+            adjusted += 0.12
+        } else if match.record.category.hasPrefix("Interview Vault >") {
+            adjusted += 0.04
+        }
+        guard let queryLanguageCode else { return min(adjusted, 1.0) }
+        let shortQueryCode = String(queryLanguageCode.prefix(2))
+        guard !shortQueryCode.isEmpty else { return min(adjusted, 1.0) }
+
+        if let questionLanguageCode = InterviewKnowledgeMatcher.dominantLanguageCode(for: match.record.question),
+           String(questionLanguageCode.prefix(2)) != shortQueryCode {
+            adjusted *= 0.78
+        }
+
+        if let answerLanguageCode = InterviewKnowledgeMatcher.dominantLanguageCode(for: match.record.answer),
+           String(answerLanguageCode.prefix(2)) != shortQueryCode {
+            adjusted *= 0.86
+        }
+
+        return min(adjusted, 1.0)
+    }
+
     private func shouldExpandResponse(
         _ text: String,
         query: String,
@@ -837,12 +1329,33 @@ class IntelligenceService {
         return isQuestion && (wordCount < 18 || sentenceCount < 2)
     }
 
+    private func shouldPolishForReadability(
+        _ text: String,
+        responseProfile: ResponseProfile,
+        structuredOutputRequested: Bool
+    ) -> Bool {
+        guard !structuredOutputRequested, responseProfile != .detailedTable else { return false }
+        guard !text.contains("```"), !text.contains("|") else { return false }
+        guard !text.contains("\n\n") else { return false }
+
+        let wordCount = text.split { $0.isWhitespace || $0.isNewline }.count
+        let sentenceSeparators = CharacterSet(charactersIn: ".!?")
+        let sentenceCount = text
+            .components(separatedBy: sentenceSeparators)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .count
+
+        return wordCount >= 36 && sentenceCount >= 3 && !text.contains("\n")
+    }
+
     private func sanitizeCitationArtifacts(in text: String) -> String {
         var cleaned = text
         cleaned = cleaned.replacingOccurrences(of: #"\[\^\d+\]"#, with: "", options: .regularExpression)
         cleaned = cleaned.replacingOccurrences(of: #"\[\d+(?:,\s*\d+)*\]"#, with: "", options: .regularExpression)
-        cleaned = cleaned.replacingOccurrences(of: #"\s{2,}"#, with: " ", options: .regularExpression)
-        cleaned = cleaned.replacingOccurrences(of: #" \n"#, with: "\n", options: .regularExpression)
+        cleaned = cleaned.replacingOccurrences(of: #"[ \t]{2,}"#, with: " ", options: .regularExpression)
+        cleaned = cleaned.replacingOccurrences(of: #"[ \t]+\n"#, with: "\n", options: .regularExpression)
+        cleaned = cleaned.replacingOccurrences(of: #"\n{3,}"#, with: "\n\n", options: .regularExpression)
         return cleaned
     }
 }

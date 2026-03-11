@@ -86,9 +86,9 @@ class GhostViewModel {
     
     private let chatHistoryService: ChatHistoryService?
     
-    // Mesaj limiti - performans için
-    private let maxMessages = 100
-    private let messagesToKeep = 50  // Limit aşılınca son 50 mesajı tut
+    // Keep enough visible context but avoid large batch removals that look like a UI refresh.
+    private let maxMessages = 220
+    private let maxTrimBatch = 12
     
     // Pre-compiled Regex for faster cleaning during streaming
     private let actionRegex = try? NSRegularExpression(pattern: #"(?s)\[ACTION:\s*(\{.*?\})\]"#, options: [])
@@ -303,13 +303,7 @@ class GhostViewModel {
         let finalType = type ?? (imageData != nil ? .image : .text)
         let msg = ChatMessage(text: text, isUser: isUser, type: finalType, imageData: imageData)
         messages.append(msg)
-        
-        // Mesaj limiti kontrolü - performans için eski mesajları temizle
-        if messages.count > maxMessages {
-            // Son 50 mesajı tut, gerisini sil
-            messages = Array(messages.suffix(self.messagesToKeep))
-            logger.info("Chat history trimmed to \(self.messagesToKeep) messages for performance")
-        }
+        trimChatHistoryIfNeeded()
         
         // PERSIST TO LONG-TERM MEMORY (Async)
         if type == .text || type == .image {
@@ -317,6 +311,14 @@ class GhostViewModel {
                  try? await chatHistoryService?.addMessage(text: text, isUser: isUser)
              }
         }
+    }
+
+    private func trimChatHistoryIfNeeded() {
+        guard messages.count > maxMessages else { return }
+        let excessCount = messages.count - maxMessages
+        let trimCount = min(max(excessCount, 1), maxTrimBatch)
+        messages.removeFirst(trimCount)
+        logger.info("Chat history trimmed by \(trimCount) messages (current: \(self.messages.count))")
     }
     
     private func beginStreamingRender(at messageIndex: Int) {
@@ -1495,54 +1497,40 @@ class GhostViewModel {
             return message
         }
         
-        // 1) Load ALL vault entries into fast response cache for instant interview replies.
+        // 1) Rebuild cache from current vault snapshot (strict warm-up consistency).
+        responseCacheService.clearCache()
+
+        // 2) Load ALL vault entries into fast response cache for instant interview replies.
         let cacheEntries = allItems.map { entry in
             (question: entry.item.question, answer: entry.item.answerFinnish, category: entry.category)
         }
-        let cachedCount = responseCacheService.primeInterviewVault(entries: cacheEntries)
-        
-        // 2) Keep prompt context compact to avoid token bloat/latency.
-        let maxItems = 80
-        let maxCharacters = 12_000
-        var includedItems = 0
-        var usedCharacters = 0
-        var vaultLines: [String] = []
-        
-        for entry in allItems.prefix(maxItems) {
-            let question = compactInterviewText(entry.item.question, limit: 180)
-            let answer = compactInterviewText(entry.item.answerFinnish, limit: 320)
-            let keyPoints = entry.item.keyPoints.isEmpty
-                ? "-"
-                : entry.item.keyPoints.joined(separator: ", ")
-            let block = """
-            - Category: \(entry.category)
-              Q: \(question)
-              A: \(answer)
-              KeyPoints: \(keyPoints)
-            """
-            
-            if usedCharacters + block.count > maxCharacters {
-                break
-            }
-            
-            vaultLines.append(block)
-            usedCharacters += block.count
-            includedItems += 1
-        }
-        
-        let vaultContext = """
-        [INTERVIEW VAULT KNOWLEDGE]
-        \(vaultLines.joined(separator: "\n"))
+        _ = responseCacheService.primeInterviewVault(entries: cacheEntries)
+        let coverage = responseCacheService.interviewVaultCoverage(entries: cacheEntries)
+
+        // 3) Keep transient persona compact; avoid injecting full vault answers into system prompt.
+        let categoryTitles = categories.map(\.title).joined(separator: ", ")
+        let warmupContext = """
+        [INTERVIEW WARM-UP STATUS]
+        Cache coverage: \(coverage.cached)/\(coverage.total)
+        Categories: \(categoryTitles)
+
+        Rules:
+        - Use interview vault as the primary source.
+        - Choose a single best-matching vault answer; do not blend unrelated entries.
+        - Keep answers concise and interview-ready.
+        - Never mention private contact details or salary unless explicitly asked.
         """
-        
-        intelligenceService.setTransientPersonaContext("\(baseContext)\n\n\(vaultContext)")
-        
-        let truncated = includedItems < totalItems
-        let message = truncated
-            ? "🔥 Warm-up tamam: cache \(cachedCount) soru, prompt \(includedItems)/\(totalItems) (özet mod)."
-            : "🔥 Warm-up tamam: cache \(cachedCount) soru, prompt \(includedItems)/\(totalItems)."
-        
-        logger.info("Interview warm-up loaded with \(includedItems)/\(totalItems) items")
+
+        intelligenceService.setTransientPersonaContext("\(baseContext)\n\n\(warmupContext)")
+
+        let message: String
+        if coverage.missing == 0 {
+            message = "🔥 Warm-up tamam: cache doğrulandı \(coverage.cached)/\(coverage.total)."
+        } else {
+            message = "⚠️ Warm-up kısmi: cache \(coverage.cached)/\(coverage.total), eksik \(coverage.missing)."
+        }
+
+        logger.info("Interview warm-up cache coverage \(coverage.cached)/\(coverage.total)")
         statusMessage = message
         resetWarmUpStatus(expectedMessage: message)
         return message
@@ -1557,16 +1545,6 @@ class GhostViewModel {
                 }
             }
         }
-    }
-    
-    private func compactInterviewText(_ text: String, limit: Int) -> String {
-        let normalized = text
-            .replacingOccurrences(of: "\n", with: " ")
-            .replacingOccurrences(of: "\t", with: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        
-        guard normalized.count > limit else { return normalized }
-        return String(normalized.prefix(limit)) + "..."
     }
     
     func attachFile(from url: URL) {

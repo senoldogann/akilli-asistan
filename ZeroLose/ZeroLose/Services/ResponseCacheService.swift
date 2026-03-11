@@ -80,11 +80,27 @@ class ResponseCacheService {
         persistCache()
         return cache?.responses.count ?? 0
     }
+
+    func interviewVaultCoverage(
+        entries: [(question: String, answer: String, category: String)]
+    ) -> (total: Int, cached: Int, missing: Int) {
+        let requestedKeys = Set(entries.map { cacheKey(question: $0.question, category: $0.category) })
+        let total = requestedKeys.count
+        guard total > 0, let cache = cache else {
+            return (total, 0, total)
+        }
+
+        let cachedKeys = Set(cache.responses.map { cacheKey(question: $0.question, category: $0.category) })
+        let coveredCount = requestedKeys.intersection(cachedKeys).count
+        return (total, coveredCount, max(0, total - coveredCount))
+    }
     
     func getResponse(for question: String) -> String? {
         guard let cache = cache, !cache.responses.isEmpty else { return nil }
         
         let normalizedQuery = normalize(question)
+        let queryTokenCount = normalizedQuery.split(separator: " ").count
+        let compensationIntent = isCompensationIntent(question)
         
         // Try exact match first
         if let match = cache.responses.first(where: { normalize($0.question) == normalizedQuery }) {
@@ -110,6 +126,24 @@ class ResponseCacheService {
             return nil
         }
 
+        if queryTokenCount <= 3 {
+            let strictConfidence = topMatch.score >= 0.72 && topMatch.matchedTokenCount >= 1
+            if strictConfidence {
+                return topMatch.record.answer
+            }
+
+            let compensationConfidence =
+                compensationIntent &&
+                isCompensationRecord(topMatch.record) &&
+                topMatch.score >= 0.22 &&
+                (
+                    topMatch.matchedTokenCount >= 1 ||
+                    isCompensationIntent(topMatch.record.question) ||
+                    isCompensationIntent(topMatch.record.answer)
+                )
+            return compensationConfidence ? topMatch.record.answer : nil
+        }
+
         let highConfidence = topMatch.score >= 0.55
         let mediumConfidence = topMatch.score >= 0.38 && topMatch.matchedTokenCount >= 2
         return (highConfidence || mediumConfidence) ? topMatch.record.answer : nil
@@ -122,12 +156,40 @@ class ResponseCacheService {
     private func upsert(_ response: CachedResponse) {
         guard cache != nil else { return }
         
-        let key = normalize(response.question)
-        if let existingIndex = cache?.responses.firstIndex(where: { normalize($0.question) == key }) {
+        let key = cacheKey(question: response.question, category: response.category)
+        if let existingIndex = cache?.responses.firstIndex(where: {
+            cacheKey(question: $0.question, category: $0.category) == key
+        }) {
             cache?.responses[existingIndex] = response
         } else {
             cache?.responses.append(response)
         }
+    }
+
+    private func cacheKey(question: String, category: String) -> String {
+        "\(normalize(category))|\(normalize(question))"
+    }
+
+    private func isCompensationIntent(_ query: String) -> Bool {
+        let normalizedQuery = normalize(query)
+        let explicitTokens = [
+            "palkka", "palkkatoive", "palkkatavoite", "palkkavaatimus", "palkkataso",
+            "salary", "compensation", "wage", "brutto", "euro"
+        ]
+        if explicitTokens.contains(where: { normalizedQuery.contains($0) }) {
+            return true
+        }
+        return InterviewKnowledgeMatcher.canonicalKeywords(from: normalizedQuery).contains("salary")
+    }
+
+    private func isCompensationRecord(_ record: InterviewKnowledgeRecord) -> Bool {
+        let corpus = [
+            record.category,
+            record.question,
+            record.answer,
+            record.keyPoints.joined(separator: " ")
+        ].joined(separator: " ")
+        return InterviewKnowledgeMatcher.canonicalKeywords(from: corpus).contains("salary")
     }
     
     func clearCache() {

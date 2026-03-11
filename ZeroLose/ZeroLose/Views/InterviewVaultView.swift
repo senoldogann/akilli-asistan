@@ -215,19 +215,16 @@ struct CategoryView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Button(action: onTap) {
-                    HStack {
-                        Image(systemName: category.icon)
-                            .foregroundColor(.orange)
-                            .font(.system(size: CGFloat(fontSize) + 2))
-                            .frame(width: 24)
-                        
-                        Text(category.title)
-                            .font(.system(size: CGFloat(fontSize) + 1, weight: .semibold))
-                            .foregroundColor(.white)
-                    }
+                HStack {
+                    Image(systemName: category.icon)
+                        .foregroundColor(.orange)
+                        .font(.system(size: CGFloat(fontSize) + 2))
+                        .frame(width: 24)
+                    
+                    Text(category.title)
+                        .font(.system(size: CGFloat(fontSize) + 1, weight: .semibold))
+                        .foregroundColor(.white)
                 }
-                .buttonStyle(.interactive)
                 
                 Spacer()
                 
@@ -248,11 +245,12 @@ struct CategoryView: View {
                         .font(.system(size: 12, weight: .bold))
                         .foregroundColor(.white.opacity(0.3))
                         .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                        .onTapGesture(perform: onTap)
                 }
             }
             .padding(16)
             .background(Color.white.opacity(0.03))
+            .contentShape(Rectangle())
+            .onTapGesture(perform: onTap)
             
             if isExpanded {
                 VStack(spacing: 0) {

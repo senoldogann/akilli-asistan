@@ -66,7 +66,6 @@ struct SettingsView: View {
         .preferredColorScheme(.dark)
         .onAppear {
             refreshMemoryState()
-            WindowManager.shared.updateMainWindowSize(width: windowWidth, height: windowHeight, animated: false)
             WindowManager.shared.updateWindowOpacity(windowOpacity)
         }
         .onChange(of: windowWidth) { _, newValue in

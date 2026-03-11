@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 
 struct MessageContent: View {
@@ -18,7 +19,7 @@ struct MessageContent: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            ForEach(MessageParser.parse(text), id: \.id) { segment in
+            ForEach(MessageParser.parse(text, forUserMessage: isUser), id: \.id) { segment in
                 switch segment.type {
                 case .heading(let level, let content):
                     Text(verbatim: content)
@@ -29,6 +30,7 @@ struct MessageContent: View {
                     Text(verbatim: content)
                         .font(.system(size: fontSize, weight: .regular, design: fontDesign))
                         .foregroundColor(isUser ? .black : .white.opacity(0.9))
+                        .lineSpacing(4)
                         .fixedSize(horizontal: false, vertical: true)
                 case .table(let headers, let rows):
                     MarkdownTableView(headers: headers, rows: rows, fontSize: fontSize, isUser: isUser)
@@ -233,7 +235,7 @@ struct MessageSegment: Identifiable {
 }
 
 class MessageParser {
-    static func parse(_ text: String) -> [MessageSegment] {
+    static func parse(_ text: String, forUserMessage: Bool = false) -> [MessageSegment] {
         var segments: [MessageSegment] = []
         let lines = text.components(separatedBy: .newlines)
         
@@ -253,7 +255,7 @@ class MessageParser {
                     // Start of block
                     // Flush existing text
                     if !currentTextContent.isEmpty {
-                        segments.append(contentsOf: parseTextBlock(currentTextContent))
+                        segments.append(contentsOf: parseTextBlock(currentTextContent, forUserMessage: forUserMessage))
                         currentTextContent = ""
                     }
                     
@@ -267,14 +269,14 @@ class MessageParser {
                 } else if line.contains("[WEB_SEARCH]") {
                     // Flush existing text
                     if !currentTextContent.isEmpty {
-                        segments.append(contentsOf: parseTextBlock(currentTextContent))
+                        segments.append(contentsOf: parseTextBlock(currentTextContent, forUserMessage: forUserMessage))
                         currentTextContent = ""
                     }
                     let content = line.replacingOccurrences(of: "[WEB_SEARCH]", with: "").trimmingCharacters(in: .whitespaces)
                     segments.append(MessageSegment(type: .searchIndicator(content)))
                 } else if line.contains("[SLASH_COMMAND]") {
                     if !currentTextContent.isEmpty {
-                        segments.append(contentsOf: parseTextBlock(currentTextContent))
+                        segments.append(contentsOf: parseTextBlock(currentTextContent, forUserMessage: forUserMessage))
                         currentTextContent = ""
                     }
                     let content = line.replacingOccurrences(of: "[SLASH_COMMAND]", with: "").trimmingCharacters(in: .whitespaces)
@@ -287,7 +289,7 @@ class MessageParser {
         
         // Flush remaining text
         if !currentTextContent.isEmpty {
-            segments.append(contentsOf: parseTextBlock(currentTextContent))
+            segments.append(contentsOf: parseTextBlock(currentTextContent, forUserMessage: forUserMessage))
         }
         // If code block wasn't closed, flush it as text or code?
         if !currentBlockContent.isEmpty {
@@ -297,7 +299,7 @@ class MessageParser {
         return segments
     }
     
-    private static func parseTextBlock(_ text: String) -> [MessageSegment] {
+    private static func parseTextBlock(_ text: String, forUserMessage: Bool) -> [MessageSegment] {
         var segments: [MessageSegment] = []
         let lines = text.components(separatedBy: .newlines)
         var paragraphBuffer: [String] = []
@@ -309,7 +311,11 @@ class MessageParser {
                 paragraphBuffer.removeAll()
                 return
             }
-            segments.append(MessageSegment(type: .paragraph(normalizeInlineMarkdown(paragraph))))
+            let normalizedParagraph = normalizeInlineMarkdown(paragraph)
+            let paragraphs = forUserMessage ? [normalizedParagraph] : splitLongParagraphForReadability(normalizedParagraph)
+            for item in paragraphs {
+                segments.append(MessageSegment(type: .paragraph(item)))
+            }
             paragraphBuffer.removeAll()
         }
         
@@ -371,6 +377,50 @@ class MessageParser {
         
         flushParagraph()
         return segments
+    }
+
+    private static func splitLongParagraphForReadability(_ paragraph: String) -> [String] {
+        guard paragraph.count >= 220 else { return [paragraph] }
+        guard !paragraph.contains("\n"), !paragraph.contains("|"), !paragraph.contains("```") else { return [paragraph] }
+
+        let sentenceBreakRegex = try? NSRegularExpression(pattern: #"(?<=[.!?])\s+"#, options: [])
+        guard let sentenceBreakRegex else { return [paragraph] }
+
+        let nsRange = NSRange(paragraph.startIndex..<paragraph.endIndex, in: paragraph)
+        let matches = sentenceBreakRegex.matches(in: paragraph, options: [], range: nsRange)
+        guard !matches.isEmpty else { return [paragraph] }
+
+        var sentences: [String] = []
+        var start = paragraph.startIndex
+        for match in matches {
+            guard let splitRange = Range(match.range, in: paragraph) else { continue }
+            let sentence = paragraph[start..<splitRange.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
+            if !sentence.isEmpty {
+                sentences.append(String(sentence))
+            }
+            start = splitRange.upperBound
+        }
+        let tail = paragraph[start...].trimmingCharacters(in: .whitespacesAndNewlines)
+        if !tail.isEmpty {
+            sentences.append(String(tail))
+        }
+
+        guard sentences.count >= 4 else { return [paragraph] }
+
+        var groupedParagraphs: [String] = []
+        var bucket: [String] = []
+        for sentence in sentences {
+            bucket.append(sentence)
+            if bucket.count == 2 {
+                groupedParagraphs.append(bucket.joined(separator: " "))
+                bucket.removeAll(keepingCapacity: true)
+            }
+        }
+        if !bucket.isEmpty {
+            groupedParagraphs.append(bucket.joined(separator: " "))
+        }
+
+        return groupedParagraphs.isEmpty ? [paragraph] : groupedParagraphs
     }
     
     private static func parseHeading(from line: String) -> (level: Int, text: String)? {

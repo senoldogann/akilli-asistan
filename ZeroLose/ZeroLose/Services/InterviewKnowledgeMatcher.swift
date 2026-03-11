@@ -1,4 +1,5 @@
 import Foundation
+import NaturalLanguage
 
 struct InterviewKnowledgeRecord: Sendable, Hashable {
     let category: String
@@ -21,7 +22,11 @@ enum InterviewKnowledgeMatcher {
         "bir", "bu", "ve", "veya", "ile", "icin", "için", "mi", "mı", "mu", "mü", "mu", "m",
         "nasil", "nasıl", "nedir", "neden", "hangi", "kac", "kaç", "ne", "kim", "olarak",
         "se", "sen", "siz", "biz", "ben", "da", "de",
-        "ja", "on", "se", "että", "mita", "mitä", "miten", "miksi", "kun", "joka", "tai", "myos", "myös"
+        "ja", "on", "se", "että", "mita", "mitä", "miten", "miksi", "kun", "joka", "tai", "myos", "myös",
+            // Finnish modal/question filler words
+            "onko", "haluatko", "voisitko", "voitteko", "voitko",
+            "minulle", "meilta", "meiltä", "jotain", "teille",
+            "sinulla", "sinusta", "sinun", "sun", "teilla", "teillä", "teidan", "teidän", "minun", "mun"
     ]
 
     private static let stemSuffixes: [String] = [
@@ -42,6 +47,8 @@ enum InterviewKnowledgeMatcher {
             ["solve", "solved", "solving", "resolve", "resolution", "coz", "cozum", "cozmek", "çöz", "çözüm", "çözmek"],
             ["quick", "quickly", "fast", "rapid", "hizli", "hızlı"],
             ["problem", "issue", "incident", "sorun", "problem", "olay", "kesinti"],
+            ["ask", "question", "questions", "kysy", "kysya", "kysyä", "kysymys", "kysymykset", "kysymyksia", "kysymyksiä", "soru", "sorular"],
+            ["introduce", "intro", "aboutyourself", "yourself", "itsestasi", "itsestäsi", "kerro", "kerrotko", "puhu", "tausta", "background"],
             ["debt", "borc", "borcu", "borç", "borcu", "technicaldebt"],
             ["legacy", "eski", "monolith", "monolit"],
             ["introduce", "introduction", "background", "tanit", "tanitim", "tanıt", "tanıtım", "ozgecmis", "özgeçmiş"],
@@ -51,7 +58,8 @@ enum InterviewKnowledgeMatcher {
             ["scale", "scaling", "olcek", "ölçek", "buyut", "büyüt"],
             ["frontend", "react", "ui"],
             ["backend", "api", "service"],
-            ["test", "testing", "qa"]
+            ["test", "testing", "qa"],
+            ["salary", "compensation", "wage", "brutto", "palkka", "palkkataso", "palkkatoive", "palkkatavoite", "palkkavaatimus"]
         ]
 
         var map: [String: String] = [:]
@@ -63,6 +71,11 @@ enum InterviewKnowledgeMatcher {
         }
         return map
     }()
+
+    private static let salaryTokenPrefixes: [String] = [
+        "palkka", "palkkatoiv", "palkkatavoit", "palkkavaat", "palkkatas",
+        "salary", "compens", "wage", "brutto"
+    ]
 
     static func topMatches(
         query: String,
@@ -105,12 +118,14 @@ enum InterviewKnowledgeMatcher {
         record: InterviewKnowledgeRecord,
         minimumScore: Double
     ) -> InterviewKnowledgeMatch? {
+        let categoryNorm = normalize(record.category)
         let questionNorm = normalize(record.question)
         let answerNorm = normalize(record.answer)
         let keyPointsNorm = normalize(record.keyPoints.joined(separator: " "))
-        let corpus = normalize([record.category, questionNorm, answerNorm, keyPointsNorm].joined(separator: " "))
+        let corpus = normalize([questionNorm, answerNorm, keyPointsNorm].joined(separator: " "))
         guard !corpus.isEmpty else { return nil }
 
+        let categoryTokens = tokenSet(from: categoryNorm)
         let corpusTokens = tokenSet(from: corpus)
         let questionTokens = tokenSet(from: questionNorm)
         let answerTokens = tokenSet(from: answerNorm)
@@ -126,6 +141,7 @@ enum InterviewKnowledgeMatcher {
         let questionOverlap = tokenOverlap(queryTokens, questionTokens)
         let answerOverlap = tokenOverlap(queryTokens, answerTokens)
         let keyPointOverlap = tokenOverlap(queryTokens, keyPointTokens)
+        let categoryOverlap = tokenOverlap(queryTokens, categoryTokens)
 
         var phraseBoost = 0.0
         let queryCanonical = canonicalPhrase(from: queryNormalized, removeStopWords: true)
@@ -163,18 +179,33 @@ enum InterviewKnowledgeMatcher {
         let trigramAnswer = trigramDice(queryCanonical, answerCanonical)
         let editQuestion = normalizedEditSimilarity(queryCanonical, questionCanonical)
         let editAnswer = normalizedEditSimilarity(queryCanonical, answerCanonical)
-        let semanticApprox = (max(trigramQuestion, trigramAnswer) * 0.6) + (max(editQuestion, editAnswer) * 0.4)
+        let questionSemantic = (trigramQuestion * 0.65) + (editQuestion * 0.35)
+        let answerSemantic = (trigramAnswer * 0.55) + (editAnswer * 0.45)
+        let semanticApprox = max(questionSemantic, answerSemantic * 0.75)
 
-        let score = min(
+        let hasQuestionTokenOverlap = !queryTokens.intersection(questionTokens).isEmpty
+        if queryTokens.count <= 2, !hasQuestionTokenOverlap {
+            let hasStrongSemanticSignal = semanticApprox >= 0.80 && phraseBoost >= 0.16
+            if !hasStrongSemanticSignal {
+                return nil
+            }
+        }
+
+        var score = min(
             1.0,
-            (tokenCoverage * 0.30) +
-            (jaccard * 0.14) +
-            (questionOverlap * 0.20) +
-            (answerOverlap * 0.14) +
+            (tokenCoverage * 0.24) +
+            (jaccard * 0.10) +
+            (questionOverlap * 0.30) +
+            (answerOverlap * 0.10) +
             (keyPointOverlap * 0.08) +
             (semanticApprox * 0.14) +
+            (categoryOverlap * 0.04) +
             phraseBoost
         )
+
+        if questionOverlap == 0, answerOverlap > 0, queryTokens.count <= 4 {
+            score *= 0.72
+        }
 
         guard score >= minimumScore else { return nil }
         return InterviewKnowledgeMatch(record: record, score: score, matchedTokenCount: intersectionCount)
@@ -198,19 +229,36 @@ enum InterviewKnowledgeMatcher {
             .split(separator: " ")
             .map(String.init)
             .compactMap { token in
-                let canonical: String
-                if let mappedRaw = synonymMap[token] {
-                    canonical = mappedRaw
-                } else {
-                    let stemmed = stemToken(token)
-                    guard stemmed.count >= 2 else { return nil }
-                    canonical = synonymMap[stemmed] ?? stemmed
-                }
+                guard let canonical = canonicalToken(for: token) else { return nil }
                 if removeStopWords && stopWords.contains(canonical) {
                     return nil
                 }
                 return canonical
             }
+    }
+
+    private static func canonicalToken(for token: String) -> String? {
+        if let mappedRaw = synonymMap[token] {
+            return mappedRaw
+        }
+        if isSalaryToken(token) {
+            return "salary"
+        }
+
+        let stemmed = stemToken(token)
+        guard stemmed.count >= 2 else { return nil }
+
+        if let mappedStemmed = synonymMap[stemmed] {
+            return mappedStemmed
+        }
+        if isSalaryToken(stemmed) {
+            return "salary"
+        }
+        return stemmed
+    }
+
+    private static func isSalaryToken(_ token: String) -> Bool {
+        salaryTokenPrefixes.contains(where: { token.hasPrefix($0) })
     }
 
     private static func stemToken(_ rawToken: String) -> String {
@@ -293,5 +341,25 @@ enum InterviewKnowledgeMatcher {
         return String(cleanedScalars)
             .split(whereSeparator: \.isWhitespace)
             .joined(separator: " ")
+    }
+
+    static func canonicalKeywords(from text: String, removeStopWords: Bool = true) -> Set<String> {
+        let normalized = normalize(text)
+        return Set(canonicalTokens(from: normalized, removeStopWords: removeStopWords))
+    }
+
+    static func keywordOverlapCount(query: String, target: String) -> Int {
+        let queryTokens = canonicalKeywords(from: query, removeStopWords: true)
+        let targetTokens = canonicalKeywords(from: target, removeStopWords: true)
+        guard !queryTokens.isEmpty, !targetTokens.isEmpty else { return 0 }
+        return queryTokens.intersection(targetTokens).count
+    }
+
+    static func dominantLanguageCode(for text: String) -> String? {
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard normalized.count >= 4 else { return nil }
+        let recognizer = NLLanguageRecognizer()
+        recognizer.processString(normalized)
+        return recognizer.dominantLanguage?.rawValue
     }
 }

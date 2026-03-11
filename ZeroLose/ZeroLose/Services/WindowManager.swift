@@ -28,6 +28,8 @@ class WindowManager: NSObject, NSWindowDelegate {
     private enum WindowPreferenceKeys {
         static let teleprompterWidth = "teleprompterWindowWidth"
         static let teleprompterHeight = "teleprompterWindowHeight"
+        static let teleprompterPosX = "teleprompterWindowPosX"
+        static let teleprompterPosY = "teleprompterWindowPosY"
     }
     
     private var window: NSWindow!
@@ -119,6 +121,9 @@ class WindowManager: NSObject, NSWindowDelegate {
     
     @objc private func appWillTerminate() {
         saveWindowFrame()
+        if let teleprompterWindow {
+            saveTeleprompterFrame(teleprompterWindow)
+        }
     }
     
     /// Update window sharing type based on stealth mode setting
@@ -205,8 +210,12 @@ class WindowManager: NSObject, NSWindowDelegate {
     
     // MARK: - NSWindowDelegate
     func windowDidMove(_ notification: Notification) {
-        if let win = notification.object as? NSWindow, win == self.window {
-            saveWindowFrame()
+        if let win = notification.object as? NSWindow {
+            if win == self.window {
+                saveWindowFrame()
+            } else if win == self.teleprompterWindow {
+                saveTeleprompterFrame(win)
+            }
         }
     }
     
@@ -215,7 +224,7 @@ class WindowManager: NSObject, NSWindowDelegate {
             if win == self.window {
                 saveWindowFrame()
             } else if win == self.teleprompterWindow {
-                saveTeleprompterSize(win)
+                saveTeleprompterFrame(win)
             }
         }
     }
@@ -242,10 +251,25 @@ class WindowManager: NSObject, NSWindowDelegate {
         return NSSize(width: clampedWidth, height: clampedHeight)
     }
     
-    private func saveTeleprompterSize(_ window: NSWindow) {
+    private func saveTeleprompterFrame(_ window: NSWindow) {
+        let frame = window.frame
         let contentSize = window.contentRect(forFrameRect: window.frame).size
+        UserDefaults.standard.set(frame.origin.x, forKey: WindowPreferenceKeys.teleprompterPosX)
+        UserDefaults.standard.set(frame.origin.y, forKey: WindowPreferenceKeys.teleprompterPosY)
         UserDefaults.standard.set(contentSize.width, forKey: WindowPreferenceKeys.teleprompterWidth)
         UserDefaults.standard.set(contentSize.height, forKey: WindowPreferenceKeys.teleprompterHeight)
+    }
+
+    private func restoreTeleprompterFrame(size: NSSize) -> NSRect {
+        let defaults = UserDefaults.standard
+        let savedX = defaults.double(forKey: WindowPreferenceKeys.teleprompterPosX)
+        let savedY = defaults.double(forKey: WindowPreferenceKeys.teleprompterPosY)
+
+        if savedX != 0 || savedY != 0 {
+            return NSRect(x: savedX, y: savedY, width: size.width, height: size.height)
+        }
+
+        return NSRect(x: 300, y: 300, width: size.width, height: size.height)
     }
     
     func showWindow() {
@@ -362,9 +386,10 @@ class WindowManager: NSObject, NSWindowDelegate {
         
         // Restore last known size; fallback to default on first launch
         let restoredSize = restoreTeleprompterSize()
+        let restoredFrame = restoreTeleprompterFrame(size: restoredSize)
         
         let tpWindow = TeleprompterWindow(
-            contentRect: NSRect(x: 300, y: 300, width: restoredSize.width, height: restoredSize.height),
+            contentRect: restoredFrame,
             styleMask: [.borderless, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -405,7 +430,7 @@ class WindowManager: NSObject, NSWindowDelegate {
     func closeTeleprompterWindow() {
         guard !isClosingTeleprompterWindow, let win = teleprompterWindow else { return }
         isClosingTeleprompterWindow = true
-        saveTeleprompterSize(win)
+        saveTeleprompterFrame(win)
         
         // Make binding-backed "isPresented" false immediately to avoid SwiftUI state races.
         teleprompterWindow = nil

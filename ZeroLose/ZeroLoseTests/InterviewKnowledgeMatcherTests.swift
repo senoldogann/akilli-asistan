@@ -84,4 +84,140 @@ final class InterviewKnowledgeMatcherTests: XCTestCase {
         XCTAssertEqual(matches.first?.record.category, "Architecture")
         XCTAssertGreaterThan(matches.first?.score ?? 0, 0.28)
     }
+
+    func testTopMatchesFinnishIntroDoesNotDriftToSalary() {
+        let records = [
+            InterviewKnowledgeRecord(
+                category: "Intro",
+                question: "Kerrotko vähän itsestäsi?",
+                answer: "Olen full stack kehittäjä ja minulla on yli seitsemän vuoden kokemus.",
+                keyPoints: ["itsestäsi", "kokemus"]
+            ),
+            InterviewKnowledgeRecord(
+                category: "Compensation",
+                question: "Millainen palkkatoive sinulla on?",
+                answer: "Palkkatoiveeni on noin 5600-6200 euroa kuukaudessa.",
+                keyPoints: ["palkkatoive", "palkka"]
+            )
+        ]
+
+        let matches = InterviewKnowledgeMatcher.topMatches(
+            query: "Puhu sinusta",
+            records: records,
+            maxResults: 2,
+            minimumScore: 0.10
+        )
+
+        XCTAssertFalse(matches.isEmpty)
+        XCTAssertEqual(matches.first?.record.category, "Intro")
+    }
+
+    func testTopMatchesFinnishAskBackVariant() {
+        let records = [
+            InterviewKnowledgeRecord(
+                category: "Closing",
+                question: "Haluatko kysyä meiltä jotain?",
+                answer: "Kyllä, haluaisin kysyä tiimin työskentelystä ja projektien rakenteesta.",
+                keyPoints: ["kysyä", "meiltä"]
+            ),
+            InterviewKnowledgeRecord(
+                category: "Compensation",
+                question: "Millainen palkkatoive sinulla on?",
+                answer: "Palkkatoive riippuu roolista ja vastuista.",
+                keyPoints: ["palkkatoive"]
+            )
+        ]
+
+        let matches = InterviewKnowledgeMatcher.topMatches(
+            query: "Onko kysymyksiä minulle?",
+            records: records,
+            maxResults: 2,
+            minimumScore: 0.10
+        )
+
+        XCTAssertFalse(matches.isEmpty)
+        XCTAssertEqual(matches.first?.record.category, "Closing")
+    }
+
+    func testTopMatchesShortQueryNeedsQuestionEvidence() {
+        let records = [
+            InterviewKnowledgeRecord(
+                category: "Compensation",
+                question: "Millainen palkkatoive sinulla on?",
+                answer: "Taustani on React- ja Node.js-kehityksessä.",
+                keyPoints: ["palkkatoive"]
+            ),
+            InterviewKnowledgeRecord(
+                category: "Intro",
+                question: "Kerro vähän itsestäsi?",
+                answer: "Olen kokenut full stack kehittäjä.",
+                keyPoints: ["itsestäsi", "kokemus"]
+            )
+        ]
+
+        let matches = InterviewKnowledgeMatcher.topMatches(
+            query: "Puhu sinusta",
+            records: records,
+            maxResults: 2,
+            minimumScore: 0.10
+        )
+
+        XCTAssertFalse(matches.isEmpty)
+        XCTAssertEqual(matches.first?.record.category, "Intro")
+        XCTAssertNotEqual(matches.first?.record.category, "Compensation")
+    }
+
+    func testTopMatchesFinnishSalaryVariantWithTypo() {
+        let records = [
+            InterviewKnowledgeRecord(
+                category: "Compensation",
+                question: "Millainen palkkatoive sinulla on?",
+                answer: "Palkkatoiveeni on noin 5600-6200 euroa kuukaudessa.",
+                keyPoints: ["palkkatoive", "salary", "compensation"]
+            ),
+            InterviewKnowledgeRecord(
+                category: "Intro",
+                question: "Kerrotko vähän itsestäsi?",
+                answer: "Olen kokenut full stack kehittäjä.",
+                keyPoints: ["itsestäsi", "kokemus"]
+            )
+        ]
+
+        let matches = InterviewKnowledgeMatcher.topMatches(
+            query: "Entä palkkatavoiteet?",
+            records: records,
+            maxResults: 2,
+            minimumScore: 0.10
+        )
+
+        XCTAssertFalse(matches.isEmpty)
+        XCTAssertEqual(matches.first?.record.category, "Compensation")
+    }
+
+    func testTopMatchesFinnishSalaryColloquialSunVariant() {
+        let records = [
+            InterviewKnowledgeRecord(
+                category: "Compensation",
+                question: "Millainen palkkatoive sinulla on?",
+                answer: "Palkkatoiveeni on noin 5 600-6 200 euroa kuukaudessa.",
+                keyPoints: ["palkkatoive", "salary", "compensation"]
+            ),
+            InterviewKnowledgeRecord(
+                category: "Intro",
+                question: "Kerrotko vähän itsestäsi?",
+                answer: "Olen kokenut full stack kehittäjä.",
+                keyPoints: ["itsestäsi", "kokemus"]
+            )
+        ]
+
+        let matches = InterviewKnowledgeMatcher.topMatches(
+            query: "Mitä sun palkkatoive?",
+            records: records,
+            maxResults: 2,
+            minimumScore: 0.10
+        )
+
+        XCTAssertFalse(matches.isEmpty)
+        XCTAssertEqual(matches.first?.record.category, "Compensation")
+    }
 }
