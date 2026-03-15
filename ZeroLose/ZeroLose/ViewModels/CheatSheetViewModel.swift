@@ -90,7 +90,7 @@ class CheatSheetViewModel: ObservableObject {
             
             do {
                 var fullAnswer = ""
-                _ = try await intelligenceService.process(
+                let processedResponse = try await intelligenceService.process(
                     query: item.question,
                     imageData: nil,
                     onStatusUpdate: { _ in },
@@ -98,6 +98,7 @@ class CheatSheetViewModel: ObservableObject {
                         fullAnswer = partial
                     }
                 )
+                fullAnswer = processedResponse.text
                 
                 // Save to cache
                 cacheService.saveResponse(

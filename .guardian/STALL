@@ -1,0 +1,1 @@
+{"file_path":"scripts copy/fix_agent_tools.py","reason":"The script does not validate the structure of the frontmatter in agent markdown files, which could lead to data corruption or loss of essential metadata.","status":"stalled","updated_at":"2026-03-15T00:08:56.827031+00:00"}

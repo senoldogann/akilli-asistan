@@ -27,7 +27,7 @@
 - **Nonsense Rejection**: Alakasız alfabe veya karakter içeren çıktıları kullanıcıya göstermeden çöpe atar.
 
 ### 🧠 Intelligence & Search
-- **Multi-Model Support**: Gemini-3-flash-preview (reasoning/vision), Ministral-3 (fast actions), Groq Whisper (speech-to-text).
+- **Multi-Model Support**: OpenAI-first live interview stack (`gpt-5-mini`, `gpt-5.2-codex`, `gpt-4o-mini`, `gpt-4o-mini-transcribe`) with legacy Ollama Cloud / Groq fallback.
 - **Web-Enhanced Reasoning**: Tavily Search ile en güncel kütüphane dokümantasyonlarına anında erişim.
 - **Screen Awareness**: Ekranda kod veya diyagram varsa, tek tuşla analiz edip çözüm üretir.
 - **Finnish "Puheenkieli" Support**: Günlük dildeki (mä, sä, oot...) konuşmaları mükemmel anlar, profesyonel cevap verir.
@@ -39,7 +39,7 @@
 ### Teknoloji Yığını
 - **Core**: SwiftUI (macOS Native).
 - **Audio**: ScreenCaptureKit, AVFoundation.
-- **Transcription**: Groq Whisper Large V3 Turbo.
+- **Transcription**: OpenAI `gpt-4o-mini-transcribe` tercih edilir; Groq Whisper fallback olarak desteklenir.
 - **Intelligence**: IntelligenceService (Unified Orchestrator).
 - **Caching**: SHA256 Response Caching (0.2sn cevap süresi).
 
@@ -48,7 +48,7 @@
 graph TD
     A[Ses Kaynakları: Mikrofon + Toplantı] --> B(Resampling: 16kHz)
     B --> C{Smart VAD}
-    C -- Konuşma Bitti --> D[Groq Whisper API]
+    C -- Konuşma Bitti --> D["OpenAI Transcribe / Groq Fallback"]
     D --> E{Hallucination Shield}
     E -- Temiz Metin --> F[IntelligenceService]
     F --> G{Cache Check}
@@ -69,8 +69,9 @@ graph TD
 ### İlk Kurulum
 1. DMG içindeki `ZeroLose.app` dosyasını `Applications` klasörüne sürükleyin.
 2. Uygulamayı açın ve **Settings (⚙️)** panelinden API key'lerinizi girin:
-   - `Ollama Cloud API Key` (LLM chat/vision için).
-   - `Groq API Key` (Konuşmayı metne çevirme için).
+   - `OpenAI API Key` (önerilen ana LLM + transcription sağlayıcısı).
+   - `Ollama Cloud API Key` (opsiyonel legacy fallback).
+   - `Groq API Key` (opsiyonel speech-to-text fallback).
    - `Tavily API Key` (İnternet araması için).
 3. **Ghost Mode**'u aktif ederek mülakata başlayın.
 
@@ -102,12 +103,17 @@ Uygulamanın düzgün çalışması için şu izinlerin verilmiş olması kritik
   - `interview_vault.json` -> Interview Vault içerikleri
   - `vectors.db` -> RAG embedding + sohbet/pdfs chunk metadata
   - `Captures/*.jpg` -> Uygulama içi ekran yakalama görselleri
-- API anahtarları dosyaya değil **Keychain**'e yazılır (`ollama_api_key`, `groq_api_key`, `tavily_api_key`).
+- Ayrıca aşağıdaki metinsel bağlamlar `UserDefaults` içinde saklanır:
+  - `userPersonaContext` -> Persona & Context
+  - `activeJobDescription` -> Active Interview Role / job description
+  - `teleprompterText` -> Interview Notes editörü içeriği
+- API anahtarları dosyaya değil **Keychain**'e yazılır (`openai_api_key`, `ollama_api_key`, `groq_api_key`, `tavily_api_key`).
 - Kaynak kod içinde gömülü/varsayılan canlı API anahtarı yoktur.
 
 ### 🌐 Dış Servislere Gönderilen Veri
-- `Groq` (speech-to-text): ses verisi/transkript işlemi.
-- `Ollama Cloud` ve/veya `Ollama local`: prompt ve (kullanıma bağlı) görsel/PDF içeriği.
+- `OpenAI`: canlı chat fallback, teknik reasoning/coding, transcription ve (kullanıma bağlı) görsel içerik.
+- `Groq`: transcription fallback.
+- `Ollama Cloud` ve/veya `Ollama local`: legacy chat fallback ve lokal embedding akışı.
 - `Tavily`: web arama sorgusu.
 - Bu veriler ilgili sağlayıcıların kendi gizlilik/politikalarına tabidir.
 
@@ -115,7 +121,12 @@ Uygulamanın düzgün çalışması için şu izinlerin verilmiş olması kritik
 - Ayarlar ekranı:
   - `Clear All Memory` -> `vectors.db` içindeki memory/embedding verisini temizler.
   - `Clear Saved Keys` -> Keychain'deki API anahtarlarını siler.
-- Tam lokal temizlik için uygulama kapalıyken `~/Library/Application Support/ZeroLose/` klasörünü silin.
+  - `Clear Persona` -> saklanan persona/context metnini siler.
+  - `Clear Role` -> aktif job description metnini siler.
+  - `Clear Interview Notes` -> Teleprompter / interview notes içeriğini siler.
+- Tam lokal temizlik için:
+  - uygulama kapalıyken `~/Library/Application Support/ZeroLose/` klasörünü silin
+  - ardından uygulama açıkken yukarıdaki `Clear Persona`, `Clear Role`, `Clear Interview Notes`, `Clear Saved Keys` aksiyonlarını kullanın
 
 ## ✅ Test Komutları
 - Varsayılan CI/yerel test akışı (unit tests):  

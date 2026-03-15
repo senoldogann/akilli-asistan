@@ -348,7 +348,13 @@ struct TeleprompterView: View {
                 category: "Interview Notes",
                 question: block.question,
                 answer: block.details,
-                keyPoints: block.keyPoints
+                keyPoints: block.keyPoints,
+                aliases: InterviewKnowledgeMatcher.makeInterviewAliases(
+                    question: block.question,
+                    answer: block.details,
+                    keyPoints: block.keyPoints,
+                    category: "Interview Notes"
+                )
             )
         }
 
@@ -435,6 +441,12 @@ struct TeleprompterView: View {
         guard !cleaned.isEmpty else { return [] }
 
         var fragments: [String] = [cleaned]
+        fragments.append(
+            contentsOf: IntelligenceService
+                .detectedQuestionSegments(cleaned)
+                .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "?.! \n\t")) }
+                .filter { $0.count >= 5 }
+        )
 
         let punctuationFragments = cleaned
             .components(separatedBy: CharacterSet(charactersIn: "?.!"))

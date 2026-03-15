@@ -9,11 +9,14 @@ struct Secrets: @unchecked Sendable {
     nonisolated private static let legacyOllamaKeyStorage = "stored_ollama_api_key"
     nonisolated private static let legacyGroqKeyStorage = "stored_groq_api_key"
     nonisolated private static let legacyTavilyKeyStorage = "stored_tavily_api_key"
+    nonisolated private static let legacyOpenAIKeyStorage = "stored_openai_api_key"
     nonisolated private static let migrationFlagStorage = "secrets_keychain_migration_v1"
+    nonisolated private static let openAIPreferenceStorage = "prefer_openai_provider"
 
     nonisolated private static let ollamaAccount = "ollama_api_key"
     nonisolated private static let groqAccount = "groq_api_key"
     nonisolated private static let tavilyAccount = "tavily_api_key"
+    nonisolated private static let openAIAccount = "openai_api_key"
     nonisolated private static let keychainService = Bundle.main.bundleIdentifier ?? "com.zerolose"
 
     // MARK: - API Keys
@@ -51,6 +54,19 @@ struct Secrets: @unchecked Sendable {
         }
     }
 
+    nonisolated(unsafe) static var openAIApiKey: String {
+        get {
+            migrateFromUserDefaultsIfNeeded()
+            return readKeychainValue(account: openAIAccount) ?? ""
+        }
+        set {
+            migrateFromUserDefaultsIfNeeded()
+            let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            UserDefaults.standard.set(trimmed.hasPrefix("sk-") && !trimmed.isEmpty, forKey: openAIPreferenceStorage)
+            writeKeychainValue(trimmed, account: openAIAccount)
+        }
+    }
+
     // MARK: - Validation
 
     nonisolated(unsafe) static var isOllamaKeyValid: Bool {
@@ -68,6 +84,11 @@ struct Secrets: @unchecked Sendable {
         return !value.isEmpty && value.hasPrefix("tvly-")
     }
 
+    nonisolated(unsafe) static var isOpenAIKeyValid: Bool {
+        migrateFromUserDefaultsIfNeeded()
+        return UserDefaults.standard.bool(forKey: openAIPreferenceStorage)
+    }
+
     // MARK: - Reset
 
     /// Compatibility method used by settings screen.
@@ -77,9 +98,11 @@ struct Secrets: @unchecked Sendable {
     }
 
     nonisolated static func clearAll() {
+        UserDefaults.standard.set(false, forKey: openAIPreferenceStorage)
         deleteKeychainValue(account: ollamaAccount)
         deleteKeychainValue(account: groqAccount)
         deleteKeychainValue(account: tavilyAccount)
+        deleteKeychainValue(account: openAIAccount)
     }
 
     // MARK: - Migration
@@ -91,10 +114,17 @@ struct Secrets: @unchecked Sendable {
         migrateLegacyKey(defaults: defaults, legacyKey: legacyOllamaKeyStorage, account: ollamaAccount)
         migrateLegacyKey(defaults: defaults, legacyKey: legacyGroqKeyStorage, account: groqAccount)
         migrateLegacyKey(defaults: defaults, legacyKey: legacyTavilyKeyStorage, account: tavilyAccount)
+        migrateLegacyKey(defaults: defaults, legacyKey: legacyOpenAIKeyStorage, account: openAIAccount)
+        if let legacyOpenAI = defaults.string(forKey: legacyOpenAIKeyStorage)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !legacyOpenAI.isEmpty {
+            defaults.set(legacyOpenAI.hasPrefix("sk-"), forKey: openAIPreferenceStorage)
+        }
 
         defaults.removeObject(forKey: legacyOllamaKeyStorage)
         defaults.removeObject(forKey: legacyGroqKeyStorage)
         defaults.removeObject(forKey: legacyTavilyKeyStorage)
+        defaults.removeObject(forKey: legacyOpenAIKeyStorage)
         defaults.set(true, forKey: migrationFlagStorage)
     }
 

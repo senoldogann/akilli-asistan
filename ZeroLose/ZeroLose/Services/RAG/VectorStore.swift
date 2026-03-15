@@ -3,7 +3,7 @@ import SQLite3
 import os
 
 extension Notification.Name {
-    static let vectorStoreDidChange = Notification.Name("VectorStoreDidChange")
+    nonisolated static let vectorStoreDidChange = Notification.Name("VectorStoreDidChange")
 }
 
 /// Vector database for storing and retrieving embeddings

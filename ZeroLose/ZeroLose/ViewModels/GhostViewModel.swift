@@ -4,14 +4,24 @@ import Cocoa
 import Observation
 import PDFKit
 import NaturalLanguage
+import Combine
 import os
 
 // MARK: - Chat History Models
 struct ChatMessage: Identifiable, Sendable {
+    enum AssistantOrigin: Sendable {
+        case system
+        case cache
+        case groundedFastPath
+        case aiGenerated
+    }
+
     let id: UUID
     let text: String
     let isUser: Bool
     let type: MessageType
+    let assistantOrigin: AssistantOrigin?
+    let relatedQuery: String?
     
     enum MessageType: Sendable {
         case text
@@ -20,13 +30,48 @@ struct ChatMessage: Identifiable, Sendable {
         case thinking
     }
     let imageData: Data?
+
+    var allowsAIRefinement: Bool {
+        guard !isUser else { return false }
+        guard let relatedQuery, !relatedQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return false
+        }
+        guard let assistantOrigin else { return false }
+        switch assistantOrigin {
+        case .cache, .groundedFastPath:
+            return true
+        case .system, .aiGenerated:
+            return false
+        }
+    }
+
+    var assistantBadgeText: String? {
+        switch assistantOrigin {
+        case .cache:
+            return "CACHE"
+        case .groundedFastPath:
+            return "FAST"
+        default:
+            return nil
+        }
+    }
     
-    init(id: UUID = UUID(), text: String, isUser: Bool, type: MessageType, imageData: Data? = nil) {
+    init(
+        id: UUID = UUID(),
+        text: String,
+        isUser: Bool,
+        type: MessageType,
+        imageData: Data? = nil,
+        assistantOrigin: AssistantOrigin? = nil,
+        relatedQuery: String? = nil
+    ) {
         self.id = id
         self.text = text
         self.isUser = isUser
         self.type = type
         self.imageData = imageData
+        self.assistantOrigin = assistantOrigin
+        self.relatedQuery = relatedQuery
     }
 }
 
@@ -37,7 +82,10 @@ enum PendingQuery: Sendable {
         source: String,
         language: String? = nil,
         webSearchMode: WebSearchMode = .automatic,
-        allowAgentActions: Bool = false
+        allowAgentActions: Bool = false,
+        processingMode: IntelligenceService.ProcessingMode = .automatic,
+        showUserMessage: Bool = true,
+        targetAssistantMessageID: UUID? = nil
     )
     case vision(data: Data, source: String, query: String?)
 }
@@ -48,7 +96,7 @@ class GhostViewModel {
     var messages: [ChatMessage] = []
     var isBusy: Bool = false
     var statusMessage: String = "Ready"
-    var currentModelDisplay: String = "GPT-OSS 120B"
+    var currentModelDisplay: String = "Gemini 3 Flash"
     var isClipboardActive: Bool = false
     var isListeningActive: Bool = false
     var attachedFileData: Data? = nil
@@ -82,7 +130,7 @@ class GhostViewModel {
     private var activeTask: Task<Void, Never>? = nil
     
     // Settings
-    var isAutoScreenshotActive: Bool = UserDefaults.standard.bool(forKey: "autoAnalyze")
+    var isAutoScreenshotActive: Bool = GhostViewModel.userDefaultsBool("autoAnalyze", defaultValue: true)
     
     private let chatHistoryService: ChatHistoryService?
     
@@ -103,6 +151,10 @@ class GhostViewModel {
     private let streamingRenderInterval: Duration = .milliseconds(50)
     private var slashFileContextPath: String? = nil
     private var slashFileContextPreview: String = ""
+    private var activeQuerySource: String? = nil
+    private var lastHandledVoiceQuestionSignature: String = ""
+    private var lastHandledVoiceQuestionAt: Date = .distantPast
+    private let voiceQuestionDedupWindow: TimeInterval = 3
     
     init(
         ollamaService: OllamaService,
@@ -142,9 +194,9 @@ class GhostViewModel {
                 let currentLanguage = audioService.lastVoiceLanguage
                 if !currentTranscript.isEmpty && currentTranscript != previousTranscript {
                     previousTranscript = currentTranscript
-                    processQuestion(currentTranscript, source: "Voice", language: currentLanguage)
+                    processVoiceTranscript(currentTranscript, language: currentLanguage)
                 }
-                try? await Task.sleep(for: .milliseconds(500))
+                try? await Task.sleep(for: .milliseconds(120))
             }
         }
         
@@ -167,27 +219,35 @@ class GhostViewModel {
             }
         }
         
-        // Observe screenshots from ScreenshotWatcherService
+        // Observe screenshots from ScreenshotWatcherService immediately when the watcher publishes new image data.
         Task { @MainActor in
             var lastHandledDataHash: Int? = nil
-            while !Task.isCancelled {
-                // Refresh setting from UserDefaults
-                self.isAutoScreenshotActive = UserDefaults.standard.bool(forKey: "autoAnalyze")
-                
-                if let data = screenshotWatcher.lastScreenshotData {
-                    let currentHash = data.hashValue
-                    if currentHash != lastHandledDataHash {
-                        lastHandledDataHash = currentHash
-                        
-                        if isAutoScreenshotActive {
-                            logger.info("📸 New auto-screenshot detected, analyzing...")
-                            analyzeImage(data, source: "Auto Screenshot")
-                        }
-                    }
+            for await data in screenshotWatcher.$lastScreenshotData.values {
+                guard !Task.isCancelled, let data else { continue }
+
+                self.isAutoScreenshotActive = Self.userDefaultsBool("autoAnalyze", defaultValue: true)
+
+                let currentHash = data.hashValue
+                guard currentHash != lastHandledDataHash else { continue }
+                lastHandledDataHash = currentHash
+
+                guard isAutoScreenshotActive else {
+                    logger.info("📸 Screenshot detected but auto-analyze is disabled")
+                    continue
                 }
-                try? await Task.sleep(for: .milliseconds(2000)) // Increase to 2 seconds for less CPU
+
+                logger.info("📸 New auto-screenshot detected, analyzing immediately...")
+                analyzeImage(data, source: "Auto Screenshot")
             }
         }
+    }
+
+    nonisolated static func userDefaultsBool(_ key: String, defaultValue: Bool) -> Bool {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: key) != nil else {
+            return defaultValue
+        }
+        return defaults.bool(forKey: key)
     }
     
     // MARK: - Actions
@@ -219,6 +279,7 @@ class GhostViewModel {
         guard isBusy, let task = activeTask else { return }
         task.cancel()
         activeTask = nil
+        activeQuerySource = nil
         isBusy = false
         statusMessage = "Interrupted"
         
@@ -230,7 +291,9 @@ class GhostViewModel {
                 id: lastMsg.id,
                 text: currentText + " [Stopped by user]",
                 isUser: false,
-                type: .text
+                type: .text,
+                assistantOrigin: lastMsg.assistantOrigin,
+                relatedQuery: lastMsg.relatedQuery
             )
         }
         
@@ -249,13 +312,25 @@ class GhostViewModel {
         logger.info("Processing next query from queue. Remaining: \(self.queryQueue.count)")
         
         switch next {
-        case .text(let query, let source, let language, let webSearchMode, let allowAgentActions):
+        case .text(
+            let query,
+            let source,
+            let language,
+            let webSearchMode,
+            let allowAgentActions,
+            let processingMode,
+            let showUserMessage,
+            let targetAssistantMessageID
+        ):
             processQuestion(
                 query,
                 source: source,
                 language: language,
                 webSearchMode: webSearchMode,
-                allowAgentActions: allowAgentActions
+                allowAgentActions: allowAgentActions,
+                processingMode: processingMode,
+                showUserMessage: showUserMessage,
+                targetAssistantMessageID: targetAssistantMessageID
             )
         case .vision(let data, let source, let query):
             analyzeImage(data, source: source, customQuery: query)
@@ -271,10 +346,39 @@ class GhostViewModel {
             processQuestion(text, source: "Manual Input", webSearchMode: webSearchMode)
         }
     }
+
+    func refineAnswerWithAI(messageID: UUID) {
+        guard let message = messages.first(where: { $0.id == messageID }),
+              message.allowsAIRefinement,
+              let query = message.relatedQuery else {
+            return
+        }
+
+        processQuestion(
+            query,
+            source: "AI Refine",
+            processingMode: .forceAIReasoning,
+            showUserMessage: false,
+            targetAssistantMessageID: messageID
+        )
+    }
     
     func clearAttachment() {
         attachedFileData = nil
         attachedFileName = nil
+    }
+
+    private func assistantOrigin(
+        for origin: IntelligenceService.ResponseOrigin
+    ) -> ChatMessage.AssistantOrigin {
+        switch origin {
+        case .instantCache, .storedCache:
+            return .cache
+        case .groundedFastPath:
+            return .groundedFastPath
+        case .model:
+            return .aiGenerated
+        }
     }
     
     // MARK: - Logic
@@ -299,9 +403,23 @@ class GhostViewModel {
         processQuestion(text, source: "Clipboard", language: detectedLang)
     }
     
-    private func addMessage(_ text: String, isUser: Bool, type: ChatMessage.MessageType? = nil, imageData: Data? = nil) {
+    private func addMessage(
+        _ text: String,
+        isUser: Bool,
+        type: ChatMessage.MessageType? = nil,
+        imageData: Data? = nil,
+        assistantOrigin: ChatMessage.AssistantOrigin? = nil,
+        relatedQuery: String? = nil
+    ) {
         let finalType = type ?? (imageData != nil ? .image : .text)
-        let msg = ChatMessage(text: text, isUser: isUser, type: finalType, imageData: imageData)
+        let msg = ChatMessage(
+            text: text,
+            isUser: isUser,
+            type: finalType,
+            imageData: imageData,
+            assistantOrigin: assistantOrigin,
+            relatedQuery: relatedQuery
+        )
         messages.append(msg)
         trimChatHistoryIfNeeded()
         
@@ -311,6 +429,34 @@ class GhostViewModel {
                  try? await chatHistoryService?.addMessage(text: text, isUser: isUser)
              }
         }
+    }
+
+    private func processVoiceTranscript(_ transcript: String, language: String?) {
+        let detectedQuestions = IntelligenceService.detectedQuestionSegments(transcript)
+        guard !detectedQuestions.isEmpty else {
+            if isListeningActive && !isBusy {
+                statusMessage = "Listening for interviewer questions..."
+            }
+            logger.debug("Ignoring non-question voice transcript: \(transcript.prefix(80), privacy: .public)")
+            return
+        }
+
+        let signature = detectedQuestions
+            .map(InterviewKnowledgeMatcher.normalize)
+            .joined(separator: "|")
+        let now = Date()
+        if signature == lastHandledVoiceQuestionSignature,
+           now.timeIntervalSince(lastHandledVoiceQuestionAt) < voiceQuestionDedupWindow {
+            logger.debug("Skipping duplicate voice question: \(signature, privacy: .public)")
+            return
+        }
+
+        lastHandledVoiceQuestionSignature = signature
+        lastHandledVoiceQuestionAt = now
+
+        let query = detectedQuestions.joined(separator: " ")
+        logger.info("Voice question detected (\(detectedQuestions.count) segment(s)): \(query.prefix(120), privacy: .public)")
+        processQuestion(query, source: "Voice Question", language: language)
     }
 
     private func trimChatHistoryIfNeeded() {
@@ -363,12 +509,14 @@ class GhostViewModel {
         lastRenderedStreamingText = cleaned
         
         if messages.count > messageIndex {
-            let existingId = messages[messageIndex].id
+            let existingMessage = messages[messageIndex]
             messages[messageIndex] = ChatMessage(
-                id: existingId,
+                id: existingMessage.id,
                 text: cleaned,
                 isUser: false,
-                type: cleaned.isEmpty ? .thinking : .text
+                type: cleaned.isEmpty ? .thinking : .text,
+                assistantOrigin: existingMessage.assistantOrigin,
+                relatedQuery: existingMessage.relatedQuery
             )
         }
     }
@@ -394,7 +542,10 @@ class GhostViewModel {
         source: String,
         language: String? = nil,
         webSearchMode: WebSearchMode = .automatic,
-        allowAgentActions: Bool? = nil
+        allowAgentActions: Bool? = nil,
+        processingMode: IntelligenceService.ProcessingMode = .automatic,
+        showUserMessage: Bool = true,
+        targetAssistantMessageID: UUID? = nil
     ) {
         let cleanedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanedText.isEmpty else { return }
@@ -403,16 +554,45 @@ class GhostViewModel {
 
         if isBusy {
             logger.info("AI Busy. Queuing text query: \(cleanedText.prefix(20))...")
-            queryQueue.append(
+            let pendingQuery: PendingQuery =
                 .text(
                     query: cleanedText,
                     source: source,
                     language: language,
                     webSearchMode: webSearchMode,
-                    allowAgentActions: resolvedAllowActions
+                    allowAgentActions: resolvedAllowActions,
+                    processingMode: processingMode,
+                    showUserMessage: showUserMessage,
+                    targetAssistantMessageID: targetAssistantMessageID
                 )
-            )
-            statusMessage = "Queued (\(queryQueue.count) pending)"
+
+            if source == "Voice Question" {
+                queryQueue.removeAll { queued in
+                    if case .text(
+                        query: _,
+                        source: let queuedSource,
+                        language: _,
+                        webSearchMode: _,
+                        allowAgentActions: _,
+                        processingMode: _,
+                        showUserMessage: _,
+                        targetAssistantMessageID: _
+                    ) = queued {
+                        return queuedSource == "Voice Question"
+                    }
+                    return false
+                }
+                queryQueue.insert(pendingQuery, at: 0)
+                statusMessage = "Prioritizing latest voice question..."
+
+                if activeQuerySource == "Voice Question" {
+                    logger.info("Interrupting in-flight voice reply for latest interviewer question")
+                    activeTask?.cancel()
+                }
+            } else {
+                queryQueue.append(pendingQuery)
+                statusMessage = "Queued (\(queryQueue.count) pending)"
+            }
             return
         }
         
@@ -422,25 +602,43 @@ class GhostViewModel {
         }
         
         isBusy = true
+        activeQuerySource = source
         statusMessage = "Thinking (\(source))..."
-        
-        addMessage(text, isUser: true)
-        
-        // Placeholder
-        addMessage("Thinking...", isUser: false, type: .thinking)
-        let index = messages.count - 1
+
+        if showUserMessage {
+            addMessage(text, isUser: true)
+        }
+
+        let index: Int
+        if let targetAssistantMessageID,
+           let existingIndex = messages.firstIndex(where: { $0.id == targetAssistantMessageID }) {
+            messages[existingIndex] = ChatMessage(
+                id: targetAssistantMessageID,
+                text: "Thinking...",
+                isUser: false,
+                type: .thinking,
+                relatedQuery: cleanedText
+            )
+            index = existingIndex
+        } else {
+            addMessage("Thinking...", isUser: false, type: .thinking, relatedQuery: cleanedText)
+            index = messages.count - 1
+        }
         beginStreamingRender(at: index)
         
-        activeTask = Task {
+        activeTask = Task { @MainActor in
             do {
-                let fullResponse = try await intelligenceService.process(
+                let processedResponse = try await intelligenceService.process(
                     query: text,
                     imageData: nil,
                     webSearchMode: webSearchMode,
                     allowAgentActions: resolvedAllowActions,
+                    processingMode: processingMode,
                     detectedLanguage: language,
                     onStatusUpdate: { [weak self] status in
-                        self?.statusMessage = status
+                        Task { @MainActor in
+                            self?.statusMessage = status
+                        }
                     },
                     onPartialResponse: { [weak self] partial in
                         guard let self = self else { return }
@@ -455,16 +653,26 @@ class GhostViewModel {
                 // Handle actions only for explicit action commands.
                 let cleanedText: String
                 if resolvedAllowActions {
-                    cleanedText = await self.handleActions(in: fullResponse)
+                    cleanedText = await self.handleActions(in: processedResponse.text)
                 } else {
-                    cleanedText = self.sanitizeNonActionResponse(fullResponse)
+                    cleanedText = self.sanitizeNonActionResponse(processedResponse.text)
                 }
                 if self.messages.count > index {
+                    let displayText = self.preferredDisplayedAssistantText(
+                        streamedText: self.messages[index].text,
+                        finalizedText: cleanedText
+                    )
+                    let assistantOrigin = self.assistantOrigin(for: processedResponse.origin)
+                    let relatedQuery = processedResponse.origin.allowsAIRefinement
+                        ? text.trimmingCharacters(in: .whitespacesAndNewlines)
+                        : nil
                     self.messages[index] = ChatMessage(
                         id: self.messages[index].id,
-                        text: cleanedText,
+                        text: displayText,
                         isUser: false,
-                        type: .text
+                        type: .text,
+                        assistantOrigin: assistantOrigin,
+                        relatedQuery: relatedQuery
                     )
                 }
                 
@@ -483,13 +691,15 @@ class GhostViewModel {
                         id: self.messages[index].id,
                         text: "Error: \(error.localizedDescription)",
                         isUser: false,
-                        type: .error
+                        type: .error,
+                        relatedQuery: cleanedText
                     )
                 }
                 statusMessage = "Error"
             }
             resetStreamingRenderState()
             isBusy = false
+            activeQuerySource = nil
             activeTask = nil
             processNextInQueue()
         }
@@ -527,6 +737,39 @@ class GhostViewModel {
         }
         
         return trimmed
+    }
+
+    private func preferredDisplayedAssistantText(streamedText: String, finalizedText: String) -> String {
+        let streamed = streamedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let finalized = finalizedText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !finalized.isEmpty else { return streamed }
+        guard !streamed.isEmpty, streamed != "Thinking..." else { return finalized }
+
+        let normalizedStreamed = normalizeDisplayComparisonText(streamed)
+        let normalizedFinalized = normalizeDisplayComparisonText(finalized)
+
+        if normalizedStreamed == normalizedFinalized {
+            return finalized
+        }
+
+        if normalizedFinalized.hasPrefix(normalizedStreamed) || normalizedStreamed.hasPrefix(normalizedFinalized) {
+            let delta = abs(finalized.count - streamed.count)
+            if delta <= 36 {
+                return finalized
+            }
+        }
+
+        // Preserve the streamed wording if the finalized version drifted too far.
+        return streamed
+    }
+
+    private func normalizeDisplayComparisonText(_ text: String) -> String {
+        text
+            .lowercased()
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
     
     private struct SlashCommandPlan {
@@ -576,7 +819,7 @@ class GhostViewModel {
         addMessage("Running command...", isUser: false, type: .thinking)
         let index = messages.count - 1
         
-        activeTask = Task {
+        activeTask = Task { @MainActor in
             defer {
                 isBusy = false
                 activeTask = nil
@@ -631,7 +874,9 @@ class GhostViewModel {
             id: messages[index].id,
             text: text,
             isUser: false,
-            type: type
+            type: type,
+            assistantOrigin: messages[index].assistantOrigin,
+            relatedQuery: messages[index].relatedQuery
         )
     }
     
@@ -1353,15 +1598,17 @@ class GhostViewModel {
         let index = messages.count - 1
         beginStreamingRender(at: index)
         
-        activeTask = Task {
+        activeTask = Task { @MainActor in
             do {
                 let visionQuery = customQuery ?? "Analyze this image. Identify technical content and provide solutions."
                 
-                let fullResponse = try await intelligenceService.process(
+                let processedResponse = try await intelligenceService.process(
                     query: visionQuery,
                     imageData: data,
                     onStatusUpdate: { [weak self] status in
-                        self?.statusMessage = status
+                        Task { @MainActor in
+                            self?.statusMessage = status
+                        }
                     },
                     onPartialResponse: { [weak self] partial in
                         guard let self = self else { return }
@@ -1374,7 +1621,7 @@ class GhostViewModel {
                 flushStreamingRender()
                 
                 // Handle Actions on RAW response
-                let cleanedText = await self.handleActions(in: fullResponse)
+                let cleanedText = await self.handleActions(in: processedResponse.text)
                 if self.messages.count > index {
                     self.messages[index] = ChatMessage(
                         id: self.messages[index].id,
@@ -1470,16 +1717,22 @@ class GhostViewModel {
     // MARK: - Interview Prep
     @discardableResult
     func warmUpInterviewContext() -> String {
+        let activeRoleContext = ActiveRoleProfileService.warmUpContext(for: ActiveRoleProfileService.currentProfile())
         let baseContext = """
         [INTERVIEW MODE ACTIVATED]
-        Target Company: Smindle (SaaS, Sales Industry, Rapid Growth).
-        Role: Senior Frontend Developer (5+ years exp, Master-level React).
-        Identity: Senol Dogan (Senior Professional, NOT a student).
-        Language: Professional Finglish (Finnish with English tech terms).
+        \(activeRoleContext)
+
+        Identity Rules:
+        - Use only the loaded Persona & Context, active role, interview notes, and vault entries as facts about the candidate.
+        - If a personal detail is missing, do not invent a name, background, location, or years of experience.
+
+        Language Rules:
+        - Match the interviewer’s language exactly.
+        - For Finnish, use professional spoken Finnish with natural tech terms.
         
         RESPONSE RULES:
         - Keep answers concise, interview-ready and factual.
-        - Use Finnish (Puheenkieli) unless the question explicitly asks another language.
+        - Prefer active role grounding for company, stack, and expectation-specific questions.
         - Use memory only when directly relevant to the question.
         """
         
@@ -1487,11 +1740,13 @@ class GhostViewModel {
         let allItems: [(category: String, item: VaultInterviewItem)] = categories.flatMap { category in
             category.items.map { (category.title, $0) }
         }
+        let rawNotes = UserDefaults.standard.string(forKey: "teleprompterText") ?? ""
+        let noteCacheEntries = IntelligenceService.interviewNoteCacheEntries(from: rawNotes)
         let totalItems = allItems.count
         
-        guard totalItems > 0 else {
+        guard totalItems > 0 || !noteCacheEntries.isEmpty else {
             intelligenceService.setTransientPersonaContext(baseContext)
-            let message = "⚠️ Vault boş. Sadece temel interview context yüklendi."
+            let message = "⚠️ Vault ve Interview Notes boş. Sadece temel interview context yüklendi."
             statusMessage = message
             resetWarmUpStatus(expectedMessage: message)
             return message
@@ -1501,21 +1756,34 @@ class GhostViewModel {
         responseCacheService.clearCache()
 
         // 2) Load ALL vault entries into fast response cache for instant interview replies.
+        let vaultCacheEntries = allItems.map { entry in
+            ResponseCacheService.InterviewCacheEntry(
+                question: entry.item.question,
+                answer: entry.item.answerFinnish,
+                category: entry.category,
+                translation: entry.item.translationTr,
+                keyPoints: entry.item.keyPoints
+            )
+        }
+        _ = responseCacheService.primeInterviewVault(entries: vaultCacheEntries)
+        _ = responseCacheService.primeInterviewVault(entries: noteCacheEntries)
         let cacheEntries = allItems.map { entry in
             (question: entry.item.question, answer: entry.item.answerFinnish, category: entry.category)
-        }
-        _ = responseCacheService.primeInterviewVault(entries: cacheEntries)
+        } + noteCacheEntries
         let coverage = responseCacheService.interviewVaultCoverage(entries: cacheEntries)
 
         // 3) Keep transient persona compact; avoid injecting full vault answers into system prompt.
         let categoryTitles = categories.map(\.title).joined(separator: ", ")
+        let notesSummary = noteCacheEntries.isEmpty ? "No interview notes cached" : "Interview Notes cached: \(noteCacheEntries.count)"
         let warmupContext = """
         [INTERVIEW WARM-UP STATUS]
         Cache coverage: \(coverage.cached)/\(coverage.total)
         Categories: \(categoryTitles)
+        \(notesSummary)
 
         Rules:
         - Use interview vault as the primary source.
+        - Use Interview Notes as a secondary direct source when they contain a strong matching answer.
         - Choose a single best-matching vault answer; do not blend unrelated entries.
         - Keep answers concise and interview-ready.
         - Never mention private contact details or salary unless explicitly asked.

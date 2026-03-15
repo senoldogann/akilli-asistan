@@ -16,9 +16,12 @@ struct SettingsView: View {
     @AppStorage("stealthModeEnabled") private var stealthMode: Bool = false
     @AppStorage("audioLanguage") private var audioLanguage: String = "en"
     @AppStorage("userPersonaContext") private var userPersonaContext: String = ""
+    @AppStorage("activeJobDescription") private var activeJobDescription: String = ""
+    @AppStorage("teleprompterText") private var teleprompterText: String = ""
     @AppStorage("selectedThemeName") private var selectedTheme: String = "Red"
     
     // API Keys - Settings'ten yönetim için
+    @State private var openAIKey: String = ""
     @State private var ollamaKey: String = ""
     @State private var groqKey: String = ""
     @State private var tavilyKey: String = ""
@@ -51,6 +54,8 @@ struct SettingsView: View {
                     appearanceSection
                     typographySection
                     personaSection
+                    activeRoleSection
+                    storedContextSection
                     memorySection
                     windowSection
                     featuresSection
@@ -176,6 +181,68 @@ struct SettingsView: View {
             }
         }
     }
+
+    private var activeRoleSection: some View {
+        let preview = ActiveRoleProfileService.previewSummary(for: activeJobDescription)
+
+        return SettingsSection(title: "Active Interview Role", icon: .book) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("Paste the current job description here. We will use it as active company/role grounding during interview answers.")
+                        .font(.system(size: 11))
+                        .foregroundColor(.white.opacity(0.5))
+                        .lineLimit(2)
+
+                    Spacer()
+
+                    Button(action: importActiveRoleFile) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "doc.text.fill")
+                            Text("Import JD")
+                        }
+                        .font(.system(size: 10, weight: .medium))
+                        .padding(.vertical, 4)
+                        .padding(.horizontal, 8)
+                        .background(Color.white.opacity(0.1))
+                        .cornerRadius(6)
+                    }
+                    .buttonStyle(.interactive)
+                    .pointerCursor()
+                }
+
+                TextEditor(text: $activeJobDescription)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(Color.white.opacity(0.9))
+                    .scrollContentBackground(.hidden)
+                    .background(Color.black.opacity(0.2))
+                    .cornerRadius(8)
+                    .frame(height: 110)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                    )
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Parsed Role Pack")
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .foregroundColor(.orange.opacity(0.9))
+
+                    Text(preview)
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.72))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.white.opacity(0.04))
+                        .cornerRadius(8)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(Color.orange.opacity(0.12), lineWidth: 1)
+                        )
+                }
+            }
+        }
+    }
     
     // MARK: - Memory Section
     private var memorySection: some View {
@@ -240,6 +307,59 @@ struct SettingsView: View {
                 .pointerCursor()
             }
         }
+    }
+
+    private var storedContextSection: some View {
+        SettingsSection(title: "Stored Context", icon: .brain) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Persona, active role text, and interview notes are stored locally and survive restarts.")
+                    .font(.system(size: 11))
+                    .foregroundColor(.white.opacity(0.5))
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 10) {
+                    contextClearButton(
+                        title: "Clear Persona",
+                        isEnabled: !userPersonaContext.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                        action: { userPersonaContext = "" }
+                    )
+                    contextClearButton(
+                        title: "Clear Role",
+                        isEnabled: !activeJobDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                        action: { activeJobDescription = "" }
+                    )
+                }
+
+                contextClearButton(
+                    title: "Clear Interview Notes",
+                    isEnabled: !teleprompterText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                    action: { teleprompterText = "" }
+                )
+            }
+        }
+    }
+
+    private func contextClearButton(
+        title: String,
+        isEnabled: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(isEnabled ? .orange.opacity(0.9) : .white.opacity(0.35))
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity)
+                .background(isEnabled ? Color.orange.opacity(0.08) : Color.white.opacity(0.04))
+                .cornerRadius(8)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(isEnabled ? Color.orange.opacity(0.28) : Color.white.opacity(0.08), lineWidth: 1)
+                )
+        }
+        .disabled(!isEnabled)
+        .buttonStyle(.interactive)
+        .pointerCursor()
     }
     
     private func clearMemory() {
@@ -471,11 +591,38 @@ struct SettingsView: View {
                 }
                 
                 Divider().background(Color.white.opacity(0.1))
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("OpenAI Key (Preferred)")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(.white.opacity(0.8))
+                        Spacer()
+                        if Secrets.isOpenAIKeyValid {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundColor(.green)
+                                .font(.system(size: 12))
+                        }
+                    }
+                    Text("Primary provider for live technical interview fallback and low-latency coding answers.")
+                        .font(.system(size: 10))
+                        .foregroundColor(.white.opacity(0.45))
+
+                    if showKeys {
+                        TextField("OpenAI API Key", text: $openAIKey)
+                            .textFieldStyle(.roundedBorder)
+                            .onChange(of: openAIKey) { Secrets.openAIApiKey = openAIKey }
+                    } else {
+                        SecureField("OpenAI API Key", text: $openAIKey)
+                            .textFieldStyle(.roundedBorder)
+                            .onChange(of: openAIKey) { Secrets.openAIApiKey = openAIKey }
+                    }
+                }
                 
                 // Ollama Key
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
-                        Text("Ollama Key")
+                        Text("Ollama Cloud Key (Fallback)")
                             .font(.system(size: 12, weight: .medium))
                             .foregroundColor(.white.opacity(0.8))
                         Spacer()
@@ -485,6 +632,9 @@ struct SettingsView: View {
                                 .font(.system(size: 12))
                         }
                     }
+                    Text("Optional fallback if OpenAI key is not available. Local embeddings continue to work without this key.")
+                        .font(.system(size: 10))
+                        .foregroundColor(.white.opacity(0.45))
                     if showKeys {
                         TextField("Ollama API Key", text: $ollamaKey)
                             .textFieldStyle(.roundedBorder)
@@ -570,6 +720,7 @@ struct SettingsView: View {
     }
     
     private func loadAPIKeys() {
+        openAIKey = Secrets.openAIApiKey
         ollamaKey = Secrets.ollamaApiKey
         groqKey = Secrets.groqApiKey
         tavilyKey = Secrets.tavilyApiKey
@@ -642,28 +793,48 @@ struct SettingsView: View {
 
     // MARK: - File Import Logic
     private func importPersonaFile() {
+        importTextFiles(
+            message: "Select CVs or Documents to import context",
+            prompt: "Import"
+        ) { importedText, fileName in
+            if !userPersonaContext.isEmpty {
+                userPersonaContext += "\n\n"
+            }
+            userPersonaContext += "--- Imported Context (\(fileName)) ---\n"
+            userPersonaContext += importedText
+        }
+    }
+
+    private func importActiveRoleFile() {
+        importTextFiles(
+            message: "Select a job description PDF or text file",
+            prompt: "Import Job Description"
+        ) { importedText, fileName in
+            logger.info("Imported active role file: \(fileName, privacy: .public)")
+            activeJobDescription = importedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+    }
+
+    private func importTextFiles(
+        message: String,
+        prompt: String,
+        append: (String, String) -> Void
+    ) {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.allowedContentTypes = [.pdf, .plainText, .text]
-        panel.message = "Select CVs or Documents to import context"
-        panel.prompt = "Import"
+        panel.message = message
+        panel.prompt = prompt
         
         if panel.runModal() == .OK {
             for url in panel.urls {
                 if let text = extractText(from: url) {
                     let cleanText = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                    
-                    if !userPersonaContext.isEmpty {
-                        userPersonaContext += "\n\n"
-                    }
-                    
-                    userPersonaContext += "--- Imported Context (\(url.lastPathComponent)) ---\n"
-                    
                     if cleanText.isEmpty {
-                        userPersonaContext += "[WARNING: No text extracted. This PDF might be a scanned image. Please convert to text/OCR first.]\n"
+                        append("[WARNING: No text extracted. This PDF might be a scanned image. Please convert to text/OCR first.]\n", url.lastPathComponent)
                     } else {
-                        userPersonaContext += cleanText
+                        append(cleanText, url.lastPathComponent)
                     }
                 }
             }

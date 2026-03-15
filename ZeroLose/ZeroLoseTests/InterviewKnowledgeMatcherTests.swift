@@ -53,8 +53,11 @@ final class InterviewKnowledgeMatcherTests: XCTestCase {
             minimumScore: 0.10
         )
 
-        XCTAssertEqual(matches.count, 1)
+        XCTAssertGreaterThanOrEqual(matches.count, 1)
         XCTAssertEqual(matches.first?.record.category, "Frontend")
+        if matches.count > 1 {
+            XCTAssertGreaterThan(matches[0].score, matches[1].score)
+        }
     }
 
     func testTopMatchesHandlesQuestionVariants() {
@@ -219,5 +222,207 @@ final class InterviewKnowledgeMatcherTests: XCTestCase {
 
         XCTAssertFalse(matches.isEmpty)
         XCTAssertEqual(matches.first?.record.category, "Compensation")
+    }
+
+    func testTopMatchesUsesIntentAliasesForSelfIntroParaphrase() {
+        let records = [
+            InterviewKnowledgeRecord(
+                category: "Intro",
+                question: "Kerrotko vähän itsestäsi?",
+                answer: "Olen full stack kehittäjä, jolla on yli seitsemän vuoden kokemus.",
+                keyPoints: ["itsestäsi", "kokemus"],
+                aliases: InterviewKnowledgeMatcher.makeInterviewAliases(
+                    question: "Kerrotko vähän itsestäsi?",
+                    answer: "Olen full stack kehittäjä, jolla on yli seitsemän vuoden kokemus.",
+                    translation: "Biraz kendinden bahseder misin?",
+                    keyPoints: ["itsestäsi", "kokemus"],
+                    category: "Intro"
+                )
+            ),
+            InterviewKnowledgeRecord(
+                category: "Compensation",
+                question: "Millainen palkkatoive sinulla on?",
+                answer: "Palkkatoiveeni on noin 5 600-6 200 euroa kuukaudessa.",
+                keyPoints: ["palkka"],
+                aliases: InterviewKnowledgeMatcher.makeInterviewAliases(
+                    question: "Millainen palkkatoive sinulla on?",
+                    answer: "Palkkatoiveeni on noin 5 600-6 200 euroa kuukaudessa.",
+                    keyPoints: ["palkka"],
+                    category: "Compensation"
+                )
+            )
+        ]
+
+        let matches = InterviewKnowledgeMatcher.topMatches(
+            query: "Kuka sinä olet?",
+            records: records,
+            maxResults: 2,
+            minimumScore: 0.10
+        )
+
+        XCTAssertFalse(matches.isEmpty)
+        XCTAssertEqual(matches.first?.record.category, "Intro")
+        XCTAssertGreaterThan(matches.first?.score ?? 0, 0.22)
+    }
+
+    func testTopMatchesUsesTranslationAndIntentForCompanyMotivationVariant() {
+        let records = [
+            InterviewKnowledgeRecord(
+                category: "Motivation",
+                question: "Miksi hait juuri Loihteelle?",
+                answer: "Loihteessa minua kiinnostaa monipuolinen asiakasympäristö ja pitkäjänteinen kehitys.",
+                keyPoints: ["loihde", "motivaatio"],
+                aliases: InterviewKnowledgeMatcher.makeInterviewAliases(
+                    question: "Miksi hait juuri Loihteelle?",
+                    answer: "Loihteessa minua kiinnostaa monipuolinen asiakasympäristö ja pitkäjänteinen kehitys.",
+                    translation: "Neden özellikle Loihde'ye başvurdun?",
+                    keyPoints: ["loihde", "motivaatio"],
+                    category: "Motivation"
+                )
+            ),
+            InterviewKnowledgeRecord(
+                category: "Career Change",
+                question: "Miksi etsit uutta työpaikkaa juuri nyt?",
+                answer: "Etsin vakaampaa roolia ja vahvaa tiimiä.",
+                keyPoints: ["uusi työ"],
+                aliases: InterviewKnowledgeMatcher.makeInterviewAliases(
+                    question: "Miksi etsit uutta työpaikkaa juuri nyt?",
+                    answer: "Etsin vakaampaa roolia ja vahvaa tiimiä.",
+                    translation: "Neden şu an yeni iş arıyorsun?",
+                    keyPoints: ["uusi työ"],
+                    category: "Career Change"
+                )
+            )
+        ]
+
+        let matches = InterviewKnowledgeMatcher.topMatches(
+            query: "Neden Loihde'ye başvurdun?",
+            records: records,
+            maxResults: 2,
+            minimumScore: 0.10
+        )
+
+        XCTAssertFalse(matches.isEmpty)
+        XCTAssertEqual(matches.first?.record.category, "Motivation")
+        XCTAssertGreaterThan(matches.first?.score ?? 0, 0.24)
+    }
+
+    func testTopMatchesHandlesEnglishAvailabilityVariant() {
+        let records = [
+            InterviewKnowledgeRecord(
+                category: "Availability",
+                question: "Milloin voisit aloittaa?",
+                answer: "Voin aloittaa melko joustavasti hyvällä aikataululla.",
+                keyPoints: ["aloitus", "joustava"],
+                aliases: InterviewKnowledgeMatcher.makeInterviewAliases(
+                    question: "Milloin voisit aloittaa?",
+                    answer: "Voin aloittaa melko joustavasti hyvällä aikataululla.",
+                    keyPoints: ["aloitus", "joustava"],
+                    category: "Availability"
+                )
+            ),
+            InterviewKnowledgeRecord(
+                category: "Work Mode",
+                question: "Haluatko työskennellä hybridinä vai etänä?",
+                answer: "Hybridimalli sopii minulle hyvin.",
+                keyPoints: ["hybridi"],
+                aliases: InterviewKnowledgeMatcher.makeInterviewAliases(
+                    question: "Haluatko työskennellä hybridinä vai etänä?",
+                    answer: "Hybridimalli sopii minulle hyvin.",
+                    keyPoints: ["hybridi"],
+                    category: "Work Mode"
+                )
+            )
+        ]
+
+        let matches = InterviewKnowledgeMatcher.topMatches(
+            query: "When could you start?",
+            records: records,
+            maxResults: 2,
+            minimumScore: 0.10
+        )
+
+        XCTAssertFalse(matches.isEmpty)
+        XCTAssertEqual(matches.first?.record.category, "Availability")
+    }
+
+    func testTopMatchesSeparatesDisagreementFromWorkStyleIntent() {
+        let records = [
+            InterviewKnowledgeRecord(
+                category: "Disagreement",
+                question: "Miten toimit, jos sinulla ja tiimikaverillasi on eriävä näkemys teknisestä ratkaisusta?",
+                answer: "Keskustelen rauhallisesti vaihtoehtojen hyödyistä ja riskeistä.",
+                keyPoints: ["eriävä näkemys", "ratkaisu"],
+                aliases: InterviewKnowledgeMatcher.makeInterviewAliases(
+                    question: "Miten toimit, jos sinulla ja tiimikaverillasi on eriävä näkemys teknisestä ratkaisusta?",
+                    answer: "Keskustelen rauhallisesti vaihtoehtojen hyödyistä ja riskeistä.",
+                    keyPoints: ["eriävä näkemys", "ratkaisu"],
+                    category: "Disagreement"
+                )
+            ),
+            InterviewKnowledgeRecord(
+                category: "Work Style",
+                question: "Miten kuvailisit omaa työskentelytapaa?",
+                answer: "Olen vastuullinen ja itsenäinen kehittäjä.",
+                keyPoints: ["työskentelytapa"],
+                aliases: InterviewKnowledgeMatcher.makeInterviewAliases(
+                    question: "Miten kuvailisit omaa työskentelytapaa?",
+                    answer: "Olen vastuullinen ja itsenäinen kehittäjä.",
+                    keyPoints: ["työskentelytapa"],
+                    category: "Work Style"
+                )
+            )
+        ]
+
+        let matches = InterviewKnowledgeMatcher.topMatches(
+            query: "Mitä teet, jos olet eri mieltä työkaverin kanssa?",
+            records: records,
+            maxResults: 2,
+            minimumScore: 0.10
+        )
+
+        XCTAssertFalse(matches.isEmpty)
+        XCTAssertEqual(matches.first?.record.category, "Disagreement")
+        XCTAssertNotEqual(matches.first?.record.category, "Work Style")
+    }
+
+    func testTopMatchesPreferConflictHandlingOverGenericClientWork() {
+        let records = [
+            InterviewKnowledgeRecord(
+                category: "Client Work",
+                question: "Oletko tehnyt asiakastyötä tai ollut suoraan asiakkaiden kanssa tekemisissä?",
+                answer: "Kyllä, olen ollut suoraan tekemisissä asiakkaiden kanssa projekteissa.",
+                keyPoints: ["asiakastyö", "liiketoiminta"],
+                aliases: InterviewKnowledgeMatcher.makeInterviewAliases(
+                    question: "Oletko tehnyt asiakastyötä tai ollut suoraan asiakkaiden kanssa tekemisissä?",
+                    answer: "Kyllä, olen ollut suoraan tekemisissä asiakkaiden kanssa projekteissa.",
+                    keyPoints: ["asiakastyö", "liiketoiminta"],
+                    category: "Client Work"
+                )
+            ),
+            InterviewKnowledgeRecord(
+                category: "Conflict Handling",
+                question: "Miten toimit, jos asiakkaan kanssa tulee ongelmatilanne tai jokin asia ei mene odotetusti?",
+                answer: "Selvitän tilanteen rauhallisesti, käyn faktat läpi ja ehdotan selkeitä seuraavia askelia.",
+                keyPoints: ["ongelmatilanne", "asiakas", "rauhallinen"],
+                aliases: InterviewKnowledgeMatcher.makeInterviewAliases(
+                    question: "Miten toimit, jos asiakkaan kanssa tulee ongelmatilanne tai jokin asia ei mene odotetusti?",
+                    answer: "Selvitän tilanteen rauhallisesti, käyn faktat läpi ja ehdotan selkeitä seuraavia askelia.",
+                    keyPoints: ["ongelmatilanne", "asiakas", "rauhallinen"],
+                    category: "Conflict Handling"
+                )
+            )
+        ]
+
+        let matches = InterviewKnowledgeMatcher.topMatches(
+            query: "Mitä teet, kun sinulla on ongelmia työtovereiden tai asiakkaiden kanssa?",
+            records: records,
+            maxResults: 2,
+            minimumScore: 0.10
+        )
+
+        XCTAssertFalse(matches.isEmpty)
+        XCTAssertEqual(matches.first?.record.category, "Conflict Handling")
+        XCTAssertNotEqual(matches.first?.record.category, "Client Work")
     }
 }

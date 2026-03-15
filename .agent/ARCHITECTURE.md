@@ -2,6 +2,7 @@
 
 ## Runtime Layers
 - `AGENTS.md`: shared cross-provider policy
+- `CODEBASE.md`: top-level repository map used by verification scripts and maintainers
 - `.agent/`: Antigravity-native runtime assets
 - Provider adapters: `.codex/`, `.claude/`, `.opencode/`
 

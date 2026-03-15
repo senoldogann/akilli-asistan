@@ -28,8 +28,8 @@ class AudioService: NSObject, ObservableObject {
     
     // VAD Configuration (Sensitivity and natural pauses optimization)
     private let silenceThreshold: Float = 0.05
-    private let maxSilenceDuration: Double = 1.8 // Optimize edildi: 1.8s (Daha dengeli flush)
-    private let minSpeechDuration: Double = 1.0  
+    private let maxSilenceDuration: Double = 0.65 // Faster flush for live interview turn-taking
+    private let minSpeechDuration: Double = 0.45
     private let minRMSForTranscription: Float = 0.03  
     
     // Hallucination Blocklist

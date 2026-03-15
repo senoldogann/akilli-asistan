@@ -1,7 +1,7 @@
 import Foundation
 import SwiftUI
 
-struct MessageContent: View {
+struct MessageContent: View, Equatable {
     let text: String
     let isUser: Bool
     
@@ -19,7 +19,8 @@ struct MessageContent: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            ForEach(MessageParser.parse(text, forUserMessage: isUser), id: \.id) { segment in
+            let segments = MessageParser.parse(text, forUserMessage: isUser)
+            ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
                 switch segment.type {
                 case .heading(let level, let content):
                     Text(verbatim: content)
@@ -75,6 +76,10 @@ struct MessageContent: View {
             }
         }
         .textSelection(.enabled)
+    }
+
+    static func == (lhs: MessageContent, rhs: MessageContent) -> Bool {
+        lhs.text == rhs.text && lhs.isUser == rhs.isUser
     }
     
     private func headingFont(_ level: Int) -> Font {
@@ -220,8 +225,7 @@ struct MarkdownTableView: View {
 
 // MARK: - Parser Logic
 
-struct MessageSegment: Identifiable {
-    let id = UUID()
+struct MessageSegment {
     let type: SegmentType
     
     enum SegmentType {
@@ -231,6 +235,90 @@ struct MessageSegment: Identifiable {
         case code(language: String, code: String)
         case searchIndicator(String)
         case slashCommand(String)
+    }
+}
+
+struct MessageCopyButton: View {
+    let text: String
+    @State private var isCopied = false
+
+    var body: some View {
+        Button(action: copy) {
+            HStack(spacing: 4) {
+                Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
+                Text(isCopied ? "Copied" : "Copy")
+            }
+            .font(.system(size: 10, weight: .semibold, design: .rounded))
+            .foregroundColor(.white.opacity(0.92))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Color.white.opacity(0.08))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(Color.white.opacity(0.12), lineWidth: 0.5)
+            )
+            .cornerRadius(6)
+        }
+        .buttonStyle(.interactive)
+        .pointerCursor()
+        .help("Copy message")
+    }
+
+    private func copy() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        withAnimation(.easeInOut(duration: 0.12)) {
+            isCopied = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            isCopied = false
+        }
+    }
+}
+
+struct MessageBadge: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 9, weight: .bold, design: .rounded))
+            .foregroundColor(.brandPrimary)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 4)
+            .background(Color.brandPrimary.opacity(0.12))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(Color.brandPrimary.opacity(0.25), lineWidth: 0.5)
+            )
+            .cornerRadius(6)
+    }
+}
+
+struct MessageAIButton: View {
+    let disabled: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Image(systemName: "sparkles")
+                Text("AI")
+            }
+            .font(.system(size: 10, weight: .semibold, design: .rounded))
+            .foregroundColor(disabled ? .white.opacity(0.45) : .white.opacity(0.92))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Color.brandPrimary.opacity(disabled ? 0.08 : 0.18))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(Color.brandPrimary.opacity(disabled ? 0.16 : 0.3), lineWidth: 0.5)
+            )
+            .cornerRadius(6)
+        }
+        .buttonStyle(.interactive)
+        .pointerCursor()
+        .disabled(disabled)
+        .help("Re-answer this question with AI reasoning")
     }
 }
 

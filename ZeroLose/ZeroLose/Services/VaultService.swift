@@ -2,7 +2,7 @@ import Foundation
 import Combine
 import os
 
-struct VaultInterviewItem: Identifiable, Codable {
+struct VaultInterviewItem: Identifiable, Codable, Sendable {
     var id: UUID = UUID()
     var question: String
     var answerFinnish: String
@@ -10,11 +10,42 @@ struct VaultInterviewItem: Identifiable, Codable {
     var keyPoints: [String]
 }
 
-struct VaultInterviewCategory: Identifiable, Codable {
+struct VaultInterviewCategory: Identifiable, Codable, Sendable {
     var id: UUID = UUID()
     var title: String
     var icon: String
     var items: [VaultInterviewItem]
+}
+
+struct VaultExportSnapshot: Codable, Sendable {
+    let exportedAt: Date
+    let totalCategories: Int
+    let totalQuestions: Int
+    let categories: [VaultInterviewCategory]
+}
+
+enum VaultImportStrategy: Sendable {
+    case replaceExisting
+    case mergeExisting
+}
+
+struct VaultImportSummary: Sendable {
+    let totalCategories: Int
+    let totalQuestions: Int
+}
+
+enum VaultImportError: LocalizedError {
+    case unsupportedFormat
+    case emptyVault
+
+    var errorDescription: String? {
+        switch self {
+        case .unsupportedFormat:
+            return "The selected file is not a supported Interview Vault JSON export."
+        case .emptyVault:
+            return "The selected file does not contain any valid vault questions."
+        }
+    }
 }
 
 class VaultService: ObservableObject {
@@ -24,8 +55,9 @@ class VaultService: ObservableObject {
     private let logger = Logger(subsystem: "com.senoldogan.ZeroLose", category: "VaultService")
     
     private var fileURL: URL {
-        let paths = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
-        let appSupportDir = paths[0].appendingPathComponent("ZeroLose", isDirectory: true)
+        let appSupportBase = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        let appSupportDir = appSupportBase.appendingPathComponent("ZeroLose", isDirectory: true)
         
         // Ensure directory exists
         if !FileManager.default.fileExists(atPath: appSupportDir.path) {
@@ -65,22 +97,8 @@ class VaultService: ObservableObject {
     }
     
     private func loadDefaultData() {
-        // Fallback to original hardcoded data
-        categories = [
-            VaultInterviewCategory(
-                title: "Intro & Experience",
-                icon: "person.fill",
-                items: [
-                    VaultInterviewItem(
-                        question: "Giriş: 'Öğrenci değilim, Profesionelim'",
-                        answerFinnish: "Olen Senol ja mulla on tosiaankin yli seitsemän vuoden kokemus ohjelmistokehityksestä. Vaikka opintoni Oulussa ovat paperilla kesken, olen tehnyt tätä työtä ammatikseni jo pitkään. Olen erikoistunut React-ekosysteemiin ja vaativiin web-sovelluksiin. En siis hae harjoittelupaikkaa, vaan roolia, jossa voin ottaa vastuuta arkkitehtuurista heti ensimmäisestä päivästä alkaen.",
-                        translationTr: "Evet, yani ben Senol. Gerçekten yedi yılı aşkın yazılım geliştirme deneyimim var. Kağıt üzerinde Oulu'da eğitimim devam ediyor gibi görünse de, bu işi uzun süredir profesyonel olarak yapıyorum. React ekosistemi ve zorlu web uygulamaları konusunda uzmanlaştım. Yani staj yeri aramıyorum, ilk günden itibaren mimari sorumluluk alabileceğim bir rol arıyorum.",
-                        keyPoints: ["Not a student", "7+ years exp", "Architectural Ownership"]
-                    )
-                ]
-            )
-            // ... more default items can be added here
-        ]
+        // Start empty on first launch. Open-source builds must not seed personal interview data.
+        categories = []
         save()
     }
     
@@ -116,5 +134,214 @@ class VaultService: ObservableObject {
             categories[index].items.removeAll { $0.id == itemID }
             save()
         }
+    }
+
+    static func exportSnapshot(
+        for categories: [VaultInterviewCategory],
+        exportedAt: Date = Date()
+    ) -> VaultExportSnapshot {
+        VaultExportSnapshot(
+            exportedAt: exportedAt,
+            totalCategories: categories.count,
+            totalQuestions: categories.reduce(0) { $0 + $1.items.count },
+            categories: categories
+        )
+    }
+
+    static func exportData(
+        for categories: [VaultInterviewCategory],
+        exportedAt: Date = Date()
+    ) throws -> Data {
+        let snapshot = exportSnapshot(for: categories, exportedAt: exportedAt)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        return try encoder.encode(snapshot)
+    }
+
+    func exportCurrentVault() throws -> Data {
+        try Self.exportData(for: categories)
+    }
+
+    func exportCurrentVault(to url: URL) throws {
+        let data = try exportCurrentVault()
+        try data.write(to: url, options: .atomic)
+    }
+
+    static func importCategories(from data: Data) throws -> [VaultInterviewCategory] {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        let importedCategories: [VaultInterviewCategory]
+        if let snapshot = try? decoder.decode(VaultExportSnapshot.self, from: data) {
+            importedCategories = snapshot.categories
+        } else if let categories = try? decoder.decode([VaultInterviewCategory].self, from: data) {
+            importedCategories = categories
+        } else {
+            throw VaultImportError.unsupportedFormat
+        }
+
+        let sanitized = sanitizedImportedCategories(importedCategories)
+        guard sanitized.contains(where: { !$0.items.isEmpty }) else {
+            throw VaultImportError.emptyVault
+        }
+        return sanitized
+    }
+
+    static func mergeCategories(
+        existing: [VaultInterviewCategory],
+        imported: [VaultInterviewCategory]
+    ) -> [VaultInterviewCategory] {
+        let sanitizedImported = sanitizedImportedCategories(imported)
+        var merged = existing
+        var categoryIndexByKey: [String: Int] = [:]
+        for (index, category) in merged.enumerated() {
+            categoryIndexByKey[normalizedImportKey(category.title)] = index
+        }
+
+        for importedCategory in sanitizedImported {
+            let key = normalizedImportKey(importedCategory.title)
+            if let existingIndex = categoryIndexByKey[key] {
+                merged[existingIndex] = mergeCategory(existing: merged[existingIndex], imported: importedCategory)
+            } else {
+                merged.append(importedCategory)
+                categoryIndexByKey[key] = merged.count - 1
+            }
+        }
+
+        return merged
+    }
+
+    func importVault(from url: URL, strategy: VaultImportStrategy) throws -> VaultImportSummary {
+        let data = try Data(contentsOf: url)
+        let importedCategories = try Self.importCategories(from: data)
+
+        switch strategy {
+        case .replaceExisting:
+            categories = importedCategories
+        case .mergeExisting:
+            categories = Self.mergeCategories(existing: categories, imported: importedCategories)
+        }
+
+        save()
+        return VaultImportSummary(
+            totalCategories: categories.count,
+            totalQuestions: categories.reduce(0) { $0 + $1.items.count }
+        )
+    }
+
+    private static func sanitizedImportedCategories(_ categories: [VaultInterviewCategory]) -> [VaultInterviewCategory] {
+        var sanitized: [VaultInterviewCategory] = []
+        var categoryIndexByKey: [String: Int] = [:]
+
+        for category in categories {
+            let title = category.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !title.isEmpty else { continue }
+
+            let cleanedCategory = VaultInterviewCategory(
+                id: UUID(),
+                title: title,
+                icon: category.icon.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? "folder.fill"
+                    : category.icon.trimmingCharacters(in: .whitespacesAndNewlines),
+                items: sanitizedImportedItems(category.items)
+            )
+
+            let key = normalizedImportKey(title)
+            if let existingIndex = categoryIndexByKey[key] {
+                sanitized[existingIndex] = mergeCategory(existing: sanitized[existingIndex], imported: cleanedCategory)
+            } else {
+                sanitized.append(cleanedCategory)
+                categoryIndexByKey[key] = sanitized.count - 1
+            }
+        }
+
+        return sanitized
+    }
+
+    private static func sanitizedImportedItems(_ items: [VaultInterviewItem]) -> [VaultInterviewItem] {
+        var sanitized: [VaultInterviewItem] = []
+        var itemIndexByKey: [String: Int] = [:]
+
+        for item in items {
+            let question = item.question.trimmingCharacters(in: .whitespacesAndNewlines)
+            let answer = item.answerFinnish.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !question.isEmpty, !answer.isEmpty else { continue }
+
+            let sanitizedItem = VaultInterviewItem(
+                id: UUID(),
+                question: question,
+                answerFinnish: answer,
+                translationTr: item.translationTr.trimmingCharacters(in: .whitespacesAndNewlines),
+                keyPoints: item.keyPoints
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+            )
+
+            let key = normalizedImportKey(question)
+            if let existingIndex = itemIndexByKey[key] {
+                sanitized[existingIndex] = mergedItem(
+                    replacing: sanitized[existingIndex],
+                    with: sanitizedItem
+                )
+            } else {
+                sanitized.append(sanitizedItem)
+                itemIndexByKey[key] = sanitized.count - 1
+            }
+        }
+
+        return sanitized
+    }
+
+    private static func mergeCategory(
+        existing: VaultInterviewCategory,
+        imported: VaultInterviewCategory
+    ) -> VaultInterviewCategory {
+        var mergedItems = existing.items
+        var itemIndexByKey: [String: Int] = [:]
+        for (index, item) in mergedItems.enumerated() {
+            itemIndexByKey[normalizedImportKey(item.question)] = index
+        }
+
+        for importedItem in imported.items {
+            let key = normalizedImportKey(importedItem.question)
+            if let existingIndex = itemIndexByKey[key] {
+                mergedItems[existingIndex] = mergedItem(
+                    replacing: mergedItems[existingIndex],
+                    with: importedItem
+                )
+            } else {
+                mergedItems.append(importedItem)
+                itemIndexByKey[key] = mergedItems.count - 1
+            }
+        }
+
+        let mergedIcon = imported.icon.isEmpty ? existing.icon : imported.icon
+        return VaultInterviewCategory(
+            id: existing.id,
+            title: existing.title,
+            icon: mergedIcon,
+            items: mergedItems
+        )
+    }
+
+    private static func mergedItem(
+        replacing existing: VaultInterviewItem,
+        with imported: VaultInterviewItem
+    ) -> VaultInterviewItem {
+        VaultInterviewItem(
+            id: existing.id,
+            question: imported.question,
+            answerFinnish: imported.answerFinnish,
+            translationTr: imported.translationTr,
+            keyPoints: imported.keyPoints
+        )
+    }
+
+    private static func normalizedImportKey(_ value: String) -> String {
+        value
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
     }
 }

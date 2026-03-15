@@ -32,6 +32,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var windowManager = WindowManager.shared
     var uiTestWindow: NSWindow?
     private let isUITesting = ProcessInfo.processInfo.arguments.contains("-ui-testing")
+    private let isUnitTesting = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         if isUITesting {
@@ -49,6 +50,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             window.orderFrontRegardless()
             NSApp.activate(ignoringOtherApps: true)
             self.uiTestWindow = window
+            return
+        }
+
+        if isUnitTesting {
+            NSApp.setActivationPolicy(.accessory)
             return
         }
 

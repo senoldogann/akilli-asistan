@@ -7,6 +7,7 @@ actor TavilyService {
     private let logger = Logger(subsystem: "com.zerolose", category: "tavily")
     private var inMemoryCache: [String: CachedSearchContext] = [:]
     private let cacheTTL: TimeInterval = 90
+    private let maxProviderQueryLength = 380
 
     enum DetailLevel: String, Sendable {
         case brief
@@ -16,6 +17,7 @@ actor TavilyService {
     enum TavilyError: Error {
         case invalidURL
         case requestFailed(String)
+        case apiError(Int, String)
         case decodingError
         case missingAPIKey
     }
@@ -47,7 +49,8 @@ actor TavilyService {
     
     /// Performs a web search and returns a structured evidence context.
     func search(query: String, detailLevel: DetailLevel = .brief) async throws -> String {
-        let normalizedQuery = query
+        let preparedQuery = Self.preferredQuery(from: query, maxLength: maxProviderQueryLength)
+        let normalizedQuery = preparedQuery
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         let key = "\(detailLevel.rawValue)::\(normalizedQuery)"
@@ -69,7 +72,7 @@ actor TavilyService {
         
         let payload = SearchRequest(
             api_key: apiKey,
-            query: query,
+            query: preparedQuery,
             search_depth: detailLevel == .detailed ? "advanced" : "basic",
             include_answer: true,
             max_results: detailLevel == .detailed ? 8 : 5
@@ -77,7 +80,7 @@ actor TavilyService {
         
         request.httpBody = try JSONEncoder().encode(payload)
         
-        logger.info("Performing Tavily search (query_length: \(query.count, privacy: .public))")
+        logger.info("Performing Tavily search (query_length: \(preparedQuery.count, privacy: .public))")
         
         return try await withRetry {
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -89,14 +92,14 @@ actor TavilyService {
             if httpResponse.statusCode != 200 {
                 let errorMsg = String(data: data, encoding: .utf8) ?? "Unknown Error"
                 self.logger.error("Tavily API Error: \(httpResponse.statusCode), \(errorMsg)")
-                throw TavilyError.requestFailed("API Error: \(httpResponse.statusCode)")
+                throw TavilyError.apiError(httpResponse.statusCode, errorMsg)
             }
             
             do {
                 let searchResponse = try JSONDecoder().decode(SearchResponse.self, from: data)
                 
                 let context = self.buildContext(
-                    query: query,
+                    query: preparedQuery,
                     response: searchResponse,
                     detailLevel: detailLevel
                 )
@@ -123,6 +126,9 @@ actor TavilyService {
                 return try await operation()
             } catch {
                 lastError = error
+                guard shouldRetry(error: error) else {
+                    throw error
+                }
                 if attempt < maxAttempts {
                     let delay = baseDelay * pow(2.0, Double(attempt - 1))
                     let jitter = Double.random(in: 0...(delay * 0.1))
@@ -132,6 +138,13 @@ actor TavilyService {
             }
         }
         throw lastError ?? TavilyError.requestFailed("Max attempts reached")
+    }
+
+    private func shouldRetry(error: Error) -> Bool {
+        if case let TavilyError.apiError(statusCode, _) = error {
+            return statusCode == 429 || statusCode >= 500
+        }
+        return true
     }
 
     private func buildContext(
@@ -190,5 +203,100 @@ actor TavilyService {
 
         guard normalized.count > limit else { return normalized }
         return String(normalized.prefix(limit)) + "..."
+    }
+
+    nonisolated static func preferredQuery(from rawQuery: String, maxLength: Int = 380) -> String {
+        func compactWhitespace(_ text: String) -> String {
+            text
+                .replacingOccurrences(of: "\n", with: " ")
+                .replacingOccurrences(of: "\t", with: " ")
+                .components(separatedBy: .whitespacesAndNewlines)
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+        }
+
+        func containsQuestionSignal(_ text: String) -> Bool {
+            let lowered = text.lowercased()
+            if lowered.contains("?") {
+                return true
+            }
+
+            let tokens = [
+                "mikä", "mita", "mitä", "miten", "miksi", "millainen", "millä", "minkä", "minkälainen",
+                "what", "why", "how", "which", "who", "can you",
+                "neden", "nasıl", "nasil", "hangi", "ne", "kim"
+            ]
+            return tokens.contains { lowered.contains($0) }
+        }
+
+        func looksLikeCodeLine(_ text: String) -> Bool {
+            let lowered = text.lowercased()
+            let codeSignals = [
+                "const ", "let ", "var ", "function ", "async ", "await ", "return ",
+                "class ", "interface ", "type ", "import ", "export ", "=>", "{", "}",
+                "</", "/>", "select ", "insert ", "update ", "delete ", "public ", "private "
+            ]
+            return codeSignals.contains { lowered.contains($0) }
+        }
+
+        func looksCodeHeavy(_ text: String) -> Bool {
+            let lowered = text.lowercased()
+            let strongSignals = ["```", "const ", "let ", "function ", "async ", "await ", "interface ", "type ", "=>"]
+            if strongSignals.contains(where: lowered.contains) {
+                return true
+            }
+
+            let punctuationCount = lowered.filter { "{}[]();<>".contains($0) }.count
+            return punctuationCount >= 12
+        }
+
+        let compacted = rawQuery
+            .replacingOccurrences(of: "\r", with: "\n")
+            .replacingOccurrences(of: "\t", with: " ")
+            .replacingOccurrences(of: "\n\n", with: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !compacted.isEmpty else { return "" }
+        if compacted.count <= maxLength && !looksCodeHeavy(compacted) {
+            return compactWhitespace(compacted)
+        }
+
+        let preprocessed = compacted
+            .replacingOccurrences(of: "```", with: "\n")
+            .replacingOccurrences(of: "=>", with: "\n")
+            .replacingOccurrences(of: "{", with: "\n")
+            .replacingOccurrences(of: "}", with: "\n")
+            .replacingOccurrences(of: ";", with: "\n")
+
+        let lines = preprocessed
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        let nonCodeLines = lines.filter { !looksLikeCodeLine($0) }
+        let questionLikeLines = nonCodeLines.filter { containsQuestionSignal($0) }
+        let candidateLines = questionLikeLines.isEmpty ? nonCodeLines : questionLikeLines
+
+        if !candidateLines.isEmpty {
+            var selected: [String] = []
+            var usedLength = 0
+
+            for line in candidateLines.suffix(3) {
+                let compactLine = compactWhitespace(line)
+                guard !compactLine.isEmpty else { continue }
+                let projected = usedLength + compactLine.count + (selected.isEmpty ? 0 : 1)
+                if projected > maxLength {
+                    continue
+                }
+                selected.append(compactLine)
+                usedLength = projected
+            }
+
+            if !selected.isEmpty {
+                return selected.joined(separator: " ")
+            }
+        }
+
+        return String(compactWhitespace(compacted).prefix(maxLength))
     }
 }

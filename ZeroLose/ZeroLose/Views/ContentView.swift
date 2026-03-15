@@ -455,10 +455,17 @@ struct ContentView: View {
                     }
                     
                     if !message.text.hasPrefix("[Analyzing Image:") {
-                        Text(LocalizedStringKey(message.text))
+                        Text(verbatim: message.text)
                             .font(.system(size: fontSize, weight: .regular, design: fontDesign))
                             .foregroundColor(.white.opacity(0.95))
                             .multilineTextAlignment(.leading)
+                    }
+
+                    if !message.text.isEmpty {
+                        HStack {
+                            Spacer(minLength: 0)
+                            MessageCopyButton(text: message.text)
+                        }
                     }
                 }
                 .padding(12)
@@ -477,16 +484,41 @@ struct ContentView: View {
                     .padding(.top, 2)
                 
                 if message.type == .error {
-                    Text(message.text)
-                        .foregroundColor(.red)
-                        .font(.system(size: fontSize, design: .monospaced))
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(verbatim: message.text)
+                            .foregroundColor(.red)
+                            .font(.system(size: fontSize, design: .monospaced))
+
+                        HStack {
+                            Spacer(minLength: 0)
+                            MessageCopyButton(text: message.text)
+                        }
+                    }
                 } else if message.type == .thinking {
                     ThinkingIndicator()
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.vertical, 4)
                 } else {
-                    MessageContent(text: message.text, isUser: false)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 8) {
+                        if !message.text.isEmpty {
+                            HStack(spacing: 8) {
+                                if let badgeText = message.assistantBadgeText {
+                                    MessageBadge(text: badgeText)
+                                }
+                                if message.allowsAIRefinement {
+                                    MessageAIButton(disabled: viewModel.isBusy) {
+                                        viewModel.refineAnswerWithAI(messageID: message.id)
+                                    }
+                                }
+                                Spacer(minLength: 0)
+                                MessageCopyButton(text: message.text)
+                            }
+                        }
+
+                        MessageContent(text: message.text, isUser: false)
+                            .equatable()
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
             }
         }

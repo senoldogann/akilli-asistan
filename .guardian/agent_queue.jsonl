@@ -1,0 +1,5 @@
+{"event":"critique","file_path":"scripts copy/decode_jwt.py","finding_id":"b83dac7fda72cf3e0642aed01eacddd01d317b291ac0128cedca50a5720eb3d7","severity":"Warning","timestamp":"2026-03-15T00:07:47.814747+00:00"}
+{"event":"critique","file_path":"scripts copy/dependency_analyzer.py","finding_id":"b0761bdaf6c977e1a44b896c7d2a47781c3abe03bf9214613b322d02ad799fac","severity":"Warning","timestamp":"2026-03-15T00:07:47.816171+00:00"}
+{"event":"critique","file_path":"scripts copy/provider_config_validator.py","finding_id":"d192672b71ad57bb89bb41faaa7fe4b18abd3c5979950b75b3b2dc2133d6c579","severity":"Critical","timestamp":"2026-03-15T00:07:47.816963+00:00"}
+{"event":"critique","file_path":"scripts copy/checklist.py","finding_id":"8bf046ce8523b4e43c828f4c6a72c698852bee3643566dbb8eb60dcf0bae6c2c","severity":"Warning","timestamp":"2026-03-15T00:08:23.883096+00:00"}
+{"event":"critique","file_path":"scripts copy/fix_agent_tools.py","finding_id":"01020dc55b7bd74ab880335d708fd3c197c41036eaf1a53e92d3473d40f8e4cd","severity":"Critical","timestamp":"2026-03-15T00:08:23.885464+00:00"}
