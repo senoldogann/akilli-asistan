@@ -192,11 +192,12 @@ struct InterviewVaultView: View {
             }
         }
         .frame(minWidth: 450, idealWidth: 600, maxWidth: 900, minHeight: 400, idealHeight: 650, maxHeight: 1000)
-        .background {
-            // Underlay combining with frosted material blur
-            Color.black.opacity(0.1)
-                .ignoresSafeArea()
-        }
+        .background(
+            ZStack {
+                Rectangle().fill(.ultraThinMaterial)
+                Color.black.opacity(0.75)
+            }
+        )
         .cornerRadius(16)
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
