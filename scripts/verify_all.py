@@ -27,8 +27,13 @@ def run_script(script_name):
 def main():
     print_header("MAESTRO FULL VERIFICATION SUITE")
     
-    scripts_to_run = ["checklist.py", "dependency_analyzer.py"]
-    # In the future, we can add more: ["security_scan.py", "lint_runner.py"]
+    # Order matters: sync provider adapters first, then validate configs, then structural checks
+    scripts_to_run = [
+        "sync_agents.py",
+        "provider_config_validator.py",
+        "checklist.py",
+        "dependency_analyzer.py",
+    ]
     
     all_success = True
     for script in scripts_to_run:

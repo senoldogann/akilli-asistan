@@ -160,50 +160,45 @@ struct ZeroLoseIcon: View {
                 .frame(width: w, height: h)
                 
             case .person:
-                ZStack {
-                    Circle()
-                        .fill(color)
-                        .frame(width: w*0.4, height: h*0.4)
-                        .offset(y: -h*0.2)
+                Path { path in
+                    // Head outline
+                    path.addArc(
+                        center: CGPoint(x: w/2, y: h*0.35),
+                        radius: w*0.18,
+                        startAngle: .degrees(0),
+                        endAngle: .degrees(360),
+                        clockwise: false
+                    )
                     
-                    Path { path in
-                        path.addArc(center: CGPoint(x: w/2, y: h*1.1), radius: w*0.5, startAngle: .degrees(180), endAngle: .degrees(0), clockwise: false)
-                    }
-                    .fill(color)
+                    // Shoulders outline
+                    path.move(to: CGPoint(x: w*0.18, y: h*0.82))
+                    path.addQuadCurve(
+                        to: CGPoint(x: w*0.82, y: h*0.82),
+                        control: CGPoint(x: w/2, y: h*0.55)
+                    )
                 }
+                .stroke(color, style: StrokeStyle(lineWidth: w*0.1, lineCap: .round, lineJoin: .round))
                 
             case .trash:
                 Path { path in
-                    // Adjust scale by adding padding (0.1 -> 0.9 range)
-                    let pad: CGFloat = 0.05
-                    let tw = w * (1 - pad*2)
-                    let th = h * (1 - pad*2)
-                    let ox = w * pad
-                    let oy = h * pad
-                    
+                    // Trash can outline
                     // Lid
-                    path.move(to: CGPoint(x: ox + tw*0.15, y: oy + th*0.2))
-                    path.addLine(to: CGPoint(x: ox + tw*0.85, y: oy + th*0.2))
+                    path.move(to: CGPoint(x: w*0.15, y: h*0.28))
+                    path.addLine(to: CGPoint(x: w*0.85, y: h*0.28))
                     
-                    // Handle on lid
-                    path.move(to: CGPoint(x: ox + tw*0.4, y: oy + th*0.2))
-                    path.addQuadCurve(to: CGPoint(x: ox + tw*0.6, y: oy + th*0.2), control: CGPoint(x: w/2, y: oy + th*0.05))
+                    // Lid Handle
+                    path.move(to: CGPoint(x: w*0.35, y: h*0.28))
+                    path.addLine(to: CGPoint(x: w*0.35, y: h*0.15))
+                    path.addLine(to: CGPoint(x: w*0.65, y: h*0.15))
+                    path.addLine(to: CGPoint(x: w*0.65, y: h*0.28))
                     
                     // Body
-                    path.move(to: CGPoint(x: ox + tw*0.25, y: oy + th*0.2))
-                    path.addLine(to: CGPoint(x: ox + tw*0.3, y: oy + th*0.9))
-                    path.addLine(to: CGPoint(x: ox + tw*0.7, y: oy + th*0.9))
-                    path.addLine(to: CGPoint(x: ox + tw*0.75, y: oy + th*0.2))
-                    
-                    // Vertical lines in body
-                    path.move(to: CGPoint(x: ox + tw*0.4, y: oy + th*0.35))
-                    path.addLine(to: CGPoint(x: ox + tw*0.4, y: oy + th*0.75))
-                    path.move(to: CGPoint(x: ox + tw*0.5, y: oy + th*0.35))
-                    path.addLine(to: CGPoint(x: ox + tw*0.5, y: oy + th*0.75))
-                    path.move(to: CGPoint(x: ox + tw*0.6, y: oy + th*0.35))
-                    path.addLine(to: CGPoint(x: ox + tw*0.6, y: oy + th*0.75))
+                    path.move(to: CGPoint(x: w*0.25, y: h*0.28))
+                    path.addLine(to: CGPoint(x: w*0.28, y: h*0.85))
+                    path.addLine(to: CGPoint(x: w*0.72, y: h*0.85))
+                    path.addLine(to: CGPoint(x: w*0.75, y: h*0.28))
                 }
-                .stroke(color, style: StrokeStyle(lineWidth: w*0.08, lineCap: .round, lineJoin: .round))
+                .stroke(color, style: StrokeStyle(lineWidth: w*0.1, lineCap: .round, lineJoin: .round))
                 
             case .textbubble:
                 Path { path in

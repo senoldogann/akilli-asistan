@@ -427,6 +427,7 @@ extension AudioService: AVCaptureAudioDataOutputSampleBufferDelegate, SCStreamOu
                 await MainActor.run {
                     lastVoiceLanguage = response.language
                     lastVoiceTranscript = cleanText
+                    SpeechAnalyticsService.shared.processTranscriptSegment(cleanText)
                 }
             }
             

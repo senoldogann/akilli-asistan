@@ -60,23 +60,43 @@ class WindowManager: NSObject, NSWindowDelegate {
         )
         
         window.delegate = self
-        
-        // 👻 GHOST MODE ENGAGED
+
+        // Ghost Mode — borderless, floating, screen-capture invisible
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
-        
-        // Fully disable window sharing to remain invisible to any screen recording
         window.sharingType = .none
         window.level = .floating
         window.isOpaque = false
         window.backgroundColor = .clear
-        window.hasShadow = false
+
+        // Real shadow so the Liquid Glass panel floats visually
+        window.hasShadow = true
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         window.ignoresMouseEvents = false
-        
+
+        // NSVisualEffectView as the real blur layer behind SwiftUI content
+        let effectView = NSVisualEffectView()
+        effectView.material = .hudWindow
+        effectView.blendingMode = .behindWindow
+        effectView.state = .active
+        effectView.wantsLayer = true
+        effectView.layer?.cornerRadius = 20
+        effectView.layer?.masksToBounds = true
+
         let vm = DependencyContainer.shared.ghostViewModel
-        window.contentView = NSHostingView(rootView: ContentView(viewModel: vm))
+        let hostingView = NSHostingView(rootView: ContentView(viewModel: vm))
+        hostingView.translatesAutoresizingMaskIntoConstraints = false
+
+        effectView.addSubview(hostingView)
+        NSLayoutConstraint.activate([
+            hostingView.leadingAnchor.constraint(equalTo: effectView.leadingAnchor),
+            hostingView.trailingAnchor.constraint(equalTo: effectView.trailingAnchor),
+            hostingView.topAnchor.constraint(equalTo: effectView.topAnchor),
+            hostingView.bottomAnchor.constraint(equalTo: effectView.bottomAnchor)
+        ])
+
+        window.contentView = effectView
         
         restoreWindowPosition()
         applyMainWindowSizeFromDefaults(animated: false)
@@ -315,16 +335,21 @@ class WindowManager: NSObject, NSWindowDelegate {
         }
         
         let settingsWin = SettingsWindow(
-            contentRect: NSRect(x: 260, y: 220, width: 420, height: 620),
-            styleMask: [.titled, .closable, .miniaturizable],
+            contentRect: NSRect(x: 260, y: 220, width: 680, height: 750),
+            styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         
         settingsWin.title = "ZeroLose Settings"
+        settingsWin.titlebarAppearsTransparent = true
+        settingsWin.titleVisibility = .hidden
         settingsWin.level = .floating
         settingsWin.isReleasedWhenClosed = false
         settingsWin.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        settingsWin.isOpaque = false
+        settingsWin.backgroundColor = .clear
+        settingsWin.hasShadow = true
         
         let stealthEnabled = UserDefaults.standard.bool(forKey: "stealthModeEnabled")
         settingsWin.sharingType = stealthEnabled ? .none : .readOnly
@@ -340,7 +365,26 @@ class WindowManager: NSObject, NSWindowDelegate {
             )
         )
         
-        settingsWin.contentView = NSHostingView(rootView: settingsView)
+        // NSVisualEffectView as the real blur layer behind Settings
+        let effectView = NSVisualEffectView()
+        effectView.material = .hudWindow
+        effectView.blendingMode = .behindWindow
+        effectView.state = .active
+        effectView.wantsLayer = true
+        effectView.layer?.cornerRadius = 16
+        effectView.layer?.masksToBounds = true
+
+        let hostingView = NSHostingView(rootView: settingsView)
+        hostingView.translatesAutoresizingMaskIntoConstraints = false
+        effectView.addSubview(hostingView)
+        NSLayoutConstraint.activate([
+            hostingView.leadingAnchor.constraint(equalTo: effectView.leadingAnchor),
+            hostingView.trailingAnchor.constraint(equalTo: effectView.trailingAnchor),
+            hostingView.topAnchor.constraint(equalTo: effectView.topAnchor),
+            hostingView.bottomAnchor.constraint(equalTo: effectView.bottomAnchor)
+        ])
+        
+        settingsWin.contentView = effectView
         settingsWin.delegate = self
         settingsWindow = settingsWin
         
@@ -418,7 +462,26 @@ class WindowManager: NSObject, NSWindowDelegate {
             )
         )
         
-        tpWindow.contentView = NSHostingView(rootView: tpView)
+        // NSVisualEffectView as the real blur layer behind Teleprompter
+        let effectView = NSVisualEffectView()
+        effectView.material = .hudWindow
+        effectView.blendingMode = .behindWindow
+        effectView.state = .active
+        effectView.wantsLayer = true
+        effectView.layer?.cornerRadius = 12
+        effectView.layer?.masksToBounds = true
+
+        let hostingView = NSHostingView(rootView: tpView)
+        hostingView.translatesAutoresizingMaskIntoConstraints = false
+        effectView.addSubview(hostingView)
+        NSLayoutConstraint.activate([
+            hostingView.leadingAnchor.constraint(equalTo: effectView.leadingAnchor),
+            hostingView.trailingAnchor.constraint(equalTo: effectView.trailingAnchor),
+            hostingView.topAnchor.constraint(equalTo: effectView.topAnchor),
+            hostingView.bottomAnchor.constraint(equalTo: effectView.bottomAnchor)
+        ])
+        
+        tpWindow.contentView = effectView
         tpWindow.delegate = self
         
         teleprompterWindow = tpWindow

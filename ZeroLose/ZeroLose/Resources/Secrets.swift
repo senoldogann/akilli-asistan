@@ -3,7 +3,8 @@ import Security
 import os
 
 /// API key storage backed by Keychain.
-struct Secrets: @unchecked Sendable {
+/// All reads and writes go through Security framework APIs which are thread-safe.
+struct Secrets: Sendable {
     nonisolated private static let logger = Logger(subsystem: "com.zerolose", category: "secrets")
 
     nonisolated private static let legacyOllamaKeyStorage = "stored_ollama_api_key"
@@ -21,7 +22,7 @@ struct Secrets: @unchecked Sendable {
 
     // MARK: - API Keys
 
-    nonisolated(unsafe) static var ollamaApiKey: String {
+    nonisolated static var ollamaApiKey: String {
         get {
             migrateFromUserDefaultsIfNeeded()
             return readKeychainValue(account: ollamaAccount) ?? ""
@@ -32,7 +33,7 @@ struct Secrets: @unchecked Sendable {
         }
     }
 
-    nonisolated(unsafe) static var groqApiKey: String {
+    nonisolated static var groqApiKey: String {
         get {
             migrateFromUserDefaultsIfNeeded()
             return readKeychainValue(account: groqAccount) ?? ""
@@ -43,7 +44,7 @@ struct Secrets: @unchecked Sendable {
         }
     }
 
-    nonisolated(unsafe) static var tavilyApiKey: String {
+    nonisolated static var tavilyApiKey: String {
         get {
             migrateFromUserDefaultsIfNeeded()
             return readKeychainValue(account: tavilyAccount) ?? ""
@@ -54,7 +55,7 @@ struct Secrets: @unchecked Sendable {
         }
     }
 
-    nonisolated(unsafe) static var openAIApiKey: String {
+    nonisolated static var openAIApiKey: String {
         get {
             migrateFromUserDefaultsIfNeeded()
             return readKeychainValue(account: openAIAccount) ?? ""
@@ -69,22 +70,22 @@ struct Secrets: @unchecked Sendable {
 
     // MARK: - Validation
 
-    nonisolated(unsafe) static var isOllamaKeyValid: Bool {
+    nonisolated static var isOllamaKeyValid: Bool {
         let value = ollamaApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         return !value.isEmpty && value.count > 10
     }
 
-    nonisolated(unsafe) static var isGroqKeyValid: Bool {
+    nonisolated static var isGroqKeyValid: Bool {
         let value = groqApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         return !value.isEmpty && value.hasPrefix("gsk_")
     }
 
-    nonisolated(unsafe) static var isTavilyKeyValid: Bool {
+    nonisolated static var isTavilyKeyValid: Bool {
         let value = tavilyApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         return !value.isEmpty && value.hasPrefix("tvly-")
     }
 
-    nonisolated(unsafe) static var isOpenAIKeyValid: Bool {
+    nonisolated static var isOpenAIKeyValid: Bool {
         migrateFromUserDefaultsIfNeeded()
         return UserDefaults.standard.bool(forKey: openAIPreferenceStorage)
     }

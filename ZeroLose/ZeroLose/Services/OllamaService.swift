@@ -30,7 +30,8 @@ actor OllamaService {
         case ollamaCloud
     }
 
-    private let ollamaBaseURL = URL(string: "https://ollama.com/api")!
+    // Ollama Cloud now uses an OpenAI-compatible endpoint — /api/chat is 410 Gone.
+    private let ollamaCloudBaseURL = URL(string: "https://ollama.com/v1")!
     private let openAIBaseURL = URL(string: "https://api.openai.com/v1")!
     private let logger = Logger(subsystem: "com.senoldogan.ZeroLose", category: "LLMGateway")
 
@@ -226,8 +227,10 @@ actor OllamaService {
 
     private func provider(for model: String) -> Provider {
         let normalizedModel = model.lowercased()
-        if normalizedModel.hasPrefix("gpt-") || normalizedModel.hasPrefix("o1") || normalizedModel.hasPrefix("o3") || normalizedModel.hasPrefix("o4") {
-            return .openAI
+        if Secrets.isOpenAIKeyValid {
+            if (normalizedModel.hasPrefix("gpt-4") || normalizedModel.hasPrefix("gpt-5") || normalizedModel.hasPrefix("o1") || normalizedModel.hasPrefix("o3") || normalizedModel.hasPrefix("o4")) && !normalizedModel.contains("gpt-oss") {
+                return .openAI
+            }
         }
         return .ollamaCloud
     }
@@ -474,7 +477,13 @@ actor OllamaService {
     }
 
     private static func toOpenAIResponseMessage(_ message: ChatMessage) -> OpenAIResponseInputMessage {
-        var content: [OpenAIResponseInputContentPart] = [.text(message.content)]
+        let isAssistant = message.role.lowercased() == "assistant"
+        let type = isAssistant ? "output_text" : "input_text"
+        
+        var content: [OpenAIResponseInputContentPart] = [
+            OpenAIResponseInputContentPart(type: type, text: message.content, imageURL: nil)
+        ]
+        
         if let images = message.images {
             content.append(contentsOf: images.map(OpenAIResponseInputContentPart.image(base64:)))
         }
@@ -508,22 +517,30 @@ actor OllamaService {
         return body.isEmpty ? "Unknown" : body
     }
 
-    // MARK: - Legacy Ollama Cloud
+    // MARK: - Ollama Cloud (OpenAI-compatible)
+    //
+    // Ollama Cloud dropped the native /api/chat endpoint (HTTP 410).
+    // It now exposes an OpenAI-compatible interface at /v1/chat/completions.
+    // We reuse the existing OpenAI request/response structs to avoid duplication.
 
     private func generateOllama(messages: [ChatMessage], model: String) async throws -> String {
         let apiKey = Secrets.ollamaApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !apiKey.isEmpty else {
-            throw OllamaError.missingAPIKey("Ollama Cloud API key is missing.")
+            throw OllamaError.missingAPIKey("Ollama Cloud API key is missing. Generate one at https://ollama.com/settings/keys")
         }
 
-        let url = ollamaBaseURL.appendingPathComponent("chat")
+        let url = ollamaCloudBaseURL.appendingPathComponent("chat/completions")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 90
 
-        let payload = OllamaChatRequest(model: model, messages: messages, stream: false)
+        let payload = OpenAIChatCompletionRequest(
+            model: model,
+            messages: messages.map(Self.toOpenAIMessage),
+            stream: false
+        )
         request.httpBody = try JSONEncoder().encode(payload)
 
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -534,14 +551,17 @@ actor OllamaService {
         if httpResponse.statusCode != 200 {
             let errorBody = String(data: data, encoding: .utf8) ?? "Unknown"
             logger.error("Ollama Cloud Error: \(httpResponse.statusCode, privacy: .public) | Body: \(errorBody, privacy: .public)")
-            throw OllamaError.serverError("API Error: \(httpResponse.statusCode)")
+            throw OllamaError.serverError("Ollama Cloud API Error (\(httpResponse.statusCode)): \(errorBody)")
         }
 
         do {
-            let result = try JSONDecoder().decode(OllamaChatResponse.self, from: data)
-            return result.message.content
+            let result = try JSONDecoder().decode(OpenAIChatCompletionResponse.self, from: data)
+            guard let content = result.choices.first?.message.content, !content.isEmpty else {
+                throw OllamaError.noData
+            }
+            return content
         } catch {
-            logger.error("Ollama decode error: \(error.localizedDescription, privacy: .public)")
+            logger.error("Ollama Cloud decode error: \(error.localizedDescription, privacy: .public)")
             throw OllamaError.decodingError
         }
     }
@@ -553,17 +573,21 @@ actor OllamaService {
     ) async throws {
         let apiKey = Secrets.ollamaApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !apiKey.isEmpty else {
-            throw OllamaError.missingAPIKey("Ollama Cloud API key is missing.")
+            throw OllamaError.missingAPIKey("Ollama Cloud API key is missing. Generate one at https://ollama.com/settings/keys")
         }
 
-        let url = ollamaBaseURL.appendingPathComponent("chat")
+        let url = ollamaCloudBaseURL.appendingPathComponent("chat/completions")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 90
 
-        let payload = OllamaChatRequest(model: model, messages: messages, stream: true)
+        let payload = OpenAIChatCompletionRequest(
+            model: model,
+            messages: messages.map(Self.toOpenAIMessage),
+            stream: true
+        )
         request.httpBody = try JSONEncoder().encode(payload)
 
         let (asyncBytes, response) = try await URLSession.shared.bytes(for: request)
@@ -572,21 +596,27 @@ actor OllamaService {
         }
 
         if httpResponse.statusCode != 200 {
-            throw OllamaError.serverError("API Error: \(httpResponse.statusCode)")
+            let errorBody = try await Self.readAsyncErrorBody(from: asyncBytes)
+            throw OllamaError.serverError("Ollama Cloud API Error (\(httpResponse.statusCode)): \(errorBody)")
         }
 
+        // Ollama Cloud streams SSE identical to OpenAI format: "data: {...}" lines
         var buffer = ""
-        for try await line in asyncBytes.lines {
+        for try await rawLine in asyncBytes.lines {
             try Task.checkCancellation()
-            guard !line.isEmpty else { continue }
+
+            guard rawLine.hasPrefix("data: ") else { continue }
+            let payloadLine = String(rawLine.dropFirst(6))
+            if payloadLine == "[DONE]" { break }
 
             do {
-                let chunk = try JSONDecoder().decode(OllamaChatResponse.self, from: Data(line.utf8))
-                let content = chunk.message.content
-                buffer += content
-                onPartialResponse(buffer)
+                let chunk = try JSONDecoder().decode(OpenAIStreamChunk.self, from: Data(payloadLine.utf8))
+                if let content = chunk.choices.first?.delta.content, !content.isEmpty {
+                    buffer += content
+                    onPartialResponse(buffer)
+                }
             } catch {
-                logger.error("Ollama stream decode error: \(error.localizedDescription, privacy: .public)")
+                logger.error("Ollama Cloud stream decode error: \(error.localizedDescription, privacy: .public)")
             }
         }
     }
@@ -613,7 +643,55 @@ actor OllamaService {
                 }
             }
         }
-
+        
         throw lastError ?? OllamaError.serverError("Max attempts reached")
+    }
+    
+    nonisolated func fetchAvailableModels(provider: String, apiKey: String) async -> [String] {
+        let isOpenAI = provider.lowercased() == "openai"
+        let baseURL = isOpenAI ? openAIBaseURL : ollamaCloudBaseURL
+        let url = baseURL.appendingPathComponent("models")
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        
+        let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedKey.isEmpty {
+            request.setValue("Bearer \(trimmedKey)", forHTTPHeaderField: "Authorization")
+        }
+        request.timeoutInterval = 10
+        
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+                return []
+            }
+            
+            // Try to decode OpenAI format
+            struct ModelsResponse: Decodable {
+                struct ModelItem: Decodable {
+                    let id: String
+                }
+                let data: [ModelItem]
+            }
+            
+            if let result = try? JSONDecoder().decode(ModelsResponse.self, from: data) {
+                return result.data.map { $0.id }.sorted()
+            }
+            
+            // Try to decode Ollama format
+            struct TagsResponse: Decodable {
+                struct TagItem: Decodable {
+                    let name: String
+                }
+                let models: [TagItem]
+            }
+            if let tags = try? JSONDecoder().decode(TagsResponse.self, from: data) {
+                return tags.models.map { $0.name }.sorted()
+            }
+            
+            return []
+        } catch {
+            return []
+        }
     }
 }

@@ -20,9 +20,19 @@ This file documents the top-level repository layout used by the Maestro multi-pr
 │   └── PLAN.md
 ├── scripts/
 │   ├── checklist.py
+│   ├── codex-fast.sh
+│   ├── codex-research.sh
+│   ├── codex-review.sh
+│   ├── codex-safe.sh
 │   ├── common_utils.py
+│   ├── context_optimizer.py
+│   ├── decode_jwt.py
 │   ├── dependency_analyzer.py
+│   ├── fix_agent_tools.py
+│   ├── generate_skill_index.py
 │   ├── provider_config_validator.py
+│   ├── prune_memory.py
+│   ├── quickstart.py
 │   ├── skill.sh
 │   ├── sync_agents.py
 │   └── verify_all.py
@@ -37,19 +47,19 @@ This file documents the top-level repository layout used by the Maestro multi-pr
 │   ├── config.toml
 │   └── rules/
 ├── .claude/
-│   ├── agents/
-│   ├── commands/
+│   ├── agents/ -> ../.agent/agents
+│   ├── commands/ -> ../.agent/workflows
 │   ├── settings.json
-│   └── skills/
+│   └── skills/ -> ../.agent/skills
 ├── .opencode/
-│   ├── agents/
+│   ├── agents/ -> ../.agent/agents
 │   ├── commands/
-│   └── skills/
+│   └── skills/ -> ../.agent/skills
 └── ZeroLose/
     ├── AGENTS.md
     ├── README.md
     ├── SYSTEM_AUDIO_SETUP.md
-    ├── ZeroLose/
+    ├── ZeroLose/           # Swift source
     ├── ZeroLose.xcodeproj/
     ├── ZeroLoseTests/
     ├── ZeroLoseUITests/

@@ -17,16 +17,15 @@ struct TeleprompterView: View {
     @State private var lastFocusedTranscriptNormalized: String = ""
     @State private var lastAutoFocusAt: Date = .distantPast
     
-    // Helper to get dynamic color
     private var themeColor: Color {
         switch selectedTheme {
-        case "Red": return Color(red: 242/255, green: 78/255, blue: 78/255)
-        case "Orange": return Color.orange
-        case "Blue": return Color.blue
-        case "Purple": return Color.purple
-        case "Green": return Color.green
-        case "Graphite": return Color(white: 0.3)
-        default: return Color(red: 242/255, green: 78/255, blue: 78/255)
+        case "Red":      return Color(red: 242/255, green: 78/255, blue: 78/255)
+        case "Orange":   return Color.orange
+        case "Blue":     return Color(red: 0.2, green: 0.6, blue: 1.0)
+        case "Purple":   return Color(red: 0.7, green: 0.3, blue: 1.0)
+        case "Green":    return Color(red: 0.2, green: 0.85, blue: 0.5)
+        case "Graphite": return Color(white: 0.5)
+        default:         return Color(red: 242/255, green: 78/255, blue: 78/255)
         }
     }
     
@@ -38,7 +37,7 @@ struct TeleprompterView: View {
                     ZeroLoseIcon(type: .textbubble, color: themeColor, size: 14)
                     Text("INTERVIEW NOTES")
                         .font(.system(size: 11, weight: .bold, design: .rounded))
-                        .foregroundColor(.white.opacity(0.8))
+                        .foregroundColor(.white.opacity(0.85))
                         .kerning(1)
                 }
                 
@@ -56,8 +55,12 @@ struct TeleprompterView: View {
                     .foregroundColor(.white.opacity(0.85))
                     .padding(.horizontal, 8)
                     .padding(.vertical, 5)
-                    .background(Color.white.opacity(0.08))
+                    .background(Color.glassFill)
                     .cornerRadius(7)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 7)
+                            .strokeBorder(Color.glassStroke, lineWidth: 0.5)
+                    )
                 }
                 .buttonStyle(.interactive)
                 .pointerCursor()
@@ -69,17 +72,21 @@ struct TeleprompterView: View {
                         Text(autoFollowEnabled ? "Follow ON" : "Follow OFF")
                             .font(.system(size: 10, weight: .bold, design: .rounded))
                     }
-                    .foregroundColor(autoFollowEnabled ? themeColor : .white.opacity(0.65))
+                    .foregroundColor(autoFollowEnabled ? themeColor : .white.opacity(0.7))
                     .padding(.horizontal, 8)
                     .padding(.vertical, 5)
                     .background((autoFollowEnabled ? themeColor : Color.white).opacity(0.12))
                     .cornerRadius(7)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 7)
+                            .strokeBorder(autoFollowEnabled ? themeColor.opacity(0.4) : Color.glassStroke, lineWidth: 0.5)
+                    )
                 }
                 .buttonStyle(.interactive)
                 .pointerCursor()
                 
                 Button(action: { isPresented = false }) {
-                    ZeroLoseIcon(type: .xmark, color: .white.opacity(0.4), size: 12)
+                    ZeroLoseIcon(type: .xmark, color: Color.textSecondary, size: 12)
                         .padding(8)
                         .contentShape(Rectangle())
                 }
@@ -88,10 +95,10 @@ struct TeleprompterView: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
-            .background(Color.white.opacity(0.01))
+            .background(Color.black.opacity(0.12))
             
             Divider()
-                .background(Color.white.opacity(0.1))
+                .overlay(Color.glassStroke)
             
             if focusModeEnabled {
                 focusModeView
@@ -99,11 +106,14 @@ struct TeleprompterView: View {
                 editorView
             }
         }
-        .background(Color.zeroBackground)
+        .background {
+            Color.black.opacity(0.1)
+                .ignoresSafeArea()
+        }
         .cornerRadius(12)
         .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(Color.white.opacity(0.1), lineWidth: 0.5)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Color.glassStroke, lineWidth: 0.8)
         )
         .preferredColorScheme(.dark)
         .onAppear {
@@ -141,7 +151,7 @@ struct TeleprompterView: View {
                 .scrollContentBackground(.hidden)
                 .padding(8)
         }
-        .background(Color.black.opacity(0.2))
+        .background(Color.black.opacity(0.15))
     }
 
     @ViewBuilder
@@ -154,12 +164,12 @@ struct TeleprompterView: View {
 
                 Text("Paste interview notes in Edit mode. Question lines with '?' will be auto-indexed.")
                     .font(.system(size: fontSize - 1, weight: .regular, design: .rounded))
-                    .foregroundColor(.white.opacity(0.45))
+                    .foregroundColor(Color.textSecondary)
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 360)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color.black.opacity(0.2))
+            .background(Color.black.opacity(0.15))
         } else {
             ScrollViewReader { proxy in
                 ScrollView {
@@ -175,7 +185,7 @@ struct TeleprompterView: View {
                     }
                     .padding(12)
                 }
-                .background(Color.black.opacity(0.2))
+                .background(Color.black.opacity(0.15))
                 .onAppear {
                     guard let primaryActiveBlockID else { return }
                     proxy.scrollTo(primaryActiveBlockID, anchor: .center)
@@ -213,34 +223,34 @@ struct TeleprompterView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text(block.question)
                 .font(.system(size: fontSize + 0.5, weight: .bold, design: .rounded))
-                .foregroundColor(isActive ? .white : (shouldDim ? .white.opacity(0.52) : .white.opacity(0.85)))
+                .foregroundColor(isActive ? .white : (shouldDim ? .white.opacity(0.5) : .white.opacity(0.85)))
                 .lineSpacing(2)
                 .fixedSize(horizontal: false, vertical: true)
 
             if !block.details.isEmpty {
                 Text(block.details)
                     .font(.system(size: fontSize, weight: .medium, design: .rounded))
-                    .foregroundColor(isActive ? .white.opacity(0.95) : (shouldDim ? .white.opacity(0.34) : .white.opacity(0.65)))
+                    .foregroundColor(isActive ? .white.opacity(0.95) : (shouldDim ? .white.opacity(0.3) : .white.opacity(0.65)))
                     .lineSpacing(3)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(10)
         .background(
-            RoundedRectangle(cornerRadius: 10)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(
                     isPrimary
-                        ? themeColor.opacity(0.20)
-                        : (isActive ? themeColor.opacity(0.12) : Color.white.opacity(0.03))
+                        ? themeColor.opacity(0.18)
+                        : (isActive ? themeColor.opacity(0.08) : Color.glassFill)
                 )
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(
                     isPrimary
-                        ? themeColor.opacity(0.85)
-                        : (isActive ? themeColor.opacity(0.55) : Color.white.opacity(0.08)),
-                    lineWidth: isPrimary ? 1.4 : (isActive ? 1.0 : 0.7)
+                        ? themeColor.opacity(0.8)
+                        : (isActive ? themeColor.opacity(0.4) : Color.glassStroke),
+                    lineWidth: isPrimary ? 1.4 : 0.8
                 )
         )
     }
@@ -414,7 +424,6 @@ struct TeleprompterView: View {
     ) -> Double {
         var score = baseScore
 
-        // Require at least one meaningful keyword overlap for low-confidence matches.
         let overlapCount = InterviewKnowledgeMatcher.keywordOverlapCount(
             query: fragment,
             target: block.question
@@ -424,7 +433,6 @@ struct TeleprompterView: View {
         }
         score += min(0.12, Double(overlapCount) * 0.05)
 
-        // Language-aware weighting to avoid unrelated Finnish/English crossings.
         if let transcriptLanguageCode,
            let questionLanguageCode = block.questionLanguageCode,
            !transcriptLanguageCode.isEmpty,
@@ -466,7 +474,6 @@ struct TeleprompterView: View {
             }
         }
 
-        // Preserve order, remove exact duplicates.
         var seen = Set<String>()
         return fragments.filter { fragment in
             let key = InterviewKnowledgeMatcher.normalize(fragment)

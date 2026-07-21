@@ -20,7 +20,7 @@ struct SettingsView: View {
     @AppStorage("teleprompterText") private var teleprompterText: String = ""
     @AppStorage("selectedThemeName") private var selectedTheme: String = "Red"
     
-    // API Keys - Settings'ten yönetim için
+    // API Keys
     @State private var openAIKey: String = ""
     @State private var ollamaKey: String = ""
     @State private var groqKey: String = ""
@@ -29,45 +29,56 @@ struct SettingsView: View {
     @State private var memoryChunkCount: Int = 0
     @State private var isClearingMemory: Bool = false
     @State private var memoryStatus: String = ""
+    @State private var selectedTab: SettingsTab = .general
+    @State private var isDraggingOverCV = false
+    @State private var isDraggingOverJD = false
+    @State private var openaiModels: [String] = []
+    @State private var ollamaModels: [String] = []
     
     @ObservedObject private var hotkeyManager = HotkeyManager.shared
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.zerolose", category: "SettingsView")
     
     var body: some View {
-        ZStack {
-            // Background matching App Theme
-            Color.zeroBackground
-                .ignoresSafeArea()
+        VStack(spacing: 0) {
+            // Header
+            settingsHeader
+                .padding(.horizontal, 24)
+                .padding(.top, 20)
+                .padding(.bottom, 14)
             
-            // Border
-            RoundedRectangle(cornerRadius: 16)
-                .stroke(Color.white.opacity(0.1), lineWidth: 1)
+            // Tab Selector
+            tabSelectorBar
+                .padding(.horizontal, 24)
+                .padding(.bottom, 12)
             
+            Divider()
+                .overlay(Color.glassStroke)
+            
+            // Scrollable Content
             ScrollView {
-                VStack(spacing: 20) {
-                    // Header
-                    settingsHeader
-                    
-                    // Sections
-                    hotkeyStatusSection
-                    apiKeysSection
-                    appearanceSection
-                    typographySection
-                    personaSection
-                    activeRoleSection
-                    storedContextSection
-                    memorySection
-                    windowSection
-                    featuresSection
-                    
-                    Spacer(minLength: 20)
+                VStack(spacing: 24) {
+                    switch selectedTab {
+                    case .general:
+                        generalTabView
+                    case .api:
+                        apiTabView
+                    case .context:
+                        contextTabView
+                    case .system:
+                        systemTabView
+                    case .memory:
+                        memoryTabView
+                    }
                 }
                 .padding(24)
             }
         }
-        .frame(width: 380, height: 500)
-        .cornerRadius(16)
-        .shadow(radius: 20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background {
+            // Semi-translucent overlay to combine with window-level blur
+            Color.black.opacity(0.15)
+                .ignoresSafeArea()
+        }
         .preferredColorScheme(.dark)
         .onAppear {
             refreshMemoryState()
@@ -87,6 +98,72 @@ struct SettingsView: View {
         }
     }
     
+    // MARK: - Tab Bar Components
+    
+    private var tabSelectorBar: some View {
+        HStack(spacing: 8) {
+            ForEach(SettingsTab.allCases) { tab in
+                Button(action: {
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.75)) {
+                        selectedTab = tab
+                    }
+                }) {
+                    HStack(spacing: 6) {
+                        Image(systemName: tab.icon)
+                            .font(.system(size: 11, weight: .bold))
+                        Text(tab.rawValue)
+                            .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    }
+                    .padding(.vertical, 7)
+                    .padding(.horizontal, 12)
+                    .background(selectedTab == tab ? Color.brandPrimary.opacity(0.18) : Color.glassFill)
+                    .foregroundColor(selectedTab == tab ? .white : Color.textSecondary)
+                    .cornerRadius(10)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10)
+                            .strokeBorder(selectedTab == tab ? Color.brandPrimary.opacity(0.4) : Color.glassStroke, lineWidth: 0.8)
+                    )
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+            }
+        }
+    }
+    
+    @ViewBuilder
+    private var generalTabView: some View {
+        HStack(alignment: .top, spacing: 20) {
+            appearanceSection
+                .frame(maxWidth: .infinity)
+            typographySection
+                .frame(maxWidth: .infinity)
+        }
+        windowSection
+    }
+    
+    @ViewBuilder
+    private var apiTabView: some View {
+        apiKeysSection
+    }
+    
+    @ViewBuilder
+    private var contextTabView: some View {
+        activeRoleSection
+        personaSection
+        storedContextSection
+    }
+    
+    @ViewBuilder
+    private var systemTabView: some View {
+        hotkeyStatusSection
+        featuresSection
+    }
+    
+    @ViewBuilder
+    private var memoryTabView: some View {
+        memorySection
+    }
+    
     // MARK: - Header
     private var settingsHeader: some View {
         HStack {
@@ -101,12 +178,11 @@ struct SettingsView: View {
             Button(action: { withAnimation { isPresented = false } }) {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 22))
-                    .foregroundColor(.white.opacity(0.5))
+                    .foregroundColor(Color.textSecondary)
             }
             .buttonStyle(.interactive)
             .pointerCursor()
         }
-        .padding(.bottom, 8)
     }
     
     // MARK: - Typography Section
@@ -122,7 +198,8 @@ struct SettingsView: View {
                 // Font Design
                 HStack {
                     Text("Font Style")
-                        .foregroundColor(.white.opacity(0.8))
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(Color.textPrimary)
                     Spacer()
                     Picker("", selection: $fontDesignObj) {
                         Text("Mono").tag("monospaced")
@@ -132,7 +209,7 @@ struct SettingsView: View {
                     }
                     .pickerStyle(.menu)
                     .labelsHidden()
-                    .frame(width: 120) // Fixed width for dropdown
+                    .frame(width: 110)
                     .tint(.brandPrimary)
                 }
             }
@@ -141,12 +218,12 @@ struct SettingsView: View {
     
     // MARK: - Persona Section
     private var personaSection: some View {
-        SettingsSection(title: "Persona & Context", icon: .brain) {
+        SettingsSection(title: "Persona & Context (CV)", icon: .brain) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
-                    Text("Paste your CV, Tech Stack, or Experience Summary here. AI will personalize answers based on this.")
+                    Text("Paste or drop your CV / Experience Summary here (PDF/TXT supported). AI personalizes answers based on this.")
                         .font(.system(size: 11))
-                        .foregroundColor(.white.opacity(0.5))
+                        .foregroundColor(Color.textSecondary)
                         .lineLimit(2)
                     
                     Spacer()
@@ -158,10 +235,14 @@ struct SettingsView: View {
                             Text("Import PDF/TXT")
                         }
                         .font(.system(size: 10, weight: .medium))
-                        .padding(.vertical, 4)
-                        .padding(.horizontal, 8)
-                        .background(Color.white.opacity(0.1))
+                        .padding(.vertical, 5)
+                        .padding(.horizontal, 10)
+                        .background(Color.glassFill)
                         .cornerRadius(6)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .strokeBorder(Color.glassStroke, lineWidth: 0.5)
+                        )
                     }
                     .buttonStyle(.interactive)
                     .pointerCursor()
@@ -169,15 +250,25 @@ struct SettingsView: View {
                 
                 TextEditor(text: $userPersonaContext)
                     .font(.system(size: 11, design: .monospaced))
-                    .foregroundColor(Color.white.opacity(0.9))
+                    .foregroundColor(Color.textPrimary)
                     .scrollContentBackground(.hidden)
-                    .background(Color.black.opacity(0.2))
+                    .padding(8)
+                    .background(Color.black.opacity(0.18))
                     .cornerRadius(8)
                     .frame(height: 100)
                     .overlay(
                         RoundedRectangle(cornerRadius: 8)
-                            .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                            .strokeBorder(isDraggingOverCV ? Color.brandPrimary : Color.glassStroke, lineWidth: isDraggingOverCV ? 1.5 : 0.8)
                     )
+            }
+            .background {
+                if isDraggingOverCV {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(Color.brandPrimary.opacity(0.08))
+                }
+            }
+            .onDrop(of: [.fileURL], isTargeted: $isDraggingOverCV) { providers in
+                handleCVDrop(providers)
             }
         }
     }
@@ -188,9 +279,9 @@ struct SettingsView: View {
         return SettingsSection(title: "Active Interview Role", icon: .book) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
-                    Text("Paste the current job description here. We will use it as active company/role grounding during interview answers.")
+                    Text("Paste or drop the job description PDF/TXT file here. AI uses it to ground answers.")
                         .font(.system(size: 11))
-                        .foregroundColor(.white.opacity(0.5))
+                        .foregroundColor(Color.textSecondary)
                         .lineLimit(2)
 
                     Spacer()
@@ -201,10 +292,14 @@ struct SettingsView: View {
                             Text("Import JD")
                         }
                         .font(.system(size: 10, weight: .medium))
-                        .padding(.vertical, 4)
-                        .padding(.horizontal, 8)
-                        .background(Color.white.opacity(0.1))
+                        .padding(.vertical, 5)
+                        .padding(.horizontal, 10)
+                        .background(Color.glassFill)
                         .cornerRadius(6)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .strokeBorder(Color.glassStroke, lineWidth: 0.5)
+                        )
                     }
                     .buttonStyle(.interactive)
                     .pointerCursor()
@@ -212,14 +307,15 @@ struct SettingsView: View {
 
                 TextEditor(text: $activeJobDescription)
                     .font(.system(size: 11, design: .monospaced))
-                    .foregroundColor(Color.white.opacity(0.9))
+                    .foregroundColor(Color.textPrimary)
                     .scrollContentBackground(.hidden)
-                    .background(Color.black.opacity(0.2))
+                    .padding(8)
+                    .background(Color.black.opacity(0.18))
                     .cornerRadius(8)
                     .frame(height: 110)
                     .overlay(
                         RoundedRectangle(cornerRadius: 8)
-                            .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                            .strokeBorder(isDraggingOverJD ? Color.brandPrimary : Color.glassStroke, lineWidth: isDraggingOverJD ? 1.5 : 0.8)
                     )
 
                 VStack(alignment: .leading, spacing: 6) {
@@ -229,17 +325,26 @@ struct SettingsView: View {
 
                     Text(preview)
                         .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.72))
+                        .foregroundColor(.white.opacity(0.75))
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(10)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.white.opacity(0.04))
+                        .background(Color.glassFill)
                         .cornerRadius(8)
                         .overlay(
                             RoundedRectangle(cornerRadius: 8)
-                                .stroke(Color.orange.opacity(0.12), lineWidth: 1)
+                                .strokeBorder(Color.orange.opacity(0.16), lineWidth: 0.8)
                         )
                 }
+            }
+            .background {
+                if isDraggingOverJD {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(Color.brandPrimary.opacity(0.08))
+                }
+            }
+            .onDrop(of: [.fileURL], isTargeted: $isDraggingOverJD) { providers in
+                handleJDDrop(providers)
             }
         }
     }
@@ -250,7 +355,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 12) {
                 Text("AI remembers PDFs and conversations stored in the local vector database.")
                     .font(.system(size: 11))
-                    .foregroundColor(.white.opacity(0.5))
+                    .foregroundColor(Color.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                 
                 HStack {
@@ -260,7 +365,7 @@ struct SettingsView: View {
                             .foregroundColor(.white)
                         Text("PDFs, chat history chunks")
                             .font(.system(size: 11))
-                            .foregroundColor(.white.opacity(0.5))
+                            .foregroundColor(Color.textSecondary)
                     }
                     
                     Spacer()
@@ -271,8 +376,12 @@ struct SettingsView: View {
                         .foregroundColor(memoryChunkCount > 0 ? .green : .orange)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
-                        .background((memoryChunkCount > 0 ? Color.green : Color.orange).opacity(0.2))
+                        .background((memoryChunkCount > 0 ? Color.green : Color.orange).opacity(0.12))
                         .cornerRadius(6)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .strokeBorder((memoryChunkCount > 0 ? Color.green : Color.orange).opacity(0.3), lineWidth: 0.5)
+                        )
                 }
                 
                 if !memoryStatus.isEmpty {
@@ -282,7 +391,7 @@ struct SettingsView: View {
                 }
                 
                 Divider()
-                    .background(Color.white.opacity(0.1))
+                    .overlay(Color.glassStroke)
                 
                 // Clear Memory Button
                 Button(action: clearMemory) {
@@ -291,7 +400,7 @@ struct SettingsView: View {
                         Text(isClearingMemory ? "Clearing..." : "Clear All Memory")
                     }
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(.red.opacity(0.8))
+                    .foregroundColor(.red.opacity(0.9))
                     .padding(.vertical, 8)
                     .padding(.horizontal, 16)
                     .frame(maxWidth: .infinity)
@@ -299,7 +408,7 @@ struct SettingsView: View {
                     .cornerRadius(8)
                     .overlay(
                         RoundedRectangle(cornerRadius: 8)
-                            .stroke(Color.red.opacity(0.3), lineWidth: 1)
+                            .strokeBorder(Color.red.opacity(0.3), lineWidth: 0.8)
                     )
                 }
                 .disabled(isClearingMemory)
@@ -314,7 +423,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Persona, active role text, and interview notes are stored locally and survive restarts.")
                     .font(.system(size: 11))
-                    .foregroundColor(.white.opacity(0.5))
+                    .foregroundColor(Color.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
 
                 HStack(spacing: 10) {
@@ -347,14 +456,14 @@ struct SettingsView: View {
         Button(action: action) {
             Text(title)
                 .font(.system(size: 12, weight: .medium))
-                .foregroundColor(isEnabled ? .orange.opacity(0.9) : .white.opacity(0.35))
+                .foregroundColor(isEnabled ? .orange.opacity(0.9) : .white.opacity(0.3))
                 .padding(.vertical, 8)
                 .frame(maxWidth: .infinity)
-                .background(isEnabled ? Color.orange.opacity(0.08) : Color.white.opacity(0.04))
+                .background(isEnabled ? Color.orange.opacity(0.08) : Color.white.opacity(0.03))
                 .cornerRadius(8)
                 .overlay(
                     RoundedRectangle(cornerRadius: 8)
-                        .stroke(isEnabled ? Color.orange.opacity(0.28) : Color.white.opacity(0.08), lineWidth: 1)
+                        .strokeBorder(isEnabled ? Color.orange.opacity(0.28) : Color.white.opacity(0.08), lineWidth: 0.8)
                 )
         }
         .disabled(!isEnabled)
@@ -392,7 +501,7 @@ struct SettingsView: View {
 
     // MARK: - Window Section
     private var windowSection: some View {
-        SettingsSection(title: "Window", icon: .gear) {
+        SettingsSection(title: "Window Settings", icon: .gear) {
             VStack(spacing: 16) {
                 SettingsRow(label: "Width", value: "\(Int(windowWidth))px") {
                     Slider(value: $windowWidth, in: 350...800, step: 10)
@@ -420,12 +529,16 @@ struct SettingsView: View {
                         Image(systemName: "arrow.counterclockwise")
                         Text("Restore Defaults")
                     }
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(.white.opacity(0.7))
-                    .padding(.vertical, 8)
-                    .padding(.horizontal, 16)
-                    .background(Color.white.opacity(0.1))
-                    .clipShape(Capsule())
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.white.opacity(0.8))
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 14)
+                    .background(Color.glassFill)
+                    .cornerRadius(14)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14)
+                            .strokeBorder(Color.glassStroke, lineWidth: 0.5)
+                    )
                 }
                 .buttonStyle(.interactive)
                 .pointerCursor()
@@ -435,7 +548,7 @@ struct SettingsView: View {
     
     // MARK: - Features Section
     private var featuresSection: some View {
-        SettingsSection(title: "Features", icon: .eye) {
+        SettingsSection(title: "Features & Integrations", icon: .eye) {
             VStack(spacing: 16) {
                 // Auto-Analyze Toggle
                 SettingsToggle(
@@ -446,7 +559,7 @@ struct SettingsView: View {
                 )
                 
                 Divider()
-                    .background(Color.white.opacity(0.1))
+                    .overlay(Color.glassStroke)
                 
                 // Stealth Mode Toggle
                 SettingsToggle(
@@ -461,7 +574,7 @@ struct SettingsView: View {
                 }
                 
                 Divider()
-                    .background(Color.white.opacity(0.1))
+                    .overlay(Color.glassStroke)
                 
                 // Audio Language Picker
                 HStack {
@@ -471,7 +584,7 @@ struct SettingsView: View {
                             .foregroundColor(.white)
                         Text("Guided transcription for better accuracy")
                             .font(.system(size: 12))
-                            .foregroundColor(.white.opacity(0.5))
+                            .foregroundColor(Color.textSecondary)
                     }
                     Spacer()
                     Picker("", selection: $audioLanguage) {
@@ -482,12 +595,12 @@ struct SettingsView: View {
                     }
                     .pickerStyle(.menu)
                     .labelsHidden()
-                    .frame(width: 100)
+                    .frame(width: 110)
                     .tint(.brandPrimary)
                 }
                 
                 Divider()
-                    .background(Color.white.opacity(0.1))
+                    .overlay(Color.glassStroke)
                 
                 // No-Echo Audio Toggle
                 SettingsToggle(
@@ -498,7 +611,7 @@ struct SettingsView: View {
                 )
                 
                 Divider()
-                    .background(Color.white.opacity(0.1))
+                    .overlay(Color.glassStroke)
                 
                 // Open Captures Folder Button
                 HStack {
@@ -508,7 +621,7 @@ struct SettingsView: View {
                             .foregroundColor(.white)
                         Text("Access locally saved screen analytics")
                             .font(.system(size: 12))
-                            .foregroundColor(.white.opacity(0.5))
+                            .foregroundColor(Color.textSecondary)
                     }
                     Spacer()
                     Button(action: openCapturesFolder) {
@@ -518,8 +631,12 @@ struct SettingsView: View {
                         }
                         .padding(.horizontal, 12)
                         .padding(.vertical, 6)
-                        .background(Color.white.opacity(0.1))
+                        .background(Color.glassFill)
                         .cornerRadius(8)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .strokeBorder(Color.glassStroke, lineWidth: 0.5)
+                        )
                     }
                     .buttonStyle(.interactive)
                     .pointerCursor()
@@ -533,15 +650,15 @@ struct SettingsView: View {
         SettingsSection(title: "Appearance", icon: .sparkles) {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Theme Color")
-                    .foregroundColor(.white.opacity(0.8))
-                    .font(.system(size: 13))
+                    .foregroundColor(Color.textPrimary)
+                    .font(.system(size: 13, weight: .medium))
                 
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 40))], spacing: 10) {
                     ForEach(["Red", "Orange", "Blue", "Green", "Purple", "Graphite"], id: \.self) { theme in
                         ZStack {
                             Circle()
                                 .fill(colorForTheme(theme))
-                                .frame(width: 32, height: 32)
+                                .frame(width: 30, height: 30)
                                 .onTapGesture {
                                     withAnimation {
                                         selectedTheme = theme
@@ -551,7 +668,7 @@ struct SettingsView: View {
                             if selectedTheme == theme {
                                 Image(systemName: "checkmark")
                                     .foregroundColor(.white)
-                                    .font(.system(size: 14, weight: .bold))
+                                    .font(.system(size: 13, weight: .bold))
                             }
                         }
                         .pointerCursor()
@@ -563,13 +680,13 @@ struct SettingsView: View {
     
     private func colorForTheme(_ name: String) -> Color {
         switch name {
-        case "Red": return Color(red: 242/255, green: 78/255, blue: 78/255)
-        case "Orange": return Color.orange
-        case "Blue": return Color.blue
-        case "Purple": return Color.purple
-        case "Green": return Color.green
-        case "Graphite": return Color(white: 0.3)
-        default: return Color(red: 242/255, green: 78/255, blue: 78/255)
+        case "Red":      return Color(red: 242/255, green: 78/255, blue: 78/255)
+        case "Orange":   return Color.orange
+        case "Blue":     return Color(red: 0.2, green: 0.6, blue: 1.0)
+        case "Purple":   return Color(red: 0.7, green: 0.3, blue: 1.0)
+        case "Green":    return Color(red: 0.2, green: 0.85, blue: 0.5)
+        case "Graphite": return Color(white: 0.5)
+        default:         return Color(red: 242/255, green: 78/255, blue: 78/255)
         }
     }
 
@@ -580,23 +697,25 @@ struct SettingsView: View {
                 // Show/Hide Toggle
                 HStack {
                     Text(showKeys ? "Hide Keys" : "Show Keys")
-                        .font(.system(size: 12))
-                        .foregroundColor(.white.opacity(0.7))
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(Color.textSecondary)
                     Spacer()
                     Button(action: { showKeys.toggle() }) {
                         Image(systemName: showKeys ? "eye.slash" : "eye")
                             .foregroundColor(.brandPrimary)
+                            .font(.system(size: 14))
                     }
                     .buttonStyle(.interactive)
                 }
                 
-                Divider().background(Color.white.opacity(0.1))
+                Divider()
+                    .overlay(Color.glassStroke)
 
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
                         Text("OpenAI Key (Preferred)")
                             .font(.system(size: 12, weight: .medium))
-                            .foregroundColor(.white.opacity(0.8))
+                            .foregroundColor(.white.opacity(0.85))
                         Spacer()
                         if Secrets.isOpenAIKeyValid {
                             Image(systemName: "checkmark.circle.fill")
@@ -606,16 +725,24 @@ struct SettingsView: View {
                     }
                     Text("Primary provider for live technical interview fallback and low-latency coding answers.")
                         .font(.system(size: 10))
-                        .foregroundColor(.white.opacity(0.45))
+                        .foregroundColor(Color.textSecondary)
 
                     if showKeys {
                         TextField("OpenAI API Key", text: $openAIKey)
-                            .textFieldStyle(.roundedBorder)
-                            .onChange(of: openAIKey) { Secrets.openAIApiKey = openAIKey }
+                            .textFieldStyle(.plain)
+                            .padding(8)
+                            .background(Color.black.opacity(0.18))
+                            .cornerRadius(6)
+                            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.8))
+                            .onChange(of: openAIKey) { Secrets.openAIApiKey = openAIKey; fetchModels() }
                     } else {
                         SecureField("OpenAI API Key", text: $openAIKey)
-                            .textFieldStyle(.roundedBorder)
-                            .onChange(of: openAIKey) { Secrets.openAIApiKey = openAIKey }
+                            .textFieldStyle(.plain)
+                            .padding(8)
+                            .background(Color.black.opacity(0.18))
+                            .cornerRadius(6)
+                            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.8))
+                            .onChange(of: openAIKey) { Secrets.openAIApiKey = openAIKey; fetchModels() }
                     }
                 }
                 
@@ -624,7 +751,7 @@ struct SettingsView: View {
                     HStack {
                         Text("Ollama Cloud Key (Fallback)")
                             .font(.system(size: 12, weight: .medium))
-                            .foregroundColor(.white.opacity(0.8))
+                            .foregroundColor(.white.opacity(0.85))
                         Spacer()
                         if Secrets.isOllamaKeyValid {
                             Image(systemName: "checkmark.circle.fill")
@@ -634,15 +761,23 @@ struct SettingsView: View {
                     }
                     Text("Optional fallback if OpenAI key is not available. Local embeddings continue to work without this key.")
                         .font(.system(size: 10))
-                        .foregroundColor(.white.opacity(0.45))
+                        .foregroundColor(Color.textSecondary)
                     if showKeys {
                         TextField("Ollama API Key", text: $ollamaKey)
-                            .textFieldStyle(.roundedBorder)
-                            .onChange(of: ollamaKey) { Secrets.ollamaApiKey = ollamaKey }
+                            .textFieldStyle(.plain)
+                            .padding(8)
+                            .background(Color.black.opacity(0.18))
+                            .cornerRadius(6)
+                            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.8))
+                            .onChange(of: ollamaKey) { Secrets.ollamaApiKey = ollamaKey; fetchModels() }
                     } else {
                         SecureField("Ollama API Key", text: $ollamaKey)
-                            .textFieldStyle(.roundedBorder)
-                            .onChange(of: ollamaKey) { Secrets.ollamaApiKey = ollamaKey }
+                            .textFieldStyle(.plain)
+                            .padding(8)
+                            .background(Color.black.opacity(0.18))
+                            .cornerRadius(6)
+                            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.8))
+                            .onChange(of: ollamaKey) { Secrets.ollamaApiKey = ollamaKey; fetchModels() }
                     }
                 }
                 
@@ -651,7 +786,7 @@ struct SettingsView: View {
                     HStack {
                         Text("Groq Key")
                             .font(.system(size: 12, weight: .medium))
-                            .foregroundColor(.white.opacity(0.8))
+                            .foregroundColor(.white.opacity(0.85))
                         Spacer()
                         if Secrets.isGroqKeyValid {
                             Image(systemName: "checkmark.circle.fill")
@@ -661,11 +796,19 @@ struct SettingsView: View {
                     }
                     if showKeys {
                         TextField("Groq API Key", text: $groqKey)
-                            .textFieldStyle(.roundedBorder)
+                            .textFieldStyle(.plain)
+                            .padding(8)
+                            .background(Color.black.opacity(0.18))
+                            .cornerRadius(6)
+                            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.8))
                             .onChange(of: groqKey) { Secrets.groqApiKey = groqKey }
                     } else {
                         SecureField("Groq API Key", text: $groqKey)
-                            .textFieldStyle(.roundedBorder)
+                            .textFieldStyle(.plain)
+                            .padding(8)
+                            .background(Color.black.opacity(0.18))
+                            .cornerRadius(6)
+                            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.8))
                             .onChange(of: groqKey) { Secrets.groqApiKey = groqKey }
                     }
                 }
@@ -675,7 +818,7 @@ struct SettingsView: View {
                     HStack {
                         Text("Tavily Key")
                             .font(.system(size: 12, weight: .medium))
-                            .foregroundColor(.white.opacity(0.8))
+                            .foregroundColor(.white.opacity(0.85))
                         Spacer()
                         if Secrets.isTavilyKeyValid {
                             Image(systemName: "checkmark.circle.fill")
@@ -685,16 +828,63 @@ struct SettingsView: View {
                     }
                     if showKeys {
                         TextField("Tavily API Key", text: $tavilyKey)
-                            .textFieldStyle(.roundedBorder)
+                            .textFieldStyle(.plain)
+                            .padding(8)
+                            .background(Color.black.opacity(0.18))
+                            .cornerRadius(6)
+                            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.8))
                             .onChange(of: tavilyKey) { Secrets.tavilyApiKey = tavilyKey }
                     } else {
                         SecureField("Tavily API Key", text: $tavilyKey)
-                            .textFieldStyle(.roundedBorder)
+                            .textFieldStyle(.plain)
+                            .padding(8)
+                            .background(Color.black.opacity(0.18))
+                            .cornerRadius(6)
+                            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.8))
                             .onChange(of: tavilyKey) { Secrets.tavilyApiKey = tavilyKey }
                     }
                 }
                 
-                Divider().background(Color.white.opacity(0.1))
+                Divider()
+                    .overlay(Color.glassStroke)
+                
+                // Model Configuration Override
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 6) {
+                        ZeroLoseIcon(type: .sparkles, color: .brandPrimary, size: 14)
+                        Text("Model Selection & Customization")
+                            .font(.system(size: 12, weight: .bold, design: .rounded))
+                            .foregroundColor(.white)
+                    }
+                    
+                    Text("Select which models to target for each LLM query type. ZeroLose will use these when the corresponding provider keys are valid.")
+                        .font(.system(size: 10))
+                        .foregroundColor(Color.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    
+                    VStack(spacing: 8) {
+                        if Secrets.isOpenAIKeyValid {
+                            let openAIOpts = openaiModels.isEmpty ? ["gpt-5-mini", "gpt-4o", "gpt-4o-mini"] : openaiModels
+                            modelSelectorRow(label: "OpenAI Fast Model", key: "customOpenAIFastModel", options: openAIOpts)
+                            modelSelectorRow(label: "OpenAI Vision Model", key: "customOpenAIVisionModel", options: openAIOpts)
+                            modelSelectorRow(label: "OpenAI Reasoning Model", key: "customOpenAIReasoningModel", options: openAIOpts)
+                            modelSelectorRow(label: "OpenAI Coding Model", key: "customOpenAICodingModel", options: openAIOpts)
+                        } else {
+                            let ollamaOpts = ollamaModels.isEmpty ? ["qwen2.5:7b-cloud", "gemma2:9b-cloud", "llama3.1:8b-cloud", "qwen2.5-coder:7b-cloud", "gpt-oss:120b", "nemotron-3-ultra"] : ollamaModels
+                            modelSelectorRow(label: "Ollama Fast Model", key: "customOllamaFastModel", options: ollamaOpts)
+                            modelSelectorRow(label: "Ollama Vision Model", key: "customOllamaVisionModel", options: ollamaOpts)
+                            modelSelectorRow(label: "Ollama Reasoning Model", key: "customOllamaReasoningModel", options: ollamaOpts)
+                            modelSelectorRow(label: "Ollama Coding Model", key: "customOllamaCodingModel", options: ollamaOpts)
+                        }
+                    }
+                    .padding(10)
+                    .background(Color.black.opacity(0.18))
+                    .cornerRadius(8)
+                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.glassStroke, lineWidth: 0.8))
+                }
+                
+                Divider()
+                    .overlay(Color.glassStroke)
                 
                 // Clear Keys Button
                 Button(action: {
@@ -705,12 +895,13 @@ struct SettingsView: View {
                         Image(systemName: "trash")
                         Text("Clear Saved Keys")
                     }
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.white.opacity(0.6))
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.85))
                     .padding(.vertical, 6)
                     .padding(.horizontal, 12)
-                    .background(Color.white.opacity(0.1))
+                    .background(Color.glassFill)
                     .cornerRadius(6)
+                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.5))
                 }
                 .buttonStyle(.interactive)
                 .pointerCursor()
@@ -724,31 +915,59 @@ struct SettingsView: View {
         ollamaKey = Secrets.ollamaApiKey
         groqKey = Secrets.groqApiKey
         tavilyKey = Secrets.tavilyApiKey
+        fetchModels()
+    }
+    
+    private func fetchModels() {
+        let openAIKeyVal = Secrets.openAIApiKey
+        let ollamaKeyVal = Secrets.ollamaApiKey
+        
+        if !openAIKeyVal.isEmpty {
+            Task {
+                let models = await DependencyContainer.shared.ollamaService.fetchAvailableModels(provider: "openai", apiKey: openAIKeyVal)
+                await MainActor.run {
+                    self.openaiModels = models
+                }
+            }
+        } else {
+            self.openaiModels = []
+        }
+        
+        if !ollamaKeyVal.isEmpty {
+            Task {
+                let models = await DependencyContainer.shared.ollamaService.fetchAvailableModels(provider: "ollama", apiKey: ollamaKeyVal)
+                await MainActor.run {
+                    self.ollamaModels = models
+                }
+            }
+        } else {
+            self.ollamaModels = []
+        }
     }
     
     // MARK: - Hotkey Status Section
     @ViewBuilder
     private var hotkeyStatusSection: some View {
         if !hotkeyManager.isPermissionGranted {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundColor(.orange)
                     Text("Cmd+B Shortcut Inactive")
-                        .font(.headline)
+                        .font(.system(size: 13, weight: .bold, design: .rounded))
                         .foregroundColor(.white)
                 }
                 
                 Text("Global hotkey could not be registered. This usually means Cmd+B is already captured by another app or shortcut tool.")
-                    .font(.caption)
-                    .foregroundColor(.white.opacity(0.7))
+                    .font(.system(size: 11))
+                    .foregroundColor(Color.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                 
                 Button(action: {
                     hotkeyManager.start()
                 }) {
                     Text("Retry Cmd+B Registration")
-                        .font(.system(size: 12, weight: .medium))
+                        .font(.system(size: 11, weight: .semibold))
                         .padding(.vertical, 6)
                         .padding(.horizontal, 12)
                         .background(Color.orange)
@@ -761,7 +980,7 @@ struct SettingsView: View {
             .padding(16)
             .background(Color.orange.opacity(0.1))
             .cornerRadius(12)
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.orange.opacity(0.3), lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.orange.opacity(0.3), lineWidth: 0.8))
         }
     }
     
@@ -852,12 +1071,9 @@ struct SettingsView: View {
             }
             return fullText.trimmingCharacters(in: .whitespacesAndNewlines)
         } else {
-            // Text File
             return try? String(contentsOf: url, encoding: .utf8)
         }
     }
-    
-    // MARK: - Handlers
     
     private func openCapturesFolder() {
         let fileManager = FileManager.default
@@ -866,13 +1082,72 @@ struct SettingsView: View {
         }
         
         let capturesURL = appSupportURL.appendingPathComponent("ZeroLose/Captures", isDirectory: true)
-        
-        // Ensure directory exists
         if !fileManager.fileExists(atPath: capturesURL.path) {
             try? fileManager.createDirectory(at: capturesURL, withIntermediateDirectories: true)
         }
         
         NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: capturesURL.path)
+    }
+    
+    private func handleCVDrop(_ providers: [NSItemProvider]) -> Bool {
+        guard let provider = providers.first else { return false }
+        
+        provider.loadDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { data, error in
+            guard let data = data,
+                  let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
+            
+            Task { @MainActor in
+                if let text = DocumentParserService.shared.extractText(from: url) {
+                    if !userPersonaContext.isEmpty {
+                        userPersonaContext += "\n\n"
+                    }
+                    userPersonaContext += "--- Imported Context (\(url.lastPathComponent)) ---\n"
+                    userPersonaContext += text
+                    self.logger.info("CV document drag-dropped and parsed: \(url.lastPathComponent)")
+                }
+            }
+        }
+        return true
+    }
+    
+    private func handleJDDrop(_ providers: [NSItemProvider]) -> Bool {
+        guard let provider = providers.first else { return false }
+        
+        provider.loadDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { data, error in
+            guard let data = data,
+                  let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
+            
+            Task { @MainActor in
+                if let text = DocumentParserService.shared.extractText(from: url) {
+                    activeJobDescription = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    self.logger.info("JD document drag-dropped and parsed: \(url.lastPathComponent)")
+                }
+            }
+        }
+        return true
+    }
+    
+    private func modelSelectorRow(label: String, key: String, options: [String]) -> some View {
+        let binding = Binding<String>(
+            get: { UserDefaults.standard.string(forKey: key) ?? options.first ?? "" },
+            set: { UserDefaults.standard.set($0, forKey: key) }
+        )
+        
+        return HStack {
+            Text(label)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(.white.opacity(0.8))
+            Spacer()
+            Picker("", selection: binding) {
+                ForEach(options, id: \.self) { opt in
+                    Text(opt).tag(opt)
+                }
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .frame(width: 200)
+            .tint(.brandPrimary)
+        }
     }
 }
 
@@ -890,13 +1165,13 @@ struct SettingsSection<Content: View>: View {
     }
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 14) {
             // Section Header
             HStack(spacing: 8) {
-                ZeroLoseIcon(type: icon, color: .brandPrimary, size: 16)
+                ZeroLoseIcon(type: icon, color: .brandPrimary, size: 15)
                 Text(title)
-                    .font(.system(size: 14, weight: .semibold, design: .rounded))
-                    .foregroundColor(.white.opacity(0.6))
+                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                    .foregroundColor(Color.textSecondary)
             }
             
             // Section Content
@@ -905,11 +1180,11 @@ struct SettingsSection<Content: View>: View {
             }
             .padding(16)
             .background(
-                RoundedRectangle(cornerRadius: 16)
-                    .fill(Color.white.opacity(0.05))
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color.glassFill)
                     .overlay(
-                        RoundedRectangle(cornerRadius: 16)
-                            .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .strokeBorder(Color.glassStroke, lineWidth: 0.8)
                     )
             )
         }
@@ -928,13 +1203,14 @@ struct SettingsRow<Content: View>: View {
     }
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(label)
-                    .foregroundColor(.white.opacity(0.8))
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(Color.textPrimary)
                 Spacer()
                 Text(value)
-                    .font(.system(size: 13, weight: .medium, design: .monospaced))
+                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
                     .foregroundColor(.brandPrimary)
             }
             content
@@ -952,16 +1228,36 @@ struct SettingsToggle: View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
                 Text(title)
-                    .font(.system(size: 14, weight: .medium))
+                    .font(.system(size: 13, weight: .medium))
                     .foregroundColor(.white)
                 Text(subtitle)
-                    .font(.system(size: 12))
-                    .foregroundColor(.white.opacity(0.5))
+                    .font(.system(size: 11))
+                    .foregroundColor(Color.textSecondary)
             }
             Spacer()
             Toggle("", isOn: $isOn)
                 .toggleStyle(.switch)
                 .tint(accentColor)
+        }
+    }
+}
+
+enum SettingsTab: String, CaseIterable, Identifiable {
+    case general = "General"
+    case api = "API Keys"
+    case context = "Context & JD"
+    case system = "Voice & System"
+    case memory = "Memory"
+    
+    var id: String { self.rawValue }
+    
+    var icon: String {
+        switch self {
+        case .general: return "slider.horizontal.3"
+        case .api: return "key.fill"
+        case .context: return "doc.text.fill"
+        case .system: return "cpu.fill"
+        case .memory: return "brain.fill"
         }
     }
 }

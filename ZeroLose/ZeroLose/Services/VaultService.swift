@@ -8,6 +8,39 @@ struct VaultInterviewItem: Identifiable, Codable, Sendable {
     var answerFinnish: String
     var translationTr: String
     var keyPoints: [String]
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case question
+        case answerFinnish
+        case translationTr
+        case keyPoints
+    }
+
+    init(
+        id: UUID = UUID(),
+        question: String,
+        answerFinnish: String,
+        translationTr: String,
+        keyPoints: [String]
+    ) {
+        self.id = id
+        self.question = question
+        self.answerFinnish = answerFinnish
+        self.translationTr = translationTr
+        self.keyPoints = keyPoints
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let decodedID = try? container.decode(UUID.self, forKey: .id)
+        let decodedIDString = try? container.decode(String.self, forKey: .id)
+        self.id = decodedID ?? decodedIDString.flatMap(UUID.init(uuidString:)) ?? UUID()
+        self.question = try container.decode(String.self, forKey: .question)
+        self.answerFinnish = try container.decode(String.self, forKey: .answerFinnish)
+        self.translationTr = try container.decodeIfPresent(String.self, forKey: .translationTr) ?? ""
+        self.keyPoints = try container.decodeIfPresent([String].self, forKey: .keyPoints) ?? []
+    }
 }
 
 struct VaultInterviewCategory: Identifiable, Codable, Sendable {
@@ -15,12 +48,45 @@ struct VaultInterviewCategory: Identifiable, Codable, Sendable {
     var title: String
     var icon: String
     var items: [VaultInterviewItem]
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case title
+        case icon
+        case items
+    }
+
+    init(
+        id: UUID = UUID(),
+        title: String,
+        icon: String,
+        items: [VaultInterviewItem]
+    ) {
+        self.id = id
+        self.title = title
+        self.icon = icon
+        self.items = items
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let decodedID = try? container.decode(UUID.self, forKey: .id)
+        let decodedIDString = try? container.decode(String.self, forKey: .id)
+        self.id = decodedID ?? decodedIDString.flatMap(UUID.init(uuidString:)) ?? UUID()
+        self.title = try container.decode(String.self, forKey: .title)
+        self.icon = try container.decodeIfPresent(String.self, forKey: .icon) ?? "folder.fill"
+        self.items = try container.decodeIfPresent([VaultInterviewItem].self, forKey: .items) ?? []
+    }
 }
 
 struct VaultExportSnapshot: Codable, Sendable {
     let exportedAt: Date
     let totalCategories: Int
     let totalQuestions: Int
+    let categories: [VaultInterviewCategory]
+}
+
+private struct VaultImportEnvelope: Decodable {
     let categories: [VaultInterviewCategory]
 }
 
@@ -175,6 +241,8 @@ class VaultService: ObservableObject {
         let importedCategories: [VaultInterviewCategory]
         if let snapshot = try? decoder.decode(VaultExportSnapshot.self, from: data) {
             importedCategories = snapshot.categories
+        } else if let envelope = try? decoder.decode(VaultImportEnvelope.self, from: data) {
+            importedCategories = envelope.categories
         } else if let categories = try? decoder.decode([VaultInterviewCategory].self, from: data) {
             importedCategories = categories
         } else {

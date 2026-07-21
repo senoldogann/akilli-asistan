@@ -36,7 +36,13 @@ struct MessageContent: View, Equatable {
                 case .table(let headers, let rows):
                     MarkdownTableView(headers: headers, rows: rows, fontSize: fontSize, isUser: isUser)
                 case .code(let language, let code):
-                    CodeBlockView(language: language, code: code, fontSize: fontSize)
+                    if language.lowercased() == "diagram",
+                       let data = code.data(using: .utf8),
+                       let diagramData = try? JSONDecoder().decode(DiagramData.self, from: data) {
+                        SystemDiagramView(data: diagramData)
+                    } else {
+                        CodeBlockView(language: language, code: code, fontSize: fontSize)
+                    }
                 case .searchIndicator(let content):
                     HStack(spacing: 8) {
                         ZeroLoseIcon(type: .globe, color: .brandPrimary, size: 14)

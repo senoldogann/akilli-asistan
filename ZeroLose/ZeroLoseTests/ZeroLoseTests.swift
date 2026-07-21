@@ -247,6 +247,72 @@ final class ZeroLoseTests: XCTestCase {
         XCTAssertEqual(imported.first?.items.first?.answerFinnish, "Kyllä, useissa projekteissa.")
     }
 
+    func testVaultImportCategoriesSupportsEnvelopeWithFractionalSecondTimestamp() throws {
+        let json = """
+        {
+          "exportedAt": "2026-03-14T15:51:07.218605Z",
+          "totalCategories": 1,
+          "totalQuestions": 1,
+          "categories": [
+            {
+              "id": "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA",
+              "title": "Intro",
+              "icon": "person.fill",
+              "items": [
+                {
+                  "id": "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB",
+                  "question": "Kerrotko vähän itsestäsi?",
+                  "answerFinnish": "Olen full stack -kehittäjä.",
+                  "translationTr": "Can you tell me about yourself?",
+                  "keyPoints": ["intro"]
+                }
+              ]
+            }
+          ]
+        }
+        """
+
+        let imported = try VaultService.importCategories(from: Data(json.utf8))
+
+        XCTAssertEqual(imported.count, 1)
+        XCTAssertEqual(imported.first?.items.count, 1)
+        XCTAssertEqual(imported.first?.items.first?.question, "Kerrotko vähän itsestäsi?")
+    }
+
+    func testVaultImportCategoriesRecoversFromInvalidIDs() throws {
+        let json = """
+        {
+          "exportedAt": "2026-03-14T15:51:07.218605Z",
+          "totalCategories": 1,
+          "totalQuestions": 1,
+          "categories": [
+            {
+              "id": "A1B2C3D4-E5F6-4A7B-8C9D-MONITORING",
+              "title": "Tekninen",
+              "icon": "gearshape.fill",
+              "items": [
+                {
+                  "id": "A1B2C3D4-E5F6-4A7B-8C9D-TROUBLESHOOT",
+                  "question": "Miten debuggaat tuotanto-ongelman?",
+                  "answerFinnish": "Aloitan vaikutuksen rajaamisesta ja lokien analyysistä.",
+                  "translationTr": "How do you debug a production issue?",
+                  "keyPoints": ["debug", "logs"]
+                }
+              ]
+            }
+          ]
+        }
+        """
+
+        let imported = try VaultService.importCategories(from: Data(json.utf8))
+
+        XCTAssertEqual(imported.count, 1)
+        XCTAssertEqual(imported.first?.items.count, 1)
+        XCTAssertEqual(imported.first?.title, "Tekninen")
+        XCTAssertNotEqual(imported.first?.id.uuidString, "A1B2C3D4-E5F6-4A7B-8C9D-MONITORING")
+        XCTAssertNotEqual(imported.first?.items.first?.id.uuidString, "A1B2C3D4-E5F6-4A7B-8C9D-TROUBLESHOOT")
+    }
+
     func testVaultMergeCategoriesMergesByTitleAndQuestion() {
         let existing = [
             VaultInterviewCategory(

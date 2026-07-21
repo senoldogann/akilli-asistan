@@ -557,6 +557,7 @@ class IntelligenceService {
             switch langCode {
             case "en", "english": languageInstruction = "The user is asking in ENGLISH. Respond ONLY in ENGLISH."
             case "fi", "finnish": languageInstruction = "The user is asking in FINNISH. CRITICAL: Use 'Professional Puheenkieli'."
+            case "tr", "turkish": languageInstruction = "The user is asking in TURKISH. Respond ONLY in TURKISH."
             default: break
             }
         }
@@ -763,7 +764,7 @@ class IntelligenceService {
                 }
             }
             
-            let finalizedAnswer = await enforceOutputContractIfNeeded(
+            var finalizedAnswer = await enforceOutputContractIfNeeded(
                 answer: fullAnswer,
                 query: query,
                 expectedLanguageCode: finalLanguageCode,
@@ -772,6 +773,61 @@ class IntelligenceService {
                 skipPostProcessing: imageData != nil || shouldUseActionFastPath,
                 allowAgentActions: allowAgentActions
             )
+            
+            // Coding Sandbox Auto-Compiler Correction Loop
+            var swiftBlocks = self.extractSwiftCodeBlocks(from: finalizedAnswer)
+            var hasVerifiedBadge = false
+            
+            if !swiftBlocks.isEmpty {
+                var attempts = 0
+                while attempts < 2 {
+                    var allCompiled = true
+                    var compileErrors = ""
+                    
+                    for block in swiftBlocks {
+                        let res = CodingSandboxService.shared.verifySwiftCode(block)
+                        if !res.success {
+                            allCompiled = false
+                            compileErrors += "Errors in Swift code block:\n\(res.diagnostics)\n\n"
+                        }
+                    }
+                    
+                    if allCompiled {
+                        hasVerifiedBadge = true
+                        break
+                    }
+                    
+                    attempts += 1
+                    logger.info("Swift sandbox compilation failed. Running correction loop attempt \(attempts)...")
+                    
+                    let correctionPrompt = """
+                    The generated Swift code block has compilation errors. Please fix the compiler errors and output the corrected response containing the updated ```swift block.
+                    
+                    Compiler Errors:
+                    \(compileErrors)
+                    
+                    Original Response:
+                    \(finalizedAnswer)
+                    """
+                    
+                    do {
+                        let correctionMessages = messages + [
+                            OllamaService.ChatMessage(role: "assistant", content: finalizedAnswer, images: nil),
+                            OllamaService.ChatMessage(role: "user", content: correctionPrompt, images: nil)
+                        ]
+                        let correctedResponse = try await ollamaService.generate(messages: correctionMessages, model: model)
+                        finalizedAnswer = correctedResponse
+                        swiftBlocks = self.extractSwiftCodeBlocks(from: finalizedAnswer)
+                    } catch {
+                        logger.error("Correction loop failed: \(error.localizedDescription)")
+                        break
+                    }
+                }
+                
+                if hasVerifiedBadge {
+                    finalizedAnswer += "\n\n> 🛡️ **[Compile Verified in local Swift sandbox]**"
+                }
+            }
             
             // 5. UPDATE INTERNAL HISTORY
             appendConversationTurn(
@@ -1551,7 +1607,8 @@ class IntelligenceService {
         switch code {
         case "en", "english": return "English"
         case "fi", "finnish": return "Finnish"
-            default: return "the user's language"
+        case "tr", "turkish": return "Turkish"
+        default: return "the user's language"
         }
     }
 
@@ -1560,6 +1617,8 @@ class IntelligenceService {
         switch code {
         case "fi", "finnish":
             return "Tämä kysymys vaatii ajantasaisen verkkovarmistuksen, mutta verkkohaku epäonnistui juuri nyt. En halua arvata väärin, joten varmennettua vastausta ei voi antaa tällä hetkellä."
+        case "tr", "turkish":
+            return "Bu soru güncel bir web doğrulaması gerektiriyor, ancak şu anda web araması başarısız oldu. Yanlış bilgi vermemek adına şu anda doğrulanmış bir yanıt sunamıyorum."
         default:
             return "This question needs live web verification, but web search failed right now. To avoid misinformation, I can’t provide a verified answer at the moment."
         }
@@ -1578,7 +1637,13 @@ class IntelligenceService {
         let sanitized = sanitizeCitationArtifacts(in: baseText)
         let trimmed = sanitized.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            return allowAgentActions ? answer : "Hazırım. Sorunu kısa yaz, net cevap vereyim."
+            let fallback: String
+            switch expectedLanguageCode?.lowercased() {
+            case "fi", "finnish": fallback = "Olen valmis. Esitä kysymyksesi lyhyesti, niin vastaan selkeästi."
+            case "tr", "turkish": fallback = "Hazırım. Sorun neyse sor, net cevap vereyim."
+            default: fallback = "I'm ready. Ask your question concisely and I'll give a clear answer."
+            }
+            return allowAgentActions ? answer : fallback
         }
         guard !skipPostProcessing else { return trimmed }
         guard !trimmed.contains("[ACTION:") else { return trimmed }
@@ -1716,6 +1781,20 @@ class IntelligenceService {
         }
         
         return cleaned
+    }
+    
+    private func extractSwiftCodeBlocks(from text: String) -> [String] {
+        var blocks: [String] = []
+        let scanner = Scanner(string: text)
+        while !scanner.isAtEnd {
+            _ = scanner.scanUpToString("```swift")
+            guard scanner.scanString("```swift") != nil else { break }
+            if let content = scanner.scanUpToString("```") {
+                blocks.append(content)
+            }
+            _ = scanner.scanString("```")
+        }
+        return blocks
     }
     
     nonisolated static func isCodingRelatedQuery(_ normalizedQuery: String) -> Bool {
@@ -2286,13 +2365,13 @@ class IntelligenceService {
         guard !trimmed.isEmpty else { return answer }
         guard let queryLanguageCode else { return trimmed }
         let shortCode = String(queryLanguageCode.lowercased().prefix(2))
-        guard shortCode == "fi" || shortCode == "en" else { return trimmed }
+        guard shortCode == "fi" || shortCode == "en" || shortCode == "tr" else { return trimmed }
 
         guard !canUseDirectVaultAnswer(queryLanguageCode: shortCode, answer: trimmed) else {
             return trimmed
         }
 
-        let targetLanguageName = shortCode == "fi" ? "Finnish" : "English"
+        let targetLanguageName = languageName(for: shortCode)
         let translationPrompt = """
         Rewrite this interview answer into \(targetLanguageName).
         - Keep EXACT meaning.
@@ -2368,6 +2447,35 @@ class IntelligenceService {
         for query: String,
         providedLanguageCode: String? = nil
     ) -> String? {
+        let lowerQuery = query.lowercased()
+        
+        // Match Turkish unique characters first
+        if lowerQuery.contains("ğ") || lowerQuery.contains("ı") || lowerQuery.contains("ş") || lowerQuery.contains("ç") {
+            return "tr"
+        }
+        
+        let normalized = InterviewKnowledgeMatcher.normalize(query)
+        let words = normalized.split(separator: " ").map(String.init)
+        
+        let turkishSignals = [
+            "neden", "nasil", "nasıl", "hangi", "kim", "ne zaman",
+            "anlat", "soru", "yardim", "yardım", "selam", "merhaba",
+            "nedir", "nelerdir", "yap", "acikla", "açıkla", "mi", "mı", "mu", "mü",
+            "misin", "mısın", "musun", "müsün", "gerek", "gerekir"
+        ]
+        if turkishSignals.contains(where: { words.contains($0) }) {
+            return "tr"
+        }
+        
+        let finnishSignals = [
+            "mika", "mikä", "mita", "mitä", "miten", "miksi",
+            "millainen", "milloin", "onko", "voitko", "voisitko",
+            "kysymys", "suomi", "finnish", "ja", "tai", "eli", "mutta"
+        ]
+        if finnishSignals.contains(where: { words.contains($0) }) {
+            return "fi"
+        }
+
         let preferred = preferredLanguageCode(for: query, providedLanguageCode: providedLanguageCode)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased() ?? ""
@@ -2375,20 +2483,13 @@ class IntelligenceService {
         if preferred.hasPrefix("fi") || preferred == "finnish" {
             return "fi"
         }
+        if preferred.hasPrefix("tr") || preferred == "turkish" {
+            return "tr"
+        }
         if preferred.hasPrefix("en") || preferred == "english" {
             return "en"
         }
 
-        // Keep response language constrained to EN/FI only.
-        let normalized = InterviewKnowledgeMatcher.normalize(query)
-        let finnishSignals = [
-            "mika", "mikä", "mita", "mitä", "miten", "miksi",
-            "millainen", "milloin", "onko", "voitko", "voisitko",
-            "kysymys", "suomi", "finnish"
-        ]
-        if finnishSignals.contains(where: normalized.contains) {
-            return "fi"
-        }
         return "en"
     }
 

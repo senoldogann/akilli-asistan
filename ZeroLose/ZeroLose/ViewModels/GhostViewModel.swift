@@ -138,10 +138,11 @@ class GhostViewModel {
     private let maxMessages = 220
     private let maxTrimBatch = 12
     
-    // Pre-compiled Regex for faster cleaning during streaming
-    private let actionRegex = try? NSRegularExpression(pattern: #"(?s)\[ACTION:\s*(\{.*?\})\]"#, options: [])
-    private let codeBlockRegex = try? NSRegularExpression(pattern: #"(?s)```.*?```"#, options: [])
-    private let infoTagRegex = try? NSRegularExpression(pattern: #"(?s)\[[A-ZÇĞİÖŞÜ ]+:.*?\]"#, options: [])
+    // Pre-compiled Regex for faster cleaning during streaming.
+    // These patterns are compile-time string literals — try! is safe and intentional here.
+    private let actionRegex = try! NSRegularExpression(pattern: #"(?s)\[ACTION:\s*(\{.*?\})\]"#, options: [])
+    private let codeBlockRegex = try! NSRegularExpression(pattern: #"(?s)```.*?```"#, options: [])
+    private let infoTagRegex = try! NSRegularExpression(pattern: #"(?s)\[[A-ZÇĞİÖŞÜ ]+:.*?\]"#, options: [])
     
     // Streaming render pipeline (coalesced updates for smooth UI)
     private var streamingRenderTask: Task<Void, Never>? = nil
@@ -182,44 +183,29 @@ class GhostViewModel {
         self.chatHistoryService = chatHistoryService
         
         setupObservations()
-        addMessage("Ghost Mode Active. Ready to assist.", isUser: false)
     }
     
     private func setupObservations() {
-        // Observe voice transcripts from AudioService
+        // Observe voice transcripts reactively — no polling, event-driven via @Published.values
         Task { @MainActor in
-            var previousTranscript = ""
-            while !Task.isCancelled {
-                let currentTranscript = audioService.lastVoiceTranscript
-                let currentLanguage = audioService.lastVoiceLanguage
-                if !currentTranscript.isEmpty && currentTranscript != previousTranscript {
-                    previousTranscript = currentTranscript
-                    processVoiceTranscript(currentTranscript, language: currentLanguage)
-                }
-                try? await Task.sleep(for: .milliseconds(120))
+            for await transcript in audioService.$lastVoiceTranscript.values {
+                guard !Task.isCancelled, !transcript.isEmpty else { continue }
+                let language = audioService.lastVoiceLanguage
+                processVoiceTranscript(transcript, language: language)
             }
         }
-        
-        // Observe clipboard changes from ClipboardService
+
+        // Observe clipboard changes reactively — no polling, event-driven via @Published.values
         Task { @MainActor in
-            var lastHandledClipboardCount = clipboardService.copiedText.hashValue
-            while !Task.isCancelled {
-                let currentText = clipboardService.copiedText
-                let currentHash = currentText.hashValue
-                
-                if !currentText.isEmpty && currentHash != lastHandledClipboardCount {
-                    lastHandledClipboardCount = currentHash
-                    // Automatically analyze if Clipboard Mode is ON
-                    if isClipboardActive {
-                        logger.info("Clipboard change detected, adding to queue: \(currentText.prefix(20))...")
-                        analyzeCopiedText(currentText)
-                    }
-                }
-                try? await Task.sleep(for: .milliseconds(400)) // Match the service poll rate
+            for await copiedText in clipboardService.$copiedText.values {
+                guard !Task.isCancelled, !copiedText.isEmpty else { continue }
+                guard isClipboardActive else { continue }
+                logger.info("Clipboard change detected, adding to queue: \(copiedText.prefix(20))...")
+                analyzeCopiedText(copiedText)
             }
         }
-        
-        // Observe screenshots from ScreenshotWatcherService immediately when the watcher publishes new image data.
+
+        // Observe screenshots reactively — already correct, no changes needed
         Task { @MainActor in
             var lastHandledDataHash: Int? = nil
             for await data in screenshotWatcher.$lastScreenshotData.values {
@@ -1904,18 +1890,14 @@ class GhostViewModel {
         let nsRange = NSRange(location: 0, length: (cleaned as NSString).length)
 
         // 1. Remove ONLY completed [ACTION: ...] tags
-        if let regex = actionRegex {
-            cleaned = regex.stringByReplacingMatches(in: cleaned, options: [], range: nsRange, withTemplate: "")
-        }
+        cleaned = actionRegex.stringByReplacingMatches(in: cleaned, options: [], range: nsRange, withTemplate: "")
         
         // 2. Remove completed markdown code blocks only if they are likely action-related/redundant
         // For now, let's NOT remove them globally as it might hide real code
         
         // 3. Remove internal info/thinking tags
-        if let regex = infoTagRegex {
-             let freshRange = NSRange(location: 0, length: (cleaned as NSString).length)
-             cleaned = regex.stringByReplacingMatches(in: cleaned, options: [], range: freshRange, withTemplate: "")
-        }
+        let freshRange = NSRange(location: 0, length: (cleaned as NSString).length)
+        cleaned = infoTagRegex.stringByReplacingMatches(in: cleaned, options: [], range: freshRange, withTemplate: "")
         
         // 4. Remove partial unclosed ACTION tags at the VERY END to prevent flickering
         // We look for "[ACTION:" until the end of the string
