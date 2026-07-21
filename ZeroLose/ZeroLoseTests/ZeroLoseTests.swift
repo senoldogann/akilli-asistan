@@ -51,9 +51,9 @@ final class ZeroLoseTests: XCTestCase {
     }
 
     func testAIModelNamesFallbackToLegacyProfilesWhenOpenAIDisabled() {
-        XCTAssertEqual(AIModelNames.reasoning(preferOpenAI: false), "gemini-3-flash-preview:cloud")
-        XCTAssertEqual(AIModelNames.coding(preferOpenAI: false), "gemini-3-flash-preview:cloud")
-        XCTAssertEqual(AIModelNames.fast(preferOpenAI: false), "ministral-3:14b-cloud")
+        XCTAssertEqual(AIModelNames.reasoning(preferOpenAI: false), "llama3.1:8b-cloud")
+        XCTAssertEqual(AIModelNames.coding(preferOpenAI: false), "qwen2.5-coder:7b-cloud")
+        XCTAssertEqual(AIModelNames.fast(preferOpenAI: false), "qwen2.5:7b-cloud")
         XCTAssertEqual(AIModelNames.whisper(preferOpenAI: false), "whisper-large-v3-turbo")
     }
 

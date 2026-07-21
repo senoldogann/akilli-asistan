@@ -2468,9 +2468,9 @@ class IntelligenceService {
         }
         
         let finnishSignals = [
-            "mika", "mikä", "mita", "mitä", "miten", "miksi",
+            "mika", "mita", "miten", "miksi",
             "millainen", "milloin", "onko", "voitko", "voisitko",
-            "kysymys", "suomi", "finnish", "ja", "tai", "eli", "mutta"
+            "kysymys", "suomi", "finnish", "ja", "kai", "eli", "mutta"
         ]
         if finnishSignals.contains(where: { words.contains($0) }) {
             return "fi"
