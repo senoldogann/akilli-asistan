@@ -19,9 +19,21 @@ import os
 final class BrowserCDPService {
     private let logger = Logger(subsystem: "com.zerolose", category: "browsercdp")
     private var chromeProcess: Process?
-    private var websocket: URLSessionWebSocketTask?
-    private var nextId = 0
-    private var activePageId: String?
+    private var bridgeProcess: Process?
+    private var outputPipe: Pipe?
+    private var inputPipe: Pipe?
+    private let buffer = PipeLineBuffer()
+    private var connected = false
+    private var port = 9333
+    private var bridgePath: String {
+        // Repo içindeki köprünün mutlak yolu. App bundle'dan veya $PWD'den çöz.
+        let candidates = [
+            FileManager.default.currentDirectoryPath + "/tools/browser-cdp/bridge.mjs",
+            "/Users/dogan/Desktop/akilli-asistan/tools/browser-cdp/bridge.mjs"
+        ]
+        return candidates.first { FileManager.default.fileExists(atPath: $0) }
+            ?? candidates[0]
+    }
 
     struct CDPError: LocalizedError {
         let message: String
@@ -32,15 +44,13 @@ final class BrowserCDPService {
         case point(CGFloat, CGFloat)
     }
 
-    /// CDP'ye bağlı bir Chrome başlatır (geçici profil + remote-debugging port).
-    /// Sayfa hazır olduğunda döner; aksi hâlde hata verir.
+    /// CDP'ye bağlı bir Chrome başlatır; ardından Node köprüsünü (ws tabanlı CDP
+    /// istemcisi) çalıştırır. URLSessionWebSocketTask Chrome CDP'de güvenilir
+    /// çalışmadığı için bu köprü native-hız DOM kontrolünü sağlar.
     func launch(port: Int = 9333, url: String = "about:blank") async throws {
-        if let chromeProcess, chromeProcess.isRunning {
-            // Zaten bağlı: sayfayı istenen adrese götür.
-            if let page = activePageId { _ = try? await evaluate("location.href='\(url)'", pageId: page) }
-            return
-        }
-
+        if connected { return }
+        self.port = port
+        // Chrome'u CDP ile başlat.
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
         proc.arguments = [
@@ -55,213 +65,150 @@ final class BrowserCDPService {
         } catch {
             throw CDPError(message: "Chrome başlatılamadı: \(error.localizedDescription)")
         }
-
-        // Port'un açılmasını bekle (poll).
-        let deadline = Date().addingTimeInterval(8)
-        while Date() < deadline {
-            if pageTargetUrl(port: port) != nil {
-                break
-            }
-            try await Task.sleep(nanoseconds: 250_000_000)
-        }
-        guard let pageUrl = pageTargetUrl(port: port) else {
-            throw CDPError(message: "CDP portu açılmadı (\(port)). Chrome başlatılamadı.")
-        }
-        try await connect(to: pageUrl)
-        // Bağlantının gerçekten hazır olduğunu doğrulamak için bir Runtime.evaluate
-        // ping'i gönder ve yanıt bekle. Böylece ilk çağrı "Socket not connected"
-        // hatasına takılmaz.
-        _ = try await evaluate("1+1")
-        if url != "about:blank" {
-            _ = try? await evaluate("location.href='\(url)'")
-        }
-        logger.info("🧭 Chrome CDP bağlandı (port \(port))")
+        try await Task.sleep(nanoseconds: 2_000_000_000)
+        try await startBridge()
+        _ = try await sendBridge("navigate", [url])
+        logger.info("🧭 Chrome CDP köprüsü hazır (port \(port))")
     }
 
-    /// CDP bağlantısını kapatır ve Chrome'u durdurur.
+    /// Node köprüsünü (bridge.mjs) başlatır ve READY sinyalini bekler.
+    private func startBridge() async throws {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        p.arguments = ["node", bridgePath, "\(port)"]
+        let out = Pipe()
+        let inp = Pipe()
+        p.standardOutput = out
+        p.standardError = FileHandle.nullDevice
+        p.standardInput = inp
+        do {
+            try p.run()
+        } catch {
+            throw CDPError(message: "Node köprüsü başlatılamadı (\(error.localizedDescription)). 'tools/browser-cdp' altında npm install ws gerekli.")
+        }
+        bridgeProcess = p
+        outputPipe = out
+        inputPipe = inp
+        // Pipe'tan gelen veriyi buffer'a biriktiren handler kur (bloklamaz).
+        out.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            guard let self else { return }
+            let d = handle.availableData
+            if !d.isEmpty {
+                self.buffer.append(d)
+            }
+        }
+        let readyLine = try await readLineFromBuffer()
+        guard readyLine.hasPrefix("READY") else {
+            throw CDPError(message: "CDP köprüsü READY vermedi (Node ws yüklü mü?) — alınan: \(readyLine)")
+        }
+        connected = true
+    }
+
+    /// Köprüye tab-ayrılmış satır komutu gönderir ve JSON yanıtını döndürür.
+    private func sendBridge(_ cmd: String, _ args: [String]) async throws -> Any? {
+        guard let inputPipe, let outputPipe, connected else {
+            throw CDPError(message: "CDP köprüsü bağlı değil. Önce launch() çağır.")
+        }
+        let argData = try JSONSerialization.data(withJSONObject: args)
+        let argString = String(data: argData, encoding: .utf8) ?? "[]"
+        let line = cmd + "\t" + argString + "\n"
+        inputPipe.fileHandleForWriting.write(Data(line.utf8))
+        let respLine = try await readLineFromBuffer()
+        guard let data = respLine.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw CDPError(message: "Köprü yanıtı çözümlenemedi")
+        }
+        if let err = obj["error"] as? String { throw CDPError(message: err) }
+        return obj["result"]
+    }
+
+    /// Buffer'dan mevcut ilk tam satırı döndürür; yoksa kısa uyku ile bekler.
+    private func readLineFromBuffer() async throws -> String {
+        let deadline = Date().addingTimeInterval(8)
+        while Date() < deadline {
+            if let line = buffer.takeLine() {
+                return line
+            }
+            try? await Task.sleep(nanoseconds: 30_000_000)
+        }
+        throw CDPError(message: "Köprü yanıt süresi aşıldı (buffer \(buffer.count) byte)")
+    }
+
     func shutdown() {
-        websocket?.cancel(with: .goingAway, reason: nil)
-        websocket = nil
+        outputPipe?.fileHandleForReading.readabilityHandler = nil
+        bridgeProcess?.terminate()
+        bridgeProcess = nil
         chromeProcess?.terminate()
         chromeProcess = nil
-        activePageId = nil
+        outputPipe = nil
+        inputPipe = nil
+        buffer.removeAll()
+        connected = false
     }
 
-    func isConnected() -> Bool {
-        websocket != nil && activePageId != nil
-    }
+    func isConnected() -> Bool { connected }
 
-    // MARK: - DOM işlemleri
+    // MARK: - DOM işlemleri (köprü üzerinden native hız)
 
-    /// Sayfayı adrese götürür ve yüklenmesini bekler.
     func navigate(url: String) async throws {
-        _ = try await send("Page.navigate", params: ["url": url])
-        try await Task.sleep(nanoseconds: 900_000_000)
+        _ = try await sendBridge("navigate", [url])
     }
 
-    /// Sayfadaki metni DOM seçicisiyle bulup tıklar.
     func click(selector: String) async throws -> String {
-        let js = try await evaluateRaw("""
-        (function(){
-          var el = document.querySelector('\(selector)');
-          if(!el) return 'NOT_FOUND';
-          el.scrollIntoView({block:'center'});
-          el.click();
-          return 'CLICKED';
-        })()
-        """)
-        let value = js["result"] as? [String: Any]
-        let resultValue = value?["value"] as? String ?? "?"
-        guard resultValue != "NOT_FOUND" else { throw CDPError(message: "DOM'da seçici bulunamadı: \(selector)") }
-        return "clicked via CDP: \(selector)"
+        guard let r = try await sendBridge("click", [selector]) as? String else { return "?" }
+        return r
     }
 
-    /// Bir form alanını DOM'da bulup değeri doğrudan yazar (native hız).
     func fillField(selector: String, value: String) async throws -> String {
-        let escapedValue = Self.jsString(value)
-        let js = try await evaluateRaw("""
-        (function(){
-          var el = document.querySelector('\(selector)');
-          if(!el) return 'NOT_FOUND';
-          el.focus();
-          el.value = \(escapedValue);
-          el.dispatchEvent(new Event('input', {bubbles:true}));
-          el.dispatchEvent(new Event('change', {bubbles:true}));
-          return 'FILLED';
-        })()
-        """)
-        let resultValue = extractString(js)
-        guard resultValue != "NOT_FOUND" else { throw CDPError(message: "DOM'da alan bulunamadı: \(selector)") }
-        return "filled via CDP: \(selector)"
+        guard let r = try await sendBridge("fill", [selector, value]) as? String else { return "?" }
+        return r
     }
 
-    /// Sayfadaki bir veriyi DOM üzerinden okur (doğrulama).
     func readValue(selector: String) async throws -> String {
-        let js = try await evaluateRaw("(document.querySelector('\(selector)')||{}).value || ''")
-        return extractString(js)
+        (try await sendBridge("read", [selector]) as? String) ?? ""
     }
 
-    /// Sayfada bir metnin görünüp görünmediğini DOM'dan sorgular.
     func textExists(_ text: String) async throws -> Bool {
-        let js = try await evaluateRaw("document.body.innerText.includes(\(Self.jsString(text)))")
-        return extractBool(js)
+        (try await sendBridge("text", [text]) as? Bool) ?? false
     }
 
-    /// Sayfa DOM'unun okunabilir bir özetini döndürür (form alanları + butonlar).
     func auditPage() async throws -> String {
-        let js = try await evaluateRaw("""
-        (function(){
-          var out=[];
-          document.querySelectorAll('input,textarea,select,button,[role=button]').forEach(function(e,i){
-            var t=(e.name||e.id||e.placeholder||e.textContent||'').trim();
-            if(t) out.push('#'+i+' <'+e.tagName.toLowerCase()+'> '+t);
-          });
-          return out.slice(0,60).join('\\n');
-        })()
-        """)
-        return extractString(js)
+        (try await sendBridge("audit", []) as? String) ?? ""
+    }
+}
+
+/// Köprü stdout'undan gelen satırları thread-safe biriktiren yardımcı.
+/// `readabilityHandler` arka plan thread'inde çalışır; bu sınıf MainActor
+/// izolasyonuna tabi değildir, bu yüzden NSLock ile güvenli erişim sağlar.
+private final class PipeLineBuffer {
+    private var data = Data()
+    private let lock = NSLock()
+
+    func append(_ chunk: Data) {
+        lock.lock()
+        data.append(chunk)
+        lock.unlock()
     }
 
-    // MARK: - CDP düşük seviye
-
-    private func evaluateRaw(_ expression: String) async throws -> [String: Any] {
-        let params: [String: Any] = ["expression": expression, "returnByValue": true, "awaitPromise": true]
-        let response = try await send("Runtime.evaluate", params: params)
-        return response
+    func takeLine() -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let idx = data.firstIndex(of: UInt8(ascii: "\n")) else { return nil }
+        let line = data[..<idx]
+        data.removeSubrange(...idx)
+        return String(data: Data(line), encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 
-    private func evaluate(_ expression: String, pageId: String? = nil) async throws -> String {
-        let params: [String: Any] = ["expression": expression, "returnByValue": true, "awaitPromise": true]
-        let response = try await send("Runtime.evaluate", params: params)
-        return extractString(response)
+    var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return data.count
     }
 
-    private func extractString(_ response: [String: Any]) -> String {
-        if let result = response["result"] as? [String: Any],
-           let value = result["value"] as? String { return value }
-        if let result = response["result"] as? [String: Any],
-           let value = result["value"] as? Bool { return value ? "true" : "false" }
-        return ""
-    }
-
-    private func extractBool(_ response: [String: Any]) -> Bool {
-        if let result = response["result"] as? [String: Any],
-           let value = result["value"] as? Bool { return value }
-        return false
-    }
-
-    /// Bir Swift String'ini JS'te güvenli bir string literal'ine çevirir
-    /// (tırnak/backslash/control karakterlerini kaçışlayarak). `JSON.stringify`
-    /// yerine tam SDK uyumlu yol.
-    nonisolated private static func jsString(_ s: String) -> String {
-        let data = (try? JSONSerialization.data(withJSONObject: [s])) ?? Data("[\"\"]".utf8)
-        let arr = String(data: data, encoding: .utf8) ?? ""
-        // JSON array => ilk elemanı döndür: ["..."] -> "..."
-        if arr.hasPrefix("["), arr.hasSuffix("]") {
-            return String(arr.dropFirst().dropLast())
-        }
-        return "\"\""
-    }
-
-    /// CDP'ye JSON-RPC komutu gönderir, aynı `id` ile yanıtı bekler.
-    private func send(_ method: String, params: [String: Any] = [:]) async throws -> [String: Any] {
-        guard let websocket else { throw CDPError(message: "CDP bağlantısı yok. Önce launch() çağır.") }
-        nextId += 1
-        let id = nextId
-        var body: [String: Any] = ["id": id, "method": method]
-        if !params.isEmpty { body["params"] = params }
-        let data = try JSONSerialization.data(withJSONObject: body)
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            websocket.send(.data(data)) { err in
-                if let err { cont.resume(throwing: err) } else { cont.resume(returning: ()) }
-            }
-        }
-        // Sıralı kullanım için webSocket.receive() ile eşleşen id'yi bekleriz.
-        let deadline = Date().addingTimeInterval(8)
-        while Date() < deadline {
-            let response = try await receiveMessage(from: websocket)
-            if let responseId = response["id"] as? Int, responseId == id {
-                return response
-            }
-            // Eşleşmeyen id: atla (event vs).
-            if response["method"] != nil { continue }
-        }
-        throw CDPError(message: "CDP yanıt zaman aşımı: \(method)")
-    }
-
-    /// WebSocket'ten tek bir JSON mesajı okur.
-    private func receiveMessage(from ws: URLSessionWebSocketTask) async throws -> [String: Any] {
-        let message = try await ws.receive()
-        let text: String
-        switch message {
-        case .data(let d): text = String(data: d, encoding: .utf8) ?? ""
-        case .string(let s): text = s
-        @unknown default: text = ""
-        }
-        guard let data = text.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return [:]
-        }
-        return obj
-    }
-
-    /// WebSocket'e bağlanır.
-    private func connect(to urlString: String) async throws {
-        guard let url = URL(string: urlString) else { throw CDPError(message: "Geçersiz CDP URL: \(urlString)") }
-        let ws = URLSession.shared.webSocketTask(with: url)
-        websocket = ws
-        ws.resume()
-        activePageId = url.lastPathComponent
-        // Kısa bir bekleme ile el sıkışmanın tamamlanmasını sağla.
-        try await Task.sleep(nanoseconds: 300_000_000)
-    }
-
-    /// Port üzerindeki ilk sayfa target'ının WebSocket URL'sini döndürür.
-    private func pageTargetUrl(port: Int) -> String? {
-        guard let url = URL(string: "http://127.0.0.1:\(port)/json/list"),
-              let data = try? Data(contentsOf: url),
-              let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
-              let page = arr.first(where: { ($0["type"] as? String) == "page" }) else { return nil }
-        return page["webSocketDebuggerUrl"] as? String
+    func removeAll() {
+        lock.lock()
+        data.removeAll()
+        lock.unlock()
     }
 }

@@ -1,0 +1,14 @@
+{
+  "name": "zerolose-browser-cdp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ZeroLose Chrome DevTools Protocol bridge (native-speed DOM control)",
+  "main": "bridge.mjs",
+  "type": "module",
+  "scripts": {
+    "bridge": "node bridge.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.21.3"
+  }
+}
