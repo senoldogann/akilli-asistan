@@ -57,3 +57,6 @@ __pycache__/
 # Local skill backup (single source of truth is .agent/skills)
 _library/
 .review-myderived/
+
+# Node deps (never commit)
+tools/browser-cdp/node_modules/
