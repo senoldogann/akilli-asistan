@@ -7,12 +7,13 @@ enum WebSearchMode: Sendable {
     case forceOn
 }
 
-/// The centralized brain of ZeroLose.
-/// Handles reasoning, web searching, and streaming responses for ALL input sources.
+/// ZeroLose'un merkezi beyni.
+/// TÜM giriş kaynakları için akıl yürütme, web arama ve akış yanıtlarını yönetir.
 class IntelligenceService {
     struct ProcessedResponse: Sendable {
         let text: String
         let origin: ResponseOrigin
+        let thinking: String?
     }
 
     enum ResponseOrigin: Sendable {
@@ -45,7 +46,7 @@ class IntelligenceService {
     private let logger = Logger.intelligence
     
     private var conversationHistory: [OllamaService.ChatMessage] = []
-    private let maxHistoryLimit = 15 // Keep last 15 messages for context
+    private let maxHistoryLimit = 15 // Bağlam için son 15 mesajı sakla
     private let conciseHistoryLimit = 8
     private var transientPersonaContext: String = ""
     private var cachedActiveRoleDescription: String = ""
@@ -129,7 +130,7 @@ class IntelligenceService {
         self.systemStatusService = systemStatusService
     }
     
-    /// Main entry point for processing any query (Text or Vision)
+    /// Herhangi bir sorguyu (Metin veya Görüntü) işlemenin ana giriş noktası.
     func process(
         query: String,
         imageData: Data? = nil,
@@ -138,7 +139,8 @@ class IntelligenceService {
         processingMode: ProcessingMode = .automatic,
         detectedLanguage: String? = nil,
         onStatusUpdate: @escaping (String) -> Void,
-        onPartialResponse: @escaping (String) -> Void
+        onPartialResponse: @escaping (String) -> Void,
+        onPartialThinking: ((String) -> Void)? = nil
     ) async throws -> ProcessedResponse {
         let lowerQuery = query.lowercased()
         let responseProfile = responseProfile(for: lowerQuery)
@@ -230,7 +232,7 @@ class IntelligenceService {
                 onStatusUpdate("Ready (Cache)")
                 onPartialResponse(localizedQuickAnswer)
             }
-            return ProcessedResponse(text: localizedQuickAnswer, origin: .instantCache)
+            return ProcessedResponse(text: localizedQuickAnswer, origin: .instantCache, thinking: nil)
         }
 
         var interviewMatches: [InterviewKnowledgeMatch] = []
@@ -286,7 +288,7 @@ class IntelligenceService {
                             onStatusUpdate("Ready (Interview x\(questionSegments.count))")
                             onPartialResponse(direct)
                         }
-                        return ProcessedResponse(text: direct, origin: .groundedFastPath)
+                        return ProcessedResponse(text: direct, origin: .groundedFastPath, thinking: nil)
                     }
                 }
             }
@@ -308,7 +310,7 @@ class IntelligenceService {
 
         let bypassCache = forceAIReasoning || shouldBypassCache(for: searchDecision)
         
-        // 0. CACHE CHECK
+        // 0. ÖNBELLEK KONTROLÜ
         if !bypassCache, !shouldPreferInterviewKnowledgeOverCache, let cachedAnswer = cacheService.getResponse(for: query) {
             logger.info("Cache HIT for query: \(self.sanitize(query))")
             let localizedCachedAnswer = await localizedDirectVaultAnswer(
@@ -319,7 +321,7 @@ class IntelligenceService {
                 onStatusUpdate("Ready")
                 onPartialResponse(localizedCachedAnswer)
             }
-            return ProcessedResponse(text: localizedCachedAnswer, origin: .storedCache)
+            return ProcessedResponse(text: localizedCachedAnswer, origin: .storedCache, thinking: nil)
         } else if bypassCache {
             if forceAIReasoning {
                 logger.info("Cache bypassed due to forced AI reasoning")
@@ -337,7 +339,7 @@ class IntelligenceService {
             }
         }
 
-        // Variant-aware direct interview answer for low-latency interview flow.
+        // Düşük gecikmeli mülakat akışı için varyant-farkındalıklı doğrudan mülakat yanıtı.
         if !forceAIReasoning,
            imageData == nil,
            !isFollowUpQuery,
@@ -420,16 +422,16 @@ class IntelligenceService {
                     onStatusUpdate("Ready (Interview)")
                     onPartialResponse(localizedDirectAnswer)
                 }
-                return ProcessedResponse(text: localizedDirectAnswer, origin: .groundedFastPath)
+                return ProcessedResponse(text: localizedDirectAnswer, origin: .groundedFastPath, thinking: nil)
             }
         }
         
         await MainActor.run { onStatusUpdate("Thinking...") }
         
-        // 0.4 GATHER SYSTEM CONTEXT
+        // 0.4 SİSTEM BAĞLAMINI TOPLA
         let systemContext = await systemStatusService?.getSystemContextSummary() ?? ""
         
-        // 0.5 RAG RETRIEVAL (if enabled)
+        // 0.5 RAG GETİRME (etkinse)
         var ragContext = ""
         
         let shouldSkipRAGForInterview =
@@ -467,7 +469,7 @@ class IntelligenceService {
             }
         }
         
-        // 1. DECISION: Need web search?
+        // 1. KARAR: Web araması gerekli mi?
         var searchContext = ""
         var webSearchAttempted = false
         var webSearchSucceeded = false
@@ -479,7 +481,7 @@ class IntelligenceService {
             case .required:
                 shouldSearchWeb = true
             case .optional:
-                // Interview latency path: optional web gate should not add an extra LLM roundtrip.
+                // Mülakat gecikme yolu: isteğe bağlı web kapısı ekstra bir LLM turu eklememeli.
                 if responseProfile == .interviewConcise {
                     shouldSearchWeb = false
                 } else {
@@ -515,10 +517,10 @@ class IntelligenceService {
                 onPartialResponse(fallback)
                 onStatusUpdate("Web unavailable")
             }
-            return ProcessedResponse(text: fallback, origin: .model)
+            return ProcessedResponse(text: fallback, origin: .model, thinking: nil)
         }
         
-        // 2. CONSTRUCT SYSTEM PROMPT
+        // 2. SİSTEM PROMPT'UNU OLUŞTUR
         let rolePrompt: String = (imageData != nil) ? 
             "senior software engineer identifying issues from a screen capture. CRITICAL: Identify language of text in image FIRST, then respond IN THAT LANGUAGE." : 
             (isSelfContainedCodingQuery
@@ -567,13 +569,36 @@ class IntelligenceService {
             actionPolicy = """
             6. OPERATIONAL RULES:
                - SILENT EXECUTION: If performing action, output ONLY [ACTION: ...] tag.
-               - ACTION TYPES: Allowed action types are ONLY "applescript" or "stop". NEVER emit "shell".
+               - ACTION TYPES: Allowed types are "web_search", "applescript", "file",
+                 "shell", "screenshot", "audio", "clipboard", "system_status", "stop",
+                 or computer_* (computer_list, computer_status, computer_snapshot, computer_click,
+                 computer_type, computer_press, computer_scroll, computer_drag, computer_setvalue,
+                 computer_wait, computer_interact, computer_launch, computer_ocr, computer_clicktext,
+                 computer_clicklabel).
+               - Use "file" for listing/reading/creating/editing files or folders. JSON:
+                 {"type":"file","operation":"list|read|write|create|mkdir|move|replace","path":"...","content":"...","target":"...","find":"...","replace":"..."}
+               - Use "shell" for safe read-only shell commands (pwd, ls, find, rg, cat, git status).
+               - Use "applescript" for controlling apps / desktop (open, close, mute, screenshot).
+               - Use "web_search" to run a live web search when current/verified info is needed.
+               - Use "system_status" to report CPU/RAM/apps/volume.
+               - Use "screenshot" to capture and inspect the screen.
+               - Use "computer_*" for real screen control: list/snapshot an app, click by text
+                 (computer_clicklabel), type+Enter (computer_interact), scroll, drag, launch, set value.
+                 Always call computer_status first to check permissions, then computer_snapshot
+                 to see on-screen elements before acting. Mutation computer actions require approval.
+               - NEVER use "shell" for destructive actions (rm, sudo, dd).
                - NO internal reasoning or hidden tags in final answer.
             """
         } else {
             actionPolicy = """
             6. OPERATIONAL RULES:
-               - NEVER output ACTION tags, shell scripts, AppleScript payloads, or JSON action objects.
+               - INFORMATION TOOLS: web_search, file-read (list/read/cat), safe shell,
+                 screenshot, audio, clipboard, and system_status are ALWAYS available.
+                 Use them freely to gather facts or inspect the machine.
+               - MUTATION TOOLS: write/create/move/delete files, or control the OS/apps,
+                 require the user's explicit request first. Only then emit the ACTION tag.
+               - If the user only asks a question, never emit a mutation ACTION tag.
+               - Never emit "shell" for dangerous commands (rm, sudo, dd, curl|sh).
                - Return only natural-language answer text.
                - NO internal reasoning or hidden tags in final answer.
             """
@@ -681,19 +706,21 @@ class IntelligenceService {
         \(actionPolicy)
         
         \(automationContext)
+
+        \(AgentCapabilityRegistry.promptBlock())
         """
         
-        // 3. CONSTRUCT MESSAGE ARRAY
+        // 3. MESAJ DİZİSİNİ OLUŞTUR
         var messages: [OllamaService.ChatMessage] = []
         
-        // A. Add System Prompt
+        // A. Sistem Prompt'unu Ekle
         messages.append(OllamaService.ChatMessage(role: "system", content: systemPrompt, images: nil))
         
-        // B. Add Curated History (only last N to prevent bloat)
+        // B. Seçilmiş Geçmişi Ekle (şişmeyi önlemek için yalnızca son N)
         let contextHistory = conversationHistory.suffix(activeHistoryLimit)
         messages.append(contentsOf: contextHistory)
         
-        // C. Add Current Query
+        // C. Güncel Sorguyu Ekle
         var requestUserContent = Self.modelFacingQuery(
             originalQuery: query,
             expectedLanguageCode: finalLanguageCode,
@@ -714,10 +741,19 @@ class IntelligenceService {
         let requestUserMessage = OllamaService.ChatMessage(role: "user", content: requestUserContent, images: chatImages)
         messages.append(requestUserMessage)
         
-        // 4. MODEL EXECUTION (streaming by default, single-shot when answer is already grounded)
+        // 4. MODEL ÇALIŞTIRMA (varsayılan olarak akış, yanıt zaten sağlam temelliyse tek atış)
         var model = (imageData != nil) ? AIModelNames.vision : AIModelNames.reasoning
         let isSlashCommand = query.starts(with: "/")
-        let isSystemCommand = query.count < 30 && ["mute", "unmute", "volume", "trash", "empty", "pause", "play", "stop"].contains { lowerQuery.contains($0) }
+        // Sistem komutları yalnızca İngilizce değil; kullanıcı Türkçe/Fince de
+        // yazabilir. "çöp kutusunu boşalt", "sesi kıs", "ekran görüntüsü al"
+        // gibi ifadeler de eylem hızlı yolunu (action fast path) tetiklemeli.
+        let systemCommandTokens = [
+            "mute", "unmute", "volume", "trash", "empty", "pause", "play",
+            "stop", "boşalt", "bosalt", "çöp", "cop", "ses", "sustur",
+            "ekran", "görüntü", "goruntu", "kıs", "kis", "aç", "ac",
+            "kapat", "close", "temizle", "temiz"
+        ]
+        let isSystemCommand = query.count < 40 && systemCommandTokens.contains { lowerQuery.contains($0) }
         let structuredOutputRequested = isStructuredOutputRequested(lowerQuery) || responseProfile == .detailedTable
         let shouldUseActionFastPath = allowAgentActions && (isSlashCommand || isSystemCommand)
         let strongestInterviewGroundingScore = interviewMatches.first?.score ?? 0
@@ -745,23 +781,39 @@ class IntelligenceService {
             model = AIModelNames.fast
         }
         
-        // Specialized Prompt for Fast Model (Action-Only)
+        // Hızlı Model için Özel Prompt (Yalnızca Eylem). Geçmiş korunur: bir
+        // onay ("Onaylıyorum") geldiğinde modelin neyi onayladığını bilmesi
+        // gerekir, yoksa bağlam kaybolur ve "Hazırım." fallback'i döner.
         if shouldUseActionFastPath && model == AIModelNames.fast {
             let fastPrompt = "[ACTION_ONLY] Input: \"\(query)\". Output ONLY JSON format: [ACTION: {\"type\": \"applescript\", \"payload\": \"...\"}]"
-            messages = [OllamaService.ChatMessage(role: "user", content: fastPrompt, images: nil)]
+            // Geçmişi sistem + son kullanıcı mesajına ekleyerek koru.
+            let historyMessages = messages.filter { $0.role != "system" }
+            let retainedHistory = historyMessages.suffix(6)
+            messages = retainedHistory + [
+                OllamaService.ChatMessage(role: "user", content: fastPrompt, images: nil)
+            ]
         }
         
         do {
             var fullAnswer = ""
+            var collectedThinking = ""
 
             if shouldUseSingleShotInterviewReply {
                 logger.info("Using single-shot interview-grounded reply path (score: \(strongestInterviewGroundingScore, privacy: .public))")
                 fullAnswer = try await ollamaService.generate(messages: messages, model: model)
             } else {
-                try await ollamaService.generateStreaming(messages: messages, model: model) { partialAnswer in
-                    fullAnswer = partialAnswer
-                    onPartialResponse(partialAnswer)
-                }
+                try await ollamaService.generateStreaming(
+                    messages: messages,
+                    model: model,
+                    onPartialResponse: { partialAnswer in
+                        fullAnswer = partialAnswer
+                        onPartialResponse(partialAnswer)
+                    },
+                    onPartialThinking: { thinkingDelta in
+                        collectedThinking += thinkingDelta
+                        onPartialThinking?(thinkingDelta)
+                    }
+                )
             }
             
             var finalizedAnswer = await enforceOutputContractIfNeeded(
@@ -774,7 +826,7 @@ class IntelligenceService {
                 allowAgentActions: allowAgentActions
             )
             
-            // Coding Sandbox Auto-Compiler Correction Loop
+            // Kodlama Sandbox'ı Otomatik Derleyici Düzeltme Döngüsü
             var swiftBlocks = self.extractSwiftCodeBlocks(from: finalizedAnswer)
             var hasVerifiedBadge = false
             
@@ -829,7 +881,7 @@ class IntelligenceService {
                 }
             }
             
-            // 5. UPDATE INTERNAL HISTORY
+            // 5. İÇ GEÇMİŞİ GÜNCELLE
             appendConversationTurn(
                 userMessage,
                 OllamaService.ChatMessage(role: "assistant", content: finalizedAnswer, images: nil),
@@ -846,7 +898,8 @@ class IntelligenceService {
             return await MainActor.run {
                 onPartialResponse(finalizedAnswer)
                 onStatusUpdate("Ready")
-                return ProcessedResponse(text: finalizedAnswer, origin: .model)
+                let thinking = collectedThinking.isEmpty ? nil : collectedThinking
+                return ProcessedResponse(text: finalizedAnswer, origin: .model, thinking: thinking)
             }
         } catch {
             logger.error("Generation failed: \(error.localizedDescription)")
@@ -854,8 +907,16 @@ class IntelligenceService {
             throw error
         }
     }
+
+    /// Ajanın kendi kararıyla tetiklediği bir web aramasını çalıştırır.
+    /// `[ACTION: {"type": "web_search", "query": "..."}]` etiketi geldiğinde
+    /// çağrılır ve sonucu kullanıcıya aktarılmak üzere düz metne çevirir.
+    func performWebSearch(query: String) async throws -> String {
+        let prepared = TavilyService.preferredQuery(from: query)
+        return try await tavilyService.search(query: prepared, detailLevel: .brief)
+    }
     
-    /// Redacts sensitive information from logs
+    /// Günlüklerdeki hassas bilgileri gizler.
     private func sanitize(_ text: String) -> String {
         guard text.count > 20 else { return text }
         return "[REDACTED (length: \(text.count))]"
@@ -885,12 +946,12 @@ class IntelligenceService {
     private func searchDecisionForQuery(_ query: String) -> SearchDecision {
         let normalized = query.lowercased()
 
-        // Self-contained coding/debugging questions should stay local unless the user explicitly asks for web/docs/current info.
+        // Kendi kendine yeterli kodlama/hata ayıklama soruları, kullanıcı açıkça web/doküman/güncel bilgi istemedikçe yerel kalmalı.
         if Self.shouldSuppressAutomaticWebSearch(for: query) {
             return .notNeeded
         }
         
-        // Strong freshness/dynamic intent -> always search and bypass cache.
+        // Güçlü güncellik/dinamik niyet -> her zaman ara ve önbelleği atla.
         let requiredTokens = [
             "today", "latest", "current", "right now", "as of", "breaking", "news", "update",
             "price", "stock", "weather", "score", "standings", "schedule", "odds",
@@ -906,7 +967,7 @@ class IntelligenceService {
             return .required
         }
         
-        // Potentially dynamic or recommendation-like requests -> optional LLM gate.
+        // Potansiyel olarak dinamik veya öneri benzeri istekler -> isteğe bağlı LLM kapısı.
         let optionalTokens = [
             "recommend", "best", "compare", "vs", "alternatives", "docs", "documentation",
             "library", "framework", "which one", "trend",
@@ -1045,245 +1106,14 @@ class IntelligenceService {
     }
 
     static func detectedQuestionSegments(_ query: String) -> [String] {
-        let compact = query
-            .replacingOccurrences(of: "\n", with: " ")
-            .replacingOccurrences(of: "\t", with: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !compact.isEmpty else { return [] }
-
-        let punctuationSegments = questionMarkedSegments(from: compact)
-        if !punctuationSegments.isEmpty {
-            return Array(punctuationSegments.prefix(3))
-        }
-
-        let inferredSegments = inferredQuestionSegments(from: compact)
-        if !inferredSegments.isEmpty {
-            return Array(inferredSegments.prefix(3))
-        }
-
-        if let standaloneQuestion = standaloneQuestionSegment(from: compact) {
-            return [standaloneQuestion]
-        }
-
-        return []
+        TextAnalysis.detectedQuestionSegments(query)
     }
 
     static func splitQuestionSegments(_ query: String) -> [String] {
-        let detected = detectedQuestionSegments(query)
-        return detected.count >= 2 ? detected : []
+        TextAnalysis.splitQuestionSegments(query)
     }
-
-    private static func questionMarkedSegments(from query: String) -> [String] {
-        guard query.contains("?") else { return [] }
-        var segments: [String] = []
-        var seen = Set<String>()
-        let rawSegments = query.components(separatedBy: "?")
-        for raw in rawSegments {
-            let cleaned = cleanedQuestionSegment(raw)
-            guard cleaned.count >= 4 else { continue }
-            let normalized = InterviewKnowledgeMatcher.normalize(cleaned)
-            guard !normalized.isEmpty, !seen.contains(normalized) else { continue }
-            seen.insert(normalized)
-            segments.append(cleaned + "?")
-        }
-        return Array(segments.prefix(3))
-    }
-
-    private static func standaloneQuestionSegment(from query: String) -> String? {
-        let lowered = InterviewKnowledgeMatcher.normalize(query)
-        guard !lowered.isEmpty else { return nil }
-
-        let preambles = [
-            "next question", "quick question", "one question", "question",
-            "seuraava kysymys", "kysymys", "lyhyt kysymys",
-            "sıradaki soru", "bir soru", "soru"
-        ]
-
-        var candidate = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let preamble = preambles.first(where: { lowered.hasPrefix($0 + " ") || lowered == $0 }) {
-            let prefixLength = (candidate as NSString).range(of: preamble, options: .caseInsensitive).length
-            if prefixLength > 0, candidate.count > prefixLength {
-                let index = candidate.index(candidate.startIndex, offsetBy: min(prefixLength, candidate.count))
-                candidate = String(candidate[index...]).trimmingCharacters(in: .whitespacesAndNewlines)
-            }
-        }
-
-        let cleaned = cleanedQuestionSegment(candidate)
-        guard cleaned.count >= 4 else { return nil }
-        guard looksLikeQuestionClause(cleaned) || cleaned.contains("?") else { return nil }
-        return ensureQuestionMark(cleaned)
-    }
-
-    private static func inferredQuestionSegments(from query: String) -> [String] {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.count >= 10 else { return [] }
-
-        let nsQuery = trimmed as NSString
-        let fullRange = NSRange(location: 0, length: nsQuery.length)
-        let boundaries = inferredQuestionBoundaryLocations(in: trimmed)
-        guard boundaries.count >= 2 else { return [] }
-
-        var segments: [String] = []
-        var seen = Set<String>()
-
-        for (index, start) in boundaries.enumerated() {
-            let end = (index + 1 < boundaries.count) ? boundaries[index + 1] : fullRange.length
-            guard end > start else { continue }
-            let raw = nsQuery.substring(with: NSRange(location: start, length: end - start))
-            let cleaned = cleanedQuestionSegment(raw)
-            guard cleaned.count >= 4 else { continue }
-            guard looksLikeQuestionClause(cleaned) else { continue }
-
-            let normalized = InterviewKnowledgeMatcher.normalize(cleaned)
-            guard !normalized.isEmpty, seen.insert(normalized).inserted else { continue }
-            segments.append(cleaned + "?")
-        }
-
-        return segments
-    }
-
-    private static func inferredQuestionBoundaryLocations(in query: String) -> [Int] {
-        let starterPhrases = [
-            "could you", "would you", "can you", "do you", "tell me", "tell us",
-            "walk me through", "can you walk me through", "could you walk me through",
-            "have you", "have you worked", "what kind of", "what are your", "how have you",
-            "ne zaman", "kuka", "kerrotko", "kerro", "voitko", "voisitko", "voitteko",
-            "miksi", "miten", "millainen", "milloin", "haluatko", "onko", "mika", "mikä", "mita", "mitä", "paljonko", "puhu", "entä",
-            "what", "how", "why", "when", "which", "who",
-            "neden", "nasil", "nasıl", "hangi", "kim", "bize anlat", "anlat"
-        ].sorted { $0.count > $1.count }
-
-        let escaped = starterPhrases.map(NSRegularExpression.escapedPattern(for:)).joined(separator: "|")
-        let pattern = #"(?:(?<=^)|(?<=\s)|(?<=[.!?]))\s*("# + escaped + #")\b"#
-
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
-            return []
-        }
-
-        let nsQuery = query as NSString
-        let matches = regex.matches(in: query, options: [], range: NSRange(location: 0, length: nsQuery.length))
-        var boundaries: [Int] = []
-
-        for match in matches {
-            let starterRange = match.range(at: 1)
-            guard starterRange.location != NSNotFound else { continue }
-            boundaries.append(starterRange.location)
-        }
-
-        let normalizedStart = InterviewKnowledgeMatcher.normalize(query.prefix(48).description)
-        if looksLikeQuestionClause(normalizedStart) {
-            boundaries.append(0)
-        }
-
-        return Array(Set(boundaries)).sorted()
-    }
-
-    private static func cleanedQuestionSegment(_ raw: String) -> String {
-        let trailingConnectors = [
-            " ja", " and", " ve", " sekä", " tai", " or"
-        ]
-        let leadingConnectors = [
-            "ja ", "and ", "ve ", "sekä ", "tai ", "or "
-        ]
-
-        var cleaned = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        cleaned = cleaned.replacingOccurrences(of: #"^[,.;:\-]+"#, with: "", options: .regularExpression)
-        cleaned = cleaned.replacingOccurrences(of: #"[,.;:\-]+$"#, with: "", options: .regularExpression)
-
-        for connector in leadingConnectors where cleaned.lowercased().hasPrefix(connector) {
-            cleaned.removeFirst(connector.count)
-            cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
-            break
-        }
-
-        for connector in trailingConnectors where cleaned.lowercased().hasSuffix(connector) {
-            cleaned.removeLast(connector.count)
-            cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
-            break
-        }
-
-        return cleaned
-    }
-
-    nonisolated private static func looksLikeQuestionClause(_ text: String) -> Bool {
-        let normalized = InterviewKnowledgeMatcher.normalize(text)
-        guard !normalized.isEmpty else { return false }
-
-        let starterPrefixes = [
-            "could you", "would you", "can you", "do you", "tell me", "tell us",
-            "walk me through", "can you walk me through", "could you walk me through",
-            "have you", "have you worked", "what", "what kind of", "what are your",
-            "how", "how have you", "why", "when", "which", "who",
-            "kuka", "kerrotko", "kerro", "voitko", "voisitko", "voitteko",
-            "miksi", "miten", "millainen", "milloin", "haluatko", "onko", "mika", "mikä", "mita", "mitä", "paljonko", "puhu", "entä",
-            "neden", "nasil", "nasıl", "hangi", "kim", "ne zaman", "anlat", "bize anlat"
-        ]
-
-        return starterPrefixes.contains(where: { prefix in
-            normalized == prefix || normalized.hasPrefix(prefix + " ")
-        })
-    }
-
     nonisolated static func isFollowUpQuestion(_ query: String) -> Bool {
-        let normalized = InterviewKnowledgeMatcher.normalize(query)
-        guard !normalized.isEmpty else { return false }
-
-        let tokenCount = normalized.split(separator: " ").count
-        guard tokenCount <= 12 else { return false }
-
-        let explicitFollowUpPhrases = [
-            "what kind of project was that",
-            "what kind of project was it",
-            "which project was that",
-            "how did you do that",
-            "how did you build that",
-            "how did you implement that",
-            "tell me more about that",
-            "tell me more about it",
-            "what was that project",
-            "minkalainen projekti se oli",
-            "minkälainen projekti se oli",
-            "millaista projektia se oli",
-            "millaista projektia se oli",
-            "minkalaista projektia se oli",
-            "minkälaista projektia se oli",
-            "kerro lisaa siita",
-            "kerro lisää siitä",
-            "voisitko kertoa lisaa siita",
-            "voisitko kertoa lisää siitä",
-            "miten teit sen",
-            "miten tehnyt sen",
-            "miten toteutit sen",
-            "miten rakensit sen",
-            "enta se projekti",
-            "entä se projekti",
-            "o nasil bir projeydi",
-            "o nasıl bir projeydi",
-            "o proje neydi",
-            "ondan biraz daha bahseder misin"
-        ]
-        if explicitFollowUpPhrases.contains(where: { normalized.contains($0) }) {
-            return true
-        }
-
-        let referentialTokens = [
-            "that", "it", "those", "them",
-            "se", "sen", "siina", "siinä", "siita", "siitä", "sita", "sitä", "sellainen",
-            "o", "onu", "ondan", "onu", "bu", "bunu", "bundan"
-        ]
-        let detailTokens = [
-            "project", "projekti", "projekti", "experience", "kokemus", "role", "company",
-            "detail", "details", "more", "kind", "whatkind", "minkalainen", "minkälainen",
-            "minkalaista", "minkälaista", "millaista", "millainen", "which", "what",
-            "how", "miten", "did", "made", "built", "implemented", "teit", "tehnyt", "rakensit", "toteutit"
-        ]
-
-        let tokens = Set(normalized.split(separator: " ").map(String.init))
-        let hasReference = !tokens.isDisjoint(with: referentialTokens)
-        let hasDetailTarget = !tokens.isDisjoint(with: detailTokens)
-        let looksLikeQuestion = query.contains("?") || looksLikeQuestionClause(query)
-
-        return looksLikeQuestion && hasReference && hasDetailTarget
+        TextAnalysis.isFollowUpQuestion(query)
     }
 
     nonisolated static func followUpRetrievalQuery(
@@ -1291,22 +1121,13 @@ class IntelligenceService {
         previousQuestion: String,
         previousAnswer: String
     ) -> String {
-        let compactPreviousAnswer = previousAnswer
-            .replacingOccurrences(of: "\n", with: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let answerSnippet = String(compactPreviousAnswer.prefix(240))
-
-        return """
-        \(currentQuery)
-        Previous question: \(previousQuestion)
-        Previous grounded answer: \(answerSnippet)
-        """
+        TextAnalysis.followUpRetrievalQuery(
+            currentQuery: currentQuery,
+            previousQuestion: previousQuestion,
+            previousAnswer: previousAnswer
+        )
     }
 
-    private static func ensureQuestionMark(_ text: String) -> String {
-        let trimmed = text.trimmingCharacters(in: CharacterSet(charactersIn: "?.! \n\t"))
-        return trimmed.isEmpty ? text : trimmed + "?"
-    }
 
     private func resolveMultiQuestionQuery(
         segments: [String],
@@ -1539,6 +1360,13 @@ class IntelligenceService {
     }
     
     private func decideWebSearchUsingLLMGate(query: String) async throws -> Bool {
+        // Önce hızlı sezgisel kapı. Açıkça deterministik sorgular için ekstra bir LLM
+        // turunu önle (kendi kendine yeterli kod, bilinen gerçekler, kişisel sorular).
+        // Yalnızca sezgisel emin değilse bir LLM kapısına geri dön.
+        if let heuristic = Self.webSearchHeuristic(query) {
+            return heuristic
+        }
+
         let gateQuery = TavilyService.preferredQuery(from: query, maxLength: 240)
         let searchDecisionPrompt = """
         Query: "\(gateQuery)"
@@ -1555,6 +1383,45 @@ class IntelligenceService {
         
         let cleaned = decision.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         return cleaned.contains("YES") || cleaned.contains("TRUE")
+    }
+
+    /// Ucuz, deterministik web arama kapısı. Bu sorgunun açıkça canlı veri
+    /// gerektirdiğinde `true`, açıkça gerektirmediğinde `false`, veya emin değilken
+    /// `nil` döndürür (böylece LLM kapısı çalışır).
+    private static func webSearchHeuristic(_ query: String) -> Bool? {
+        let normalized = InterviewKnowledgeMatcher.normalize(query).lowercased()
+        guard !normalized.isEmpty else { return false }
+
+        // Açıkça kendi kendine yeterli: yapıştırılan kod / doğrudan hata ayıklama,
+        // canlı bir arama olmadan sağlanan bağlamdan yanıtlanabilir. Gereksiz web
+        // arama turlarının ana kaynağı budur.
+        if Self.requiresCorrectedCodeResponse(query) ||
+            Self.isSelfContainedCodingDebugQuery(query) ||
+            Self.containsConcreteCodeSnippet(query) {
+            return false
+        }
+
+        // Açıkça zamana duyarlı / güncel olaylar → arama zorunlu.
+        let timeSensitiveTokens = [
+            "latest", "release", "news", "today", "this week", "announcement",
+            "version", "changelog", "sürüm", "güncel", "haber", "bugün",
+            "uutis", "tänään", "julkaisu", "nyt"
+        ]
+        if timeSensitiveTokens.contains(where: { normalized.contains($0) }) {
+            return true
+        }
+
+        // Kişisel/kendine referanslı sorular (benimle ilgili mülakat) canlı veri gerektirmez.
+        let personalTokens = [
+            "i", "my", "me", "my project", "my experience", "kendi", "ben",
+            "benim", "projem", "deneyimim", "kokemus", "minun", "projektini"
+        ]
+        let words = normalized.split(separator: " ").map(String.init)
+        if personalTokens.contains(where: { words.contains($0) }) {
+            return false
+        }
+
+        return nil
     }
     
     private func isStructuredOutputRequested(_ normalizedQuery: String) -> Bool {
@@ -1678,7 +1545,7 @@ class IntelligenceService {
             return trimmed
         }
         
-        // Latency guard: avoid second model call for short/acceptable answers.
+        // Gecikme koruması: kısa/kabul edilebilir yanıtlar için ikinci model çağrısından kaçın.
         let shouldRewriteForLanguage = needsLanguageFix && (isCodingQuery || trimmed.count > 80)
         let shouldRewriteForLength = needsCondense && trimmed.count > 520
         let shouldRewriteForExpansion = needsExpansion && trimmed.count < 180
@@ -2331,7 +2198,7 @@ class IntelligenceService {
         let normalizedCurrent = String((currentLanguageCode ?? "en").lowercased().prefix(2))
         guard let topMatch else { return normalizedCurrent }
 
-        // Keep current lock when evidence is weak.
+        // Kanıt zayıf olduğunda mevcut kilidi koru.
         guard topMatch.score >= 0.28 else { return normalizedCurrent }
 
         let questionLanguage = InterviewKnowledgeMatcher
@@ -2344,7 +2211,7 @@ class IntelligenceService {
         let shortQuestionLanguage = String((questionLanguage ?? "").prefix(2))
         let shortAnswerLanguage = String((answerLanguage ?? "").prefix(2))
 
-        // If detection defaulted to English but strongest vault evidence is Finnish, lock to Finnish.
+        // Tespit İngilizceye varsayılan döndüyse ancak en güçlü kasa kanıtı Fince ise Finceye kilitle.
         if normalizedCurrent == "en",
            (shortQuestionLanguage == "fi" || shortAnswerLanguage == "fi") {
             return "fi"
@@ -2449,7 +2316,7 @@ class IntelligenceService {
     ) -> String? {
         let lowerQuery = query.lowercased()
         
-        // Match Turkish unique characters first
+        // Önce Türkçeye özel karakterleri eşle
         if lowerQuery.contains("ğ") || lowerQuery.contains("ı") || lowerQuery.contains("ş") || lowerQuery.contains("ç") {
             return "tr"
         }
@@ -2561,35 +2428,11 @@ class IntelligenceService {
         expectedLanguageCode: String?,
         isSelfContainedCodingQuery: Bool
     ) -> String {
-        guard isSelfContainedCodingQuery else { return originalQuery }
-
-        let languageName: String = {
-            switch expectedLanguageCode?.lowercased() {
-            case "tr", "turkish":
-                return "Turkish"
-            case "fi", "finnish":
-                return "Finnish"
-            case "en", "english":
-                return "English"
-            default:
-                return "the user's language"
-            }
-        }()
-
-        return """
-        Review the pasted code and answer the user's debugging question directly.
-
-        Required output format:
-        - Start with 2-4 short bullets naming the main production risks.
-        - Then provide the corrected code in a fenced markdown code block.
-        - End with 1-2 short sentences explaining why the corrected version is safer.
-        - Answer in \(languageName).
-        - Do not omit the code block.
-        - Keep comments brief and useful.
-
-        USER QUESTION:
-        \(originalQuery)
-        """
+        LLMPromptBuilder.modelFacingQuery(
+            originalQuery: originalQuery,
+            expectedLanguageCode: expectedLanguageCode,
+            isSelfContainedCodingQuery: isSelfContainedCodingQuery
+        )
     }
 
     nonisolated static func multiQuestionModelFacingQuery(
@@ -2597,36 +2440,11 @@ class IntelligenceService {
         segments: [String],
         expectedLanguageCode: String?
     ) -> String {
-        guard segments.count >= 2 else { return baseQuery }
-
-        let languageInstruction: String = {
-            switch expectedLanguageCode?.lowercased() {
-            case "fi", "finnish":
-                return "Answer only in Finnish."
-            case "en", "english":
-                return "Answer only in English."
-            default:
-                return "Answer in the same language as the user's message."
-            }
-        }()
-
-        let segmentLines = segments.enumerated().map { index, segment in
-            "Q\(index + 1): \(segment)"
-        }.joined(separator: "\n")
-
-        return """
-        \(baseQuery)
-
-        [MULTI-QUESTION OUTPUT CONTRACT]
-        - You must answer all \(segments.count) questions in order.
-        - Use one short paragraph per question.
-        - Do not merge questions into a single generic paragraph.
-        - If [Qx FALLBACK REQUIRED] appears in context, generate that segment from [ACTIVE ROLE GROUNDING] and [USER PERSONA].
-        - \(languageInstruction)
-
-        [DETECTED QUESTIONS]
-        \(segmentLines)
-        """
+        LLMPromptBuilder.multiQuestionModelFacingQuery(
+            baseQuery: baseQuery,
+            segments: segments,
+            expectedLanguageCode: expectedLanguageCode
+        )
     }
 
     private func adjustedVaultMatchScore(

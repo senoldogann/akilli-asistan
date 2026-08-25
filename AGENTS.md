@@ -50,3 +50,11 @@
 - Require explicit architecture boundaries, failure modes, and data flow before implementation
 - Require security review, performance checks, edge-case coverage, and regression coverage on changed behavior
 - Treat missing critical-path unit, integration, or e2e coverage as incomplete unless the user explicitly waives it
+
+## Agent Handoff (READ FIRST)
+- An external audit + fixes were applied on 2026-08-25. Before starting new work,
+  read `docs/AGENT_NOTES.md` — it contains the verified state, priority fixes,
+  architecture recommendations, and research references. Do not regress the items
+  listed under "Already Correct".
+- Test suite was fixed (MessageContent `thinking:` calls); keep tests compiling.
+

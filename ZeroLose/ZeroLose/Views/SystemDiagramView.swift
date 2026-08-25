@@ -26,7 +26,7 @@ struct SystemDiagramView: View {
         guard count > 0 else { return [:] }
         
         for (index, node) in data.nodes.enumerated() {
-            // Layout nodes in columns/rows depending on index
+            // Düğümleri endekse göre sütunlara/satırlara yerleştir
             let row = index / 2
             let col = index % 2
             
@@ -40,7 +40,7 @@ struct SystemDiagramView: View {
     
     var body: some View {
         ZStack {
-            // 1. Connection lines & labels
+            // 1. Bağlantı çizgileri ve etiketler
             let positions = nodePositions
             ForEach(0..<data.links.count, id: \.self) { index in
                 let link = data.links[index]
@@ -49,7 +49,7 @@ struct SystemDiagramView: View {
                 }
             }
             
-            // 2. Nodes
+            // 2. Düğümler
             ForEach(data.nodes) { node in
                 if let pos = nodePositions[node.id] {
                     NodeCardView(node: node, isHovered: hoveredNodeId == node.id)
@@ -118,14 +118,14 @@ struct ConnectionArrow: View {
     
     var body: some View {
         ZStack {
-            // Clean connected lines
+            // Temiz bağlantı çizgileri
             Path { path in
                 path.move(to: start)
                 path.addLine(to: end)
             }
             .stroke(Color.white.opacity(0.25), style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
             
-            // Arrow head
+            // Ok başı
             Path { path in
                 let angle = atan2(end.y - start.y, end.x - start.x)
                 let arrowLength: CGFloat = 7
@@ -156,7 +156,7 @@ struct ConnectionArrow: View {
                     .background(Color.black.opacity(0.75))
                     .cornerRadius(4)
                     .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Color.glassStroke, lineWidth: 0.5))
-                    // Position label in center of path line
+                    // Etiketi yol çizgisinin merkezine konumlandır
                     .position(x: (start.x + end.x) / 2, y: (start.y + end.y) / 2)
             }
         }

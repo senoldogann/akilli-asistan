@@ -6,11 +6,12 @@ struct MockInterviewView: View {
     @ObservedObject private var speechAnalytics = SpeechAnalyticsService.shared
     
     @State private var showSampleAnswer = false
+    @State private var selectedMCQOption: String? = nil
     @AppStorage("windowOpacity") private var windowOpacity: Double = 1.0
     
     var body: some View {
         VStack(spacing: 0) {
-            // Header
+            // Başlık
             HStack(spacing: 12) {
                 ZeroLoseIcon(type: .person, color: .orange, size: 22)
                 Text("Mock Interview Simulator")
@@ -39,7 +40,7 @@ struct MockInterviewView: View {
                 alignment: .bottom
             )
             
-            // Content
+            // İçerik
             if !mockService.isSessionActive {
                 setupSessionView
             } else if mockService.isLoading {
@@ -72,7 +73,7 @@ struct MockInterviewView: View {
         )
     }
     
-    // MARK: - Setup view
+    // MARK: - Kurulum görünümü
     
     private var setupSessionView: some View {
         VStack(spacing: 24) {
@@ -118,6 +119,14 @@ struct MockInterviewView: View {
             
             let jd = UserDefaults.standard.string(forKey: "activeJobDescription") ?? ""
             
+            Toggle(isOn: $mockService.speakQuestionsEnabled) {
+                Text("Soruları seslendir (kapat: sessiz okuma)")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.secondary)
+            }
+            .toggleStyle(.switch)
+            .padding(.horizontal, 24)
+            
             Button(action: {
                 Task {
                     await mockService.startMockInterview()
@@ -147,7 +156,7 @@ struct MockInterviewView: View {
         .padding(24)
     }
     
-    // MARK: - Loading view
+    // MARK: - Yükleme görünümü
     
     private var loadingView: some View {
         VStack(spacing: 20) {
@@ -166,7 +175,19 @@ struct MockInterviewView: View {
     private var activeSessionView: some View {
         ScrollView {
             VStack(spacing: 20) {
-                // Progress
+                // Voice toggle: allow the candidate to read silently during exams.
+                HStack {
+                    Toggle(isOn: $mockService.speakQuestionsEnabled) {
+                        Text("Sesli Soru")
+                            .font(.system(size: 11, weight: .semibold, design: .rounded))
+                            .foregroundColor(.secondary)
+                    }
+                    .toggleStyle(.switch)
+                    .controlSize(.mini)
+                    Spacer()
+                }
+
+                // İlerleme
                 HStack {
                     Text("Question \(mockService.currentQuestionIndex + 1) of \(mockService.questions.count)")
                         .font(.system(size: 12, weight: .bold, design: .rounded))
@@ -174,7 +195,7 @@ struct MockInterviewView: View {
                     Spacer()
                 }
                 
-                // Question Card
+                // Soru Kartı
                 if mockService.currentQuestionIndex < mockService.questions.count {
                     VStack(alignment: .leading, spacing: 10) {
                         Text(mockService.questions[mockService.currentQuestionIndex])
@@ -188,9 +209,42 @@ struct MockInterviewView: View {
                     .background(Color.glassFill)
                     .cornerRadius(12)
                     .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.glassStroke, lineWidth: 0.8))
+
+                    // Hatırlama soruları için çoktan seçmeli seçenekler
+                    if let options = currentOptions, !options.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(Array(options.enumerated()), id: \.offset) { index, option in
+                                Button {
+                                    selectedMCQOption = option
+                                } label: {
+                                    HStack(spacing: 8) {
+                                        Image(systemName: selectedMCQOption == option ? "checkmark.circle.fill" : "circle")
+                                            .font(.system(size: 14))
+                                            .foregroundStyle(selectedMCQOption == option ? Color.green : Color.textSecondary)
+                                        Text(option)
+                                            .font(.system(size: 13, weight: .medium, design: .rounded))
+                                            .foregroundStyle(.white.opacity(0.92))
+                                            .multilineTextAlignment(.leading)
+                                        Spacer(minLength: 0)
+                                    }
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 9)
+                                    .background(selectedMCQOption == option ? Color.green.opacity(0.14) : Color.black.opacity(0.16))
+                                    .cornerRadius(9)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 9)
+                                            .strokeBorder(selectedMCQOption == option ? Color.green.opacity(0.5) : Color.glassStroke, lineWidth: 0.8)
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                                .pointerCursor()
+                            }
+                        }
+                        .padding(.top, 8)
+                    }
                 }
                 
-                // User Answer Area
+                // Kullanıcı Yanıtı Alanı
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
                         Text(mockService.isListeningToUser ? "🎤 Listening to your answer..." : "Your Answer")
@@ -210,7 +264,7 @@ struct MockInterviewView: View {
                         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.glassStroke, lineWidth: 0.8))
                 }
                 
-                // Real-time Speaking Pace & Filler words (Speech Analytics Card)
+                // Gerçek zamanlı Konuşma Hızı & Dolgu kelimeleri (Konuşma Analizi Kartı)
                 if mockService.isListeningToUser {
                     VStack(alignment: .leading, spacing: 12) {
                         Text("Speech Analytics (Real-Time)")
@@ -245,9 +299,28 @@ struct MockInterviewView: View {
                     .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.glassStroke, lineWidth: 0.5))
                 }
                 
-                // Submit & Next Controls
+                // Gönder & Sonraki Kontrolleri
                 HStack(spacing: 16) {
-                    if mockService.isListeningToUser {
+                    if let option = selectedMCQOption, currentOptions != nil {
+                        Button(action: {
+                            Task {
+                                await mockService.submitMultipleChoiceAnswer(option)
+                            }
+                        }) {
+                            HStack {
+                                Image(systemName: "checkmark.circle.fill")
+                                Text("Submit Answer")
+                            }
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(.white)
+                            .padding(.vertical, 10)
+                            .frame(maxWidth: .infinity)
+                            .background(Color.green)
+                            .cornerRadius(10)
+                        }
+                        .buttonStyle(.plain)
+                        .pointerCursor()
+                    } else if mockService.isListeningToUser {
                         Button(action: {
                             Task {
                                 await mockService.stopListeningAndEvaluate()
@@ -268,6 +341,7 @@ struct MockInterviewView: View {
                         .pointerCursor()
                     } else if let evaluation = mockService.currentEvaluation {
                         Button(action: {
+                            selectedMCQOption = nil
                             mockService.nextQuestion()
                         }) {
                             HStack {
@@ -286,7 +360,7 @@ struct MockInterviewView: View {
                     }
                 }
                 
-                // Evaluation feedback card
+                // Değerlendirme geri bildirim kartı
                 if let evaluation = mockService.currentEvaluation {
                     VStack(alignment: .leading, spacing: 14) {
                         HStack {
@@ -294,7 +368,7 @@ struct MockInterviewView: View {
                                 .font(.system(size: 13, weight: .bold, design: .rounded))
                                 .foregroundColor(.white)
                             Spacer()
-                            // Score badge
+                            // Puan rozeti
                             Text("Score: \(evaluation.score)/10")
                                 .font(.system(size: 12, weight: .bold))
                                 .foregroundColor(evaluation.score >= 8 ? .green : (evaluation.score >= 5 ? .orange : .red))
@@ -344,7 +418,7 @@ struct MockInterviewView: View {
                         Divider()
                             .overlay(Color.glassStroke)
                         
-                        // Toggle for Sample answer
+                        // Örnek yanıt için aç/kapa
                         Button(action: {
                             withAnimation {
                                 showSampleAnswer.toggle()
@@ -379,5 +453,14 @@ struct MockInterviewView: View {
             }
             .padding(20)
         }
+        .onChange(of: mockService.currentQuestionIndex) { _, _ in
+            selectedMCQOption = nil
+        }
+    }
+
+    private var currentOptions: [String]? {
+        guard mockService.currentQuestionIndex < mockService.multipleChoiceOptions.count else { return nil }
+        let options = mockService.multipleChoiceOptions[mockService.currentQuestionIndex]
+        return options.isEmpty ? nil : options
     }
 }

@@ -1,55 +1,73 @@
+#!/usr/bin/env python3
+"""Validate the .agent/agents/*.md frontmatter without mutating it.
+
+The original rewrote agent frontmatter with fragile `.replace()` calls, which
+risked corrupting valid YAML. This version is a read-only validation helper: it
+reports which agent files are missing `name`, `description`, or `mode` so a
+developer can fix them explicitly.
+
+Usage:
+    python3 scripts/fix_agent_tools.py [--dump-broken]
+"""
+
+from __future__ import annotations
+
+import argparse
 import os
+import sys
+from pathlib import Path
 
-agent_dir = ".agent/agents"
-for filename in os.listdir(agent_dir):
-    if filename.endswith(".md"):
-        path = os.path.join(agent_dir, filename)
-        with open(path, "r") as f:
-            content = f.read()
-        
-        # Split by frontmatter delimiters
-        parts = content.split("---")
-        if len(parts) < 3:
+AGENT_DIR = Path(__file__).resolve().parent.parent / ".agent" / "agents"
+
+
+def parse_frontmatter(path: Path) -> tuple[dict[str, str], str]:
+    raw = path.read_text(encoding="utf-8")
+    if not raw.startswith("---"):
+        return {}, ""
+    parts = raw.split("---", 2)
+    if len(parts) < 3:
+        return {}, ""
+    frontmatter = parts[1]
+    meta: dict[str, str] = {}
+    for line in frontmatter.splitlines():
+        if ":" not in line:
             continue
-            
-        original_fm = parts[1]
-        body = "---".join(parts[2:])
-        
-        # Extract known fields
-        metadata = {}
-        for line in original_fm.split("\n"):
-            if ":" in line:
-                key, val = line.split(":", 1)
-                k = key.strip().lower()
-                v = val.strip()
-                # Clean value from previous corruption
-                v = v.replace("true:", "").replace("true", "").strip()
-                if v.startswith(":"): v = v[1:].strip()
-                metadata[k] = v
+        key, value = line.split(":", 1)
+        meta[key.strip().lower()] = value.strip().strip('"').strip("'")
+    return meta, parts[2]
 
-        # Reconstruct exactly what we want
-        new_fm = "---\n"
-        # 1. Name & Description are essential
-        if "name" in metadata: new_fm += f"name: {metadata['name']}\n"
-        if "description" in metadata: new_fm += f"description: {metadata['description']}\n"
-        
-        # 2. Agent mode
-        if "mode" in metadata and metadata["mode"]:
-            new_fm += f"mode: {metadata['mode']}\n"
 
-        # 3. Tools as Record (OpenCode preferred)
-        new_fm += "tools:\n"
-        for t in ["read", "write", "edit", "bash", "grep", "glob"]:
-            new_fm += f"  {t}: true\n"
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Validate agent frontmatter (read-only).")
+    parser.add_argument(
+        "--dump-broken",
+        action="store_true",
+        help="Print the full frontmatter of broken files (for debugging).",
+    )
+    args = parser.parse_args()
 
-        # 4. Skills
-        if "skills" in metadata: new_fm += f"skills: {metadata['skills']}\n"
-        new_fm += "---\n"
-        
-        new_content = new_fm + body
-        
-        with open(path, "w") as f:
-            f.write(new_content)
-        print(f"✅ Cleanly rebuilt {filename}")
+    required = ("name", "description", "mode")
+    broken: list[Path] = []
+    total = 0
 
-print("Reconstruction complete.")
+    for agent_file in sorted(AGENT_DIR.glob("*.md")):
+        total += 1
+        meta, _ = parse_frontmatter(agent_file)
+        missing = [field for field in required if field not in meta]
+        if missing:
+            broken.append(agent_file)
+            print(f"[BROKEN] {agent_file.name}: missing {', '.join(missing)}")
+            if args.dump_broken:
+                print("  frontmatter starts with:")
+                for line in agent_file.read_text(encoding="utf-8").splitlines()[:8]:
+                    print(f"    {line}")
+
+    if not broken:
+        print(f"OK: {total} agent files have valid name/description/mode frontmatter.")
+        return 0
+    print(f"Found {len(broken)} broken agent file(s) out of {total}. No files were modified.")
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

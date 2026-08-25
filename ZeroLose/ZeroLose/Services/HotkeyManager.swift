@@ -6,7 +6,7 @@ import os
 final class HotkeyManager: ObservableObject {
     static let shared = HotkeyManager()
 
-    // Historical name kept for compatibility with existing settings UI binding.
+    // Mevcut ayarlar UI bağlamasıyla uyumluluk için korunan tarihsel ad.
     @Published private(set) var isPermissionGranted: Bool = true
 
     private var hotKeyRef: EventHotKeyRef?
@@ -15,7 +15,7 @@ final class HotkeyManager: ObservableObject {
     private let hotkeyID = EventHotKeyID(signature: OSType(0x5A4C4F53), id: 1) // "ZLOS"
     private let eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
     
-    // Callback set by WindowManager
+    // WindowManager tarafından ayarlanan geri çağrı
     var onToggle: (() -> Void)?
     
     private init() {}

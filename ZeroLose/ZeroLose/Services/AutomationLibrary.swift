@@ -1,11 +1,11 @@
 import Foundation
 
-/// A comprehensive library of verified AppleScript commands for macOS automation.
-/// This acts as the "Source of Truth" to prevent AI hallucinations.
+/// MacOS otomasyonu için doğrulanmış AppleScript komutlarının kapsamlı kütüphanesi.
+/// AI halüsinasyonlarını önlemek için "Tek Doğruluk Kaynağı" görevi görür.
 struct AutomationLibrary {
     
     struct System {
-        static let setVolume = "set volume output volume %d" // Use String(format:)
+        static let setVolume = "set volume output volume %d" // String(format:) kullan
         static let mute = "set volume output muted true"
         static let unmute = "set volume output muted false"
         static let safeEmptyTrash = """
@@ -66,7 +66,7 @@ struct AutomationLibrary {
         end tell
         """
         
-        // Robust Search & Play
+        // Sağlam Arama & Oynatma
         static func chromeSearchAndPlay(query: String) -> String {
              return """
              tell application "Google Chrome"
@@ -95,9 +95,9 @@ struct AutomationLibrary {
         }
     }
     
-    /// Returns the full list of capabilities to be injected into the AI Prompt
+    /// AI Prompt'una enjekte edilecek yeteneklerin tam listesini döndürür.
     static func getPromptContext() -> String {
-        // Escaping for JSON payload (Need to escape quotes and newlines)
+        // JSON yükü için kaçış (tırnak ve satır sonlarının kaçışı gerekir)
         func escape(_ script: String) -> String {
             return script
                 .replacingOccurrences(of: "\"", with: "\\\"")

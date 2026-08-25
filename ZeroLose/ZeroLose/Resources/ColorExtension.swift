@@ -3,15 +3,7 @@ import SwiftUI
 extension Color {
     static var brandPrimary: Color {
         let theme = UserDefaults.standard.string(forKey: "selectedThemeName") ?? "Red"
-        switch theme {
-        case "Red":      return Color(red: 242/255, green: 78/255, blue: 78/255)
-        case "Orange":   return Color.orange
-        case "Blue":     return Color(red: 0.2, green: 0.6, blue: 1.0)
-        case "Purple":   return Color(red: 0.7, green: 0.3, blue: 1.0)
-        case "Green":    return Color(red: 0.2, green: 0.85, blue: 0.5)
-        case "Graphite": return Color(white: 0.55)
-        default:         return Color(red: 242/255, green: 78/255, blue: 78/255)
-        }
+        return ThemeStore.accent(for: theme)
     }
 
     // Liquid Glass design tokens

@@ -4,11 +4,11 @@ import os
 struct SafetyGuard {
     private static let logger = Logger(subsystem: "com.zerolose", category: "security")
 
-    /// Returns true if the script is considered dangerous (e.g. permanent deletion outside trash)
+    /// Betik tehlikeli kabul ediliyorsa true döndürür (örn. çöp kutusu dışında kalıcı silme)
     static func isDangerous(_ payload: String, type: String) -> Bool {
         let lowerPayload = payload.lowercased()
 
-        // 1. GLOBAL BLACKLIST (Keywords & Patterns)
+        // 1. GLOBAL KARA LİSTE (Anahtar Kelimeler & Kalıplar)
         let blacklistedTerms = [
             "rm ", "mkfs", "dd ", "> /dev/", "format ",
             "shutdown", "reboot", "sudo ", "su ", "passwd",
@@ -20,7 +20,7 @@ struct SafetyGuard {
 
         for term in blacklistedTerms {
             if lowerPayload.contains(term) {
-                // Allow "rm" only if it's not recursive or if it's safe (very strict)
+                // "rm" yalnızca özyinelemeli değilse veya güvenliyse izin ver (çok katı)
                 if term == "rm " && !lowerPayload.contains("-rf") && !lowerPayload.contains("-r") {
                     continue
                 }
@@ -29,19 +29,19 @@ struct SafetyGuard {
             }
         }
 
-        // 2. PATH SENSITIVITY (Regex for Home/System paths)
-        // Detect patterns like rm -rf /, rm -rf ~, rm -rf $HOME, /etc/*, /Library/*
+        // 2. YOL DUYARLILIĞI (Home/Sistem yolları için Regex)
+        // rm -rf /, rm -rf ~, rm -rf $HOME, /etc/*, /Library/* gibi kalıpları tespit et
         let dangerousPathPatterns = [
-            #"/(\s|$)"#,                  // Root /
-            #"~\s"#,                        // Home ~
+            #"/(\s|$)"#,                  // Kök /
+            #"~\s"#,                        // Ev dizini ~
             #"\$home"#,                     // $HOME
-            #"/etc/"#,                      // System config
-            #"/library/"#,                  // System Library
-            #"/system/"#,                   // macOS System
-            #"\.\./"#,                      // Path traversal
-            #"\|\s*(sh|bash|zsh|zsh-)"#,    // Piping to shell
-            #"(curl|wget).*\|\s*sh"#,       // Remote script execution
-            #"osascript\s+-e"#              // Indirect AppleScript execution
+            #"/etc/"#,                      // Sistem yapılandırması
+            #"/library/"#,                  // Sistem Kütüphanesi
+            #"/system/"#,                   // macOS Sistemi
+            #"\.\./"#,                      // Yol geçişi
+            #"\|\s*(sh|bash|zsh|zsh-)"#,    // Shell'e borulama
+            #"(curl|wget).*\|\s*sh"#,       // Uzak betik çalıştırma
+            #"osascript\s+-e"#              // Dolaylı AppleScript yürütme
         ]
 
         for pattern in dangerousPathPatterns {
@@ -51,9 +51,9 @@ struct SafetyGuard {
             }
         }
 
-        // 3. APPLESCRIPT SPECIFIC (Execution bypasses)
+        // 3. APPLESCRIPT'A ÖZGÜ (Yürütme baypasları)
         if type == "applescript" {
-            // Only allow one tightly scoped shell bridge for clipboard screenshot.
+            // Pano ekran görüntüsü için yalnızca tek bir sıkı kapsamlı shell köprüsüne izin ver.
             if lowerPayload.contains("do shell script") &&
                 !lowerPayload.contains("do shell script \"screencapture -c\"") {
                 logger.warning("🛡️ SafetyGuard: Blocked AppleScript shell bridge")
@@ -72,7 +72,7 @@ struct SafetyGuard {
             }
 
             if lowerPayload.contains("do shell script \"screencapture -c\"") {
-                // Keep this explicit allowlist narrow.
+                // Bu açık izin listesini dar tut.
                 let containsAnythingElse = lowerPayload.replacingOccurrences(
                     of: "do shell script \"screencapture -c\"",
                     with: ""
@@ -87,8 +87,8 @@ struct SafetyGuard {
         return false
     }
 
-    /// Sanity check for recurring task intervals
+    /// Yinelenen görev aralıkları için tutarlılık kontrolü
     static func validateInterval(_ interval: Double) -> Double {
-        return max(0.5, interval) // Minimum 0.5s to prevent CPU overload
+        return max(0.5, interval) // CPU aşırı yükünü önlemek için minimum 0.5s
     }
 }

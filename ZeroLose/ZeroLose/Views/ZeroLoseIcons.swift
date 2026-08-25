@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// A collection of custom SVG icons for ZeroLose.
-/// These are implemented as SwiftUI Shapes or Paths for maximum performance and vector quality.
+/// ZeroLose için özel SVG ikonlarının koleksiyonu.
+/// Maksimum performans ve vektör kalitesi için SwiftUI Shapes veya Paths olarak uygulanır.
 struct ZeroLoseIcon: View {
     enum IconType {
         case sparkles, clipboard, gear, paperplane, eye, mic, micSlash, brain, camera, plus, waveform, person, trash, textbubble, xmark, globe, book
@@ -16,7 +16,7 @@ struct ZeroLoseIcon: View {
             .aspectRatio(1, contentMode: .fit)
             .frame(width: size, height: size)
             .foregroundColor(color)
-            .contentShape(Rectangle()) // Makes the whole frame clickable
+            .contentShape(Rectangle()) // Tüm çerçeveyi tıklanabilir yapar
     }
     
     @ViewBuilder
@@ -115,11 +115,11 @@ struct ZeroLoseIcon: View {
                 
             case .brain:
                 Path { path in
-                    // Left hemisphere
+                    // Sol yarım küre
                     path.addEllipse(in: CGRect(x: w*0.1, y: h*0.2, width: w*0.4, height: h*0.6))
-                    // Right hemisphere
+                    // Sağ yarım küre
                     path.addEllipse(in: CGRect(x: w*0.5, y: h*0.2, width: w*0.4, height: h*0.6))
-                    // Top curve
+                    // Üst eğri
                     path.addEllipse(in: CGRect(x: w*0.3, y: h*0.1, width: w*0.4, height: h*0.4))
                 }
                 .stroke(color, lineWidth: w*0.1)
@@ -161,7 +161,7 @@ struct ZeroLoseIcon: View {
                 
             case .person:
                 Path { path in
-                    // Head outline
+                    // Kafa dış hattı
                     path.addArc(
                         center: CGPoint(x: w/2, y: h*0.35),
                         radius: w*0.18,
@@ -170,7 +170,7 @@ struct ZeroLoseIcon: View {
                         clockwise: false
                     )
                     
-                    // Shoulders outline
+                    // Omuz dış hattı
                     path.move(to: CGPoint(x: w*0.18, y: h*0.82))
                     path.addQuadCurve(
                         to: CGPoint(x: w*0.82, y: h*0.82),
@@ -181,18 +181,18 @@ struct ZeroLoseIcon: View {
                 
             case .trash:
                 Path { path in
-                    // Trash can outline
-                    // Lid
+                    // Çöp kutusu dış hattı
+                    // Kapak
                     path.move(to: CGPoint(x: w*0.15, y: h*0.28))
                     path.addLine(to: CGPoint(x: w*0.85, y: h*0.28))
                     
-                    // Lid Handle
+                    // Kapak Tutamacı
                     path.move(to: CGPoint(x: w*0.35, y: h*0.28))
                     path.addLine(to: CGPoint(x: w*0.35, y: h*0.15))
                     path.addLine(to: CGPoint(x: w*0.65, y: h*0.15))
                     path.addLine(to: CGPoint(x: w*0.65, y: h*0.28))
                     
-                    // Body
+                    // Gövde
                     path.move(to: CGPoint(x: w*0.25, y: h*0.28))
                     path.addLine(to: CGPoint(x: w*0.28, y: h*0.85))
                     path.addLine(to: CGPoint(x: w*0.72, y: h*0.85))
@@ -223,12 +223,12 @@ struct ZeroLoseIcon: View {
                     Circle()
                         .stroke(color, lineWidth: w*0.1)
                     
-                    // Meridians
+                    // Meridyenler
                     Ellipse()
                         .stroke(color, lineWidth: w*0.08)
                         .frame(width: w*0.4, height: h)
                     
-                    // Equator
+                    // Ekvator
                     Path { path in
                         path.move(to: CGPoint(x: 0, y: h/2))
                         path.addLine(to: CGPoint(x: w, y: h/2))
@@ -242,7 +242,7 @@ struct ZeroLoseIcon: View {
                     path.move(to: CGPoint(x: w*0.2, y: h*0.1))
                     path.addLine(to: CGPoint(x: w*0.2, y: h*0.9))
                     
-                    // Pages
+                    // Sayfalar
                     path.move(to: CGPoint(x: w*0.2, y: h*0.1))
                     path.addQuadCurve(to: CGPoint(x: w*0.8, y: h*0.15), control: CGPoint(x: w*0.5, y: h*0.05))
                     path.addLine(to: CGPoint(x: w*0.8, y: h*0.95))

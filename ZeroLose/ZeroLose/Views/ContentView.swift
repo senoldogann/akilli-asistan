@@ -2,6 +2,47 @@ import SwiftUI
 import UniformTypeIdentifiers
 import AppKit
 
+// MARK: - Liquid Glass helper
+
+/// Applies the native macOS 26 Liquid Glass effect when available, otherwise
+/// falls back to the existing frosted material. Used so every surface degrades
+/// gracefully on older OSes while looking native on macOS 26+.
+struct LiquidGlassSurface: ViewModifier {
+    var tint: Color = .white.opacity(0.12)
+    var cornerRadius: CGFloat = 14
+
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content
+                .glassEffect(.regular.tint(tint), in: .rect(cornerRadius: cornerRadius))
+        } else {
+            content
+                .background(.ultraThinMaterial)
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        }
+    }
+}
+
+extension View {
+    func liquidGlassSurface(tint: Color = .white.opacity(0.12), cornerRadius: CGFloat = 14) -> some View {
+        modifier(LiquidGlassSurface(tint: tint, cornerRadius: cornerRadius))
+    }
+}
+
+/// Global window glass: applies native Liquid Glass on macOS 26+ and keeps the
+/// existing frosted material fallback elsewhere.
+struct LiquidGlassMainSurface: ViewModifier {
+    var tint: Color = .white.opacity(0.12)
+
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content.glassEffect(.regular.tint(tint), in: .rect(cornerRadius: 20))
+        } else {
+            content
+        }
+    }
+}
+
 struct ContentView: View {
     @Bindable var viewModel: GhostViewModel
     @State private var inputText: String = ""
@@ -10,6 +51,8 @@ struct ContentView: View {
     @State private var isHistoryPresented: Bool = false
     @State private var isInterviewVaultPresented: Bool = false
     @State private var isMockInterviewPresented: Bool = false
+    @State private var isDropTargeted: Bool = false
+    @State private var isKeyboardDisguisePresented: Bool = false
 
     // User Settings
     @AppStorage("fontSize") private var fontSize: Double = 14.0
@@ -17,6 +60,13 @@ struct ContentView: View {
     @AppStorage("selectedThemeName") private var selectedTheme: String = "Red"
     @AppStorage("forceWebSearch") private var forceWebSearch: Bool = false
     @AppStorage("windowOpacity") private var windowOpacity: Double = 1.0
+    @AppStorage("commandApprovalMode") private var commandApprovalMode: String = "ask"
+    @AppStorage("llm_provider") private var llmProviderRaw: String = LLMProvider.ollama.rawValue
+    @AppStorage("customOpenAIReasoningModel") private var customOpenAIReasoningModel: String = ""
+    @AppStorage("customDeepSeekReasoningModel") private var customDeepSeekReasoningModel: String = ""
+    @AppStorage("customOpenCodeZenReasoningModel") private var customOpenCodeZenReasoningModel: String = ""
+    @AppStorage("customOpenCodeGoReasoningModel") private var customOpenCodeGoReasoningModel: String = ""
+    @AppStorage("customOllamaReasoningModel") private var customOllamaReasoningModel: String = ""
 
     var fontDesign: Font.Design {
         switch fontDesignStr {
@@ -27,7 +77,46 @@ struct ContentView: View {
         }
     }
 
-    private var themeColor: Color { .brandPrimary }
+    private var themeColor: Color {
+        ThemeStore.accent(for: selectedTheme)
+    }
+
+    private var activeProvider: LLMProvider {
+        LLMProvider(rawValue: llmProviderRaw) ?? .ollama
+    }
+
+    private var activeReasoningModel: String {
+        switch activeProvider {
+        case .openAI:
+            return customOpenAIReasoningModel.isEmpty ? AIModelNames.reasoning(forProvider: .openAI) : customOpenAIReasoningModel
+        case .deepSeek:
+            return customDeepSeekReasoningModel.isEmpty ? AIModelNames.reasoning(forProvider: .deepSeek) : customDeepSeekReasoningModel
+        case .openCodeZen:
+            return customOpenCodeZenReasoningModel.isEmpty ? AIModelNames.reasoning(forProvider: .openCodeZen) : customOpenCodeZenReasoningModel
+        case .openCodeGo:
+            return customOpenCodeGoReasoningModel.isEmpty ? AIModelNames.reasoning(forProvider: .openCodeGo) : customOpenCodeGoReasoningModel
+        case .ollama:
+            return customOllamaReasoningModel.isEmpty ? AIModelNames.reasoning(forProvider: .ollama) : customOllamaReasoningModel
+        }
+    }
+
+    private var approvalLabel: String {
+        switch commandApprovalMode {
+        case "full": return "Tam Erişim"
+        case "auto": return "Oto Onay"
+        default: return "Onay İste"
+        }
+    }
+
+    private var modelOptions: [String] {
+        switch activeProvider {
+        case .openAI: return [AIModelNames.reasoning(forProvider: .openAI), AIModelNames.fast(forProvider: .openAI), AIModelNames.coding(forProvider: .openAI)]
+        case .deepSeek: return [AIModelNames.reasoning(forProvider: .deepSeek), AIModelNames.fast(forProvider: .deepSeek), AIModelNames.coding(forProvider: .deepSeek)]
+        case .openCodeZen: return [AIModelNames.reasoning(forProvider: .openCodeZen), AIModelNames.fast(forProvider: .openCodeZen), AIModelNames.coding(forProvider: .openCodeZen)]
+        case .openCodeGo: return [AIModelNames.reasoning(forProvider: .openCodeGo), AIModelNames.fast(forProvider: .openCodeGo), AIModelNames.coding(forProvider: .openCodeGo)]
+        case .ollama: return [AIModelNames.reasoning(forProvider: .ollama), AIModelNames.fast(forProvider: .ollama), AIModelNames.coding(forProvider: .ollama)]
+        }
+    }
 
     // Slash Command State
     @State private var showSlashCommands: Bool = false
@@ -51,8 +140,36 @@ struct ContentView: View {
                 }
                 detectSlashCommand(newValue)
             }
-            .onAppear { installSlashKeyMonitor() }
+            .onAppear {
+                installSlashKeyMonitor()
+                refreshModelCatalog()
+            }
+            .onChange(of: llmProviderRaw) { _, _ in
+                // The provider just changed: reload the model catalog so the
+                // input picker shows the new provider's live models immediately
+                // instead of requiring a view re-render to reveal them.
+                refreshModelCatalog()
+            }
             .onDisappear { removeSlashKeyMonitor() }
+    }
+
+    /// Populate the provider model list in the background so the input picker
+    /// shows live models without forcing the user to open Settings first.
+    private func refreshModelCatalog() {
+        let service = DependencyContainer.shared.ollamaService
+        let provider = activeProvider
+        let apiKey: String
+        switch provider {
+        case .openAI: apiKey = Secrets.openAIApiKey
+        case .deepSeek: apiKey = Secrets.deepSeekApiKey
+        case .openCodeZen: apiKey = Secrets.openCodeZenApiKey
+        case .openCodeGo: apiKey = Secrets.openCodeGoApiKey
+        case .ollama: apiKey = Secrets.ollamaApiKey
+        }
+        guard !apiKey.isEmpty else { return }
+        Task {
+            _ = await service.fetchAvailableModels(provider: provider.rawValue, apiKey: apiKey)
+        }
     }
 
     // MARK: - Main Layout
@@ -93,6 +210,8 @@ struct ContentView: View {
                     .blendMode(.overlay)
             }
         }
+        .animation(.easeInOut(duration: 0.4), value: selectedTheme)
+        .modifier(LiquidGlassMainSurface(tint: themeColor.opacity(0.16)))
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay {
             // Glass border — inner ring
@@ -153,6 +272,21 @@ struct ContentView: View {
                 }
                 .transition(.opacity.combined(with: .scale(scale: 0.97)))
                 .zIndex(100)
+            }
+
+            if isKeyboardDisguisePresented {
+                ZStack {
+                    Color.black.opacity(windowOpacity * 0.35)
+                        .ignoresSafeArea()
+                        .onTapGesture {
+                            withAnimation { isKeyboardDisguisePresented = false }
+                        }
+
+                    KeyboardDisguiseView(isPresented: $isKeyboardDisguisePresented)
+                        .shadow(color: .black.opacity(0.5), radius: 40)
+                }
+                .transition(.opacity.combined(with: .scale(scale: 0.97)))
+                .zIndex(110)
             }
         }
     }
@@ -229,13 +363,26 @@ struct ContentView: View {
         HStack(spacing: 4) {
             // App icon + title
             HStack(spacing: 8) {
-                ZeroLoseIcon(type: .sparkles, color: viewModel.isBusy ? .cyan : themeColor, size: 22)
-                    .symbolEffect(.pulse, isActive: viewModel.isBusy)
+                Button {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.82)) {
+                        isKeyboardDisguisePresented = true
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "keyboard")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(viewModel.isBusy ? Color.cyan : Color.textSecondary)
+                            .symbolEffect(.pulse, isActive: viewModel.isBusy)
 
-                Text("ZERO LOSE")
-                    .font(.system(.subheadline, design: .rounded).weight(.bold))
-                    .foregroundStyle(.primary)
-                    .tracking(1.2)
+                        Text("Keyboard")
+                            .font(.system(.subheadline, design: .rounded).weight(.semibold))
+                            .foregroundStyle(.primary)
+                            .tracking(1.2)
+                    }
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+                .help("Keyboard Settings")
             }
 
             Spacer()
@@ -314,6 +461,17 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
+
+            if !viewModel.currentModelDisplay.isEmpty {
+                Text("\(activeProvider.displayName) · \(activeReasoningModel)")
+                    .font(.system(size: 9, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.tertiary)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 1)
+                    .background(Color.primary.opacity(0.05))
+                    .cornerRadius(4)
+                    .lineLimit(1)
+            }
         }
         .padding(.trailing, 4)
     }
@@ -363,12 +521,18 @@ struct ContentView: View {
                     }
                     .coordinateSpace(name: "scroll")
                     .onChange(of: viewModel.messages.count) {
-                        isNearBottom = true
+                        // A new message arrived. Always return to the bottom so
+                        // the user sees the fresh assistant reply, even if they
+                        // previously scrolled up reading an older message. The
+                        // down-arrow button still appears when they scroll away.
                         withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
                             proxy.scrollTo("bottom", anchor: .bottom)
                         }
+                        isNearBottom = true
                     }
                     .onChange(of: viewModel.messages.last?.text) {
+                        // While a model streams, keep the caret pinned to the
+                        // bottom unless the user has deliberately scrolled up.
                         if isNearBottom {
                             proxy.scrollTo("bottom", anchor: .bottom)
                         }
@@ -380,10 +544,35 @@ struct ContentView: View {
                         isNearBottom = true
                         proxy.scrollTo("bottom", anchor: .bottom)
                     }
+                    .overlay(alignment: .bottomTrailing) {
+                        if !isNearBottom {
+                            scrollToBottomButton(proxy: proxy)
+                        }
+                    }
                 }
             }
         }
         .frame(maxHeight: .infinity)
+    }
+
+    private func scrollToBottomButton(proxy: ScrollViewProxy) -> some View {
+        Button {
+            withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
+                proxy.scrollTo("bottom", anchor: .bottom)
+            }
+        } label: {
+            Image(systemName: "arrow.down")
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 30, height: 30)
+                .background(Color.primary.opacity(0.15))
+                .clipShape(Circle())
+                .overlay(Circle().stroke(Color.primary.opacity(0.2), lineWidth: 0.8))
+                .shadow(color: .black.opacity(0.25), radius: 5, x: 0, y: 2)
+        }
+        .buttonStyle(.plain)
+        .padding(12)
+        .help("Aşağı kaydır")
     }
 
     // MARK: - Message Row
@@ -425,14 +614,7 @@ struct ContentView: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
-            .background {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(Color.glassFill)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .strokeBorder(Color.glassStroke, lineWidth: 0.5)
-                    )
-            }
+            .liquidGlassSurface(cornerRadius: 14)
             .textSelection(.enabled)
 
             ZeroLoseIcon(type: .person, color: Color.textSecondary, size: 14)
@@ -478,15 +660,28 @@ struct ContentView: View {
                 }
 
             } else if message.type == .thinking {
-                ThinkingIndicator()
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 4)
+                if let thinking = message.thinking, !thinking.isEmpty {
+                    MessageContent(text: message.text, isUser: false, thinking: thinking, isStreaming: viewModel.isBusy)
+                        .equatable()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 4)
+                } else {
+                    ThinkingIndicator()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 4)
+                }
 
             } else {
                 VStack(alignment: .leading, spacing: 6) {
-                    MessageContent(text: message.text, isUser: false)
-                        .equatable()
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if let toolRun = message.toolRun {
+                        // Ajanın çalıştırdığı bir araç: görünür komut kartı göster.
+                        MessagingToolRunCard(run: toolRun)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        MessageContent(text: message.text, isUser: false, thinking: message.thinking, isStreaming: viewModel.isBusy)
+                            .equatable()
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
 
                     if !message.text.isEmpty {
                         HStack(spacing: 8) {
@@ -523,6 +718,61 @@ struct ContentView: View {
 
             mainInputRow
         }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(isDropTargeted ? Color.cyan.opacity(0.18) : Color.glassFill)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(isDropTargeted ? Color.cyan.opacity(0.6) : Color.glassStroke, lineWidth: isDropTargeted ? 1.5 : 0.8)
+        )
+        .onDrop(of: [UTType.fileURL.identifier], isTargeted: $isDropTargeted) { providers in
+            handleFileDrop(providers)
+        }
+    }
+
+    private func handleFileDrop(_ providers: [NSItemProvider]) -> Bool {
+        guard let provider = providers.first else { return false }
+
+        // Preferred path: Finder exposes the dropped file as a file URL.
+        // `canLoadObject(ofClass: URL.self)` can return false for some Finder
+        // drags, so we fall back to the conforming-type + raw-data path below.
+        if provider.canLoadObject(ofClass: URL.self) {
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                guard let url else { return }
+                Task { @MainActor in
+                    viewModel.attachFile(from: url)
+                }
+            }
+            return true
+        }
+
+        // Robust fallback: read the file URL out of the raw item payload. This
+        // handles drags where Finder only publishes the file's data or a
+        // conforming file-url item instead of a fully-formed URL object.
+        let fileType = UTType.fileURL.identifier
+        if provider.hasItemConformingToTypeIdentifier(fileType) {
+            provider.loadItem(forTypeIdentifier: fileType, options: nil) { item, _ in
+                let url: URL?
+                if let droppedURL = item as? URL {
+                    url = droppedURL
+                } else if let data = item as? Data,
+                          let fileURL = URL(dataRepresentation: data, relativeTo: nil) {
+                    url = fileURL
+                } else {
+                    url = nil
+                }
+                guard let url else { return }
+                Task { @MainActor in
+                    viewModel.attachFile(from: url)
+                }
+            }
+            return true
+        }
+
+        return false
     }
 
     @ViewBuilder
@@ -559,27 +809,13 @@ struct ContentView: View {
 
     @ViewBuilder
     private var mainInputRow: some View {
-        HStack(spacing: 6) {
-            // Quick actions (+)
-            Menu {
-                Button("Attach File (PDF, Image)") { showFilePicker() }
-                Divider()
-                Toggle("Force Web Search", isOn: $forceWebSearch)
-            } label: {
-                Image(systemName: forceWebSearch ? "globe.badge.chevron.backward" : "plus.circle")
-                    .font(.system(size: 19, weight: .light))
-                    .foregroundStyle(forceWebSearch ? .cyan : Color.textSecondary)
-                    .frame(width: 34, height: 34)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.interactive)
-            .help(forceWebSearch ? "Web Search: FORCED ON" : "Quick Actions")
-            .pointerCursor()
-
+        VStack(alignment: .leading, spacing: 7) {
+            // Input line: camera + text field + mic/send.
+            HStack(spacing: 6) {
             // Input Field
             TextField("", text: $inputText)
                 .placeholder(when: inputText.isEmpty) {
-                    Text("Ask anything...")
+                    Text("Bir şey sor...")
                         .foregroundStyle(Color.textSecondary)
                 }
                 .textFieldStyle(.plain)
@@ -593,30 +829,247 @@ struct ContentView: View {
 
             // Trailing Actions
             trailingActions
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background {
+                if #available(macOS 26.0, *) {
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .fill(.regularMaterial)
+                } else {
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .fill(Color.zeroHeader)
+                }
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .strokeBorder(Color.glassStroke, lineWidth: 0.8)
+            )
+            .shadow(color: .black.opacity(0.12), radius: 6, y: 3)
+            .animation(.spring(response: 0.28, dampingFraction: 0.75), value: inputText.isEmpty)
+            .animation(.spring(response: 0.28, dampingFraction: 0.75), value: viewModel.attachedFileData != nil)
+
+            // Bottom control line: quick actions + model selector + approval +
+            // context meter, all on one clean glass strip.
+            inputControlStrip
+        }
+    }
+
+    /// Compact control strip below the text field: provider/model picker,
+    /// approval mode selector, and a real-time context-window usage meter.
+    @ViewBuilder
+    private var inputControlStrip: some View {
+        HStack(spacing: 8) {
+            // Quick actions (+)
+            Menu {
+                Button("Dosya Ekle (PDF, Resim)") { showFilePicker() }
+                Divider()
+                Toggle("Zorla Web Arama", isOn: $forceWebSearch)
+                Divider()
+                Button("Ekranı Analiz Et") { viewModel.analyzeScreen() }
+            } label: {
+                Image(systemName: forceWebSearch ? "globe.badge.chevron.backward" : "plus.circle")
+                    .font(.system(size: 17, weight: .light))
+                    .foregroundStyle(forceWebSearch ? .cyan : Color.textSecondary)
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
+                    .background(Color.primary.opacity(0.05))
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.interactive)
+            .help(forceWebSearch ? "Web Arama: ZORUNLU" : "Hızlı İşlemler")
+            .pointerCursor()
+
+            Divider().frame(height: 16).overlay(Color.primary.opacity(0.12))
+
+            Menu {
+                ForEach(LLMProvider.allCases, id: \.rawValue) { provider in
+                    Button {
+                        llmProviderRaw = provider.rawValue
+                    } label: {
+                        if provider == activeProvider {
+                            Label("\(provider.displayName) (aktif)", systemImage: "checkmark")
+                        } else {
+                            Text(provider.displayName)
+                        }
+                    }
+
+                    Menu {
+                        ForEach(reasoningModelCandidates(for: provider), id: \.self) { model in
+                            Button {
+                                // Selecting a model from a provider submenu must
+                                // also switch the active provider to that model's
+                                // provider, otherwise the selection is silently
+                                // ignored while the active provider differs.
+                                llmProviderRaw = provider.rawValue
+                                setReasoningModel(model, for: provider)
+                            } label: {
+                                if model == AIModelNames.reasoning(forProvider: provider) {
+                                    Label(model, systemImage: "checkmark")
+                                } else {
+                                    Text(model)
+                                }
+                            }
+                        }
+                    } label: {
+                        Text("\(provider.displayName) modeli")
+                    }
+                }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: activeProvider == .deepSeek || activeProvider == .openCodeZen || activeProvider == .openCodeGo ? "brain.head.profile" : "cpu")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(themeColor)
+                    Text("\(activeProvider.displayName) · \(activeReasoningModel)")
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 9)
+                .padding(.vertical, 5)
+                .background(Color.primary.opacity(0.05))
+                .clipShape(Capsule())
+                .overlay(Capsule().strokeBorder(Color.glassStroke, lineWidth: 0.8))
+            }
+            .menuStyle(.borderlessButton)
+            .layoutPriority(1)
+
+            Menu {
+                ForEach([("ask", "Onay İste", "Her mutasyon için onay sor"), ("auto", "Oto Onay", "Güvenli işlemleri otomatik çalıştır"), ("full", "Tam Erişim", "Tüm işlemleri onaysız çalıştır")], id: \.0) { value, label, desc in
+                    Button {
+                        commandApprovalMode = value
+                    } label: {
+                        Text(label)
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: commandApprovalMode == "full" ? "checkmark.shield.fill" : "checkmark.shield")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(approvalColor)
+                    Text(approvalLabel)
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.primary.opacity(0.85))
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(Color.primary.opacity(0.05))
+                .clipShape(Capsule())
+                .overlay(Capsule().strokeBorder(Color.glassStroke, lineWidth: 0.8))
+            }
+            .menuStyle(.borderlessButton)
+
+            Spacer(minLength: 0)
+
+            contextMeter
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background {
-            if #available(macOS 26.0, *) {
-                RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .fill(.regularMaterial)
-            } else {
-                RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .fill(Color.zeroHeader)
-            }
-        }
-        .overlay(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .strokeBorder(Color.glassStroke, lineWidth: 0.8)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.glassFill.opacity(0.55))
         )
-        .shadow(color: .black.opacity(0.1), radius: 4, y: 2)
-        .animation(.spring(response: 0.28, dampingFraction: 0.75), value: inputText.isEmpty)
-        .animation(.spring(response: 0.28, dampingFraction: 0.75), value: viewModel.attachedFileData != nil)
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.glassStroke, lineWidth: 0.6)
+        )
+        .shadow(color: .black.opacity(0.08), radius: 6, y: 3)
+    }
+
+    private var approvalColor: Color {
+        switch commandApprovalMode {
+        case "full": return .orange
+        case "auto": return .green
+        default: return .secondary
+        }
+    }
+
+    private func reasoningModelCandidates(for provider: LLMProvider) -> [String] {
+        let cached = OllamaService.cachedModels(for: provider.rawValue)
+        if !cached.isEmpty {
+            return cached
+        }
+
+        // Before the live catalog is fetched (or when offline), show the curated
+        // fallback so the picker is never empty. DeepSeek keeps its own set.
+        switch provider {
+        case .openCodeZen:
+            return AIModelNames.openCodeZenCatalog
+        case .openCodeGo:
+            return AIModelNames.openCodeGoCatalog
+        default:
+            return [
+                AIModelNames.reasoning(forProvider: provider),
+                AIModelNames.fast(forProvider: provider),
+                AIModelNames.coding(forProvider: provider)
+            ]
+        }
+    }
+
+    private func setReasoningModel(_ model: String, for provider: LLMProvider) {
+        switch provider {
+        case .openAI: customOpenAIReasoningModel = model
+        case .deepSeek: customDeepSeekReasoningModel = model
+        case .openCodeZen: customOpenCodeZenReasoningModel = model
+        case .openCodeGo: customOpenCodeGoReasoningModel = model
+        case .ollama: customOllamaReasoningModel = model
+        }
+    }
+
+    @ViewBuilder
+    private var contextMeter: some View {
+        let usage = viewModel.contextUsage
+        VStack(alignment: .trailing, spacing: 2) {
+            Text("Konteks %\(Int((usage.fraction * 100).rounded()))")
+                .font(.system(size: 9, weight: .semibold, design: .rounded))
+                .foregroundStyle(usage.fraction > 0.85 ? .red : .secondary)
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.primary.opacity(0.08))
+                    Capsule()
+                        .fill(usage.fraction > 0.85 ? Color.red : (usage.fraction > 0.6 ? Color.orange : themeColor))
+                        .frame(width: geo.size.width * usage.fraction)
+                }
+            }
+            .frame(width: 72, height: 4)
+        }
+        .help("Kullanılan tahmini bağlam")
     }
 
     @ViewBuilder
     private var trailingActions: some View {
         HStack(spacing: 2) {
+            Button(action: { viewModel.testComputerUseSnapshot() }) {
+                Image(systemName: "cursorarrow.click.2")
+                    .font(.system(size: 17, weight: .light))
+                    .foregroundStyle(Color.textSecondary)
+                    .frame(width: 34, height: 34)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.interactive)
+            .help("Computer Use: Ön plandaki uygulamayı oku")
+            .disabled(viewModel.isBusy)
+            .pointerCursor()
+
+            Button(action: { viewModel.verifyComputerUseEndToEnd() }) {
+                Image(systemName: "checkmark.seal")
+                    .font(.system(size: 17, weight: .light))
+                    .foregroundStyle(Color.textSecondary)
+                    .frame(width: 34, height: 34)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.interactive)
+            .help("Computer Use: Uçtan uca doğrula (izin + ağaç oku)")
+            .disabled(viewModel.isBusy)
+            .pointerCursor()
+
             Button(action: { viewModel.analyzeScreen() }) {
                 Image(systemName: "camera.viewfinder")
                     .font(.system(size: 17, weight: .light))
@@ -645,19 +1098,30 @@ struct ContentView: View {
                 .help("Stop AI Response")
 
             } else if inputText.isEmpty && viewModel.attachedFileData == nil {
-                Button(action: { viewModel.toggleListening() }) {
-                    Image(systemName: "mic")
-                        .font(.system(size: 17, weight: viewModel.isListeningActive ? .semibold : .light))
-                        .foregroundStyle(viewModel.isListeningActive ? .red : Color.textSecondary)
-                        .frame(width: 34, height: 34)
-                        .background(viewModel.isListeningActive ? Color.red.opacity(0.12) : Color.clear)
-                        .clipShape(Circle())
-                        .symbolEffect(.pulse, isActive: viewModel.isListeningActive)
+                HStack(spacing: 10) {
+                    Button(action: { viewModel.toggleListening() }) {
+                        Image(systemName: "mic")
+                            .font(.system(size: 17, weight: viewModel.isListeningActive ? .semibold : .light))
+                            .foregroundStyle(viewModel.isListeningActive ? .red : Color.textSecondary)
+                            .frame(width: 34, height: 34)
+                            .background(viewModel.isListeningActive ? Color.red.opacity(0.12) : Color.clear)
+                            .clipShape(Circle())
+                            .symbolEffect(.pulse, isActive: viewModel.isListeningActive)
+                    }
+                    .buttonStyle(.interactive)
+                    .pointerCursor()
+                    .help("Transcription Mode")
+                    .animation(.spring(response: 0.25, dampingFraction: 0.7), value: viewModel.isListeningActive)
+
+                    if viewModel.isListeningActive && !viewModel.liveVoicePreview.isEmpty {
+                        Text(viewModel.liveVoicePreview)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .transition(.opacity)
+                    }
                 }
-                .buttonStyle(.interactive)
-                .pointerCursor()
-                .help("Transcription Mode")
-                .animation(.spring(response: 0.25, dampingFraction: 0.7), value: viewModel.isListeningActive)
 
             } else {
                 Button(action: { submitQuery() }) {
@@ -790,6 +1254,10 @@ struct ContentView: View {
         let query = inputText
         inputText = ""
         let searchMode: WebSearchMode = forceWebSearch ? .forceOn : .automatic
+        // A new user query should always pull the view back to the newest
+        // message, so a prior manual scroll-up cannot permanently disable
+        // auto-scroll for the next reply.
+        isNearBottom = true
         viewModel.askQuestion(query, webSearchMode: searchMode)
     }
 

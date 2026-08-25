@@ -31,7 +31,7 @@ struct TeleprompterView: View {
     
     var body: some View {
         VStack(spacing: 0) {
-            // Header / Drag Area
+            // Başlık / Sürükleme Alanı
             HStack {
                 HStack(spacing: 8) {
                     ZeroLoseIcon(type: .textbubble, color: themeColor, size: 14)

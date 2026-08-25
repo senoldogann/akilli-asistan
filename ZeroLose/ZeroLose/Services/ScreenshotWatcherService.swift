@@ -3,8 +3,8 @@ import Combine
 import Cocoa
 import os
 
-/// Monitors the filesystem for new screenshots taken by macOS.
-/// Uses FSEventStreamRef for reliable, real-time file system monitoring.
+/// macOS tarafından alınan yeni ekran görüntüleri için dosya sistemini izler.
+/// Güvenilir, gerçek zamanlı dosya sistemi izleme için FSEventStreamRef kullanır.
 @MainActor
 class ScreenshotWatcherService: ObservableObject {
     @Published var lastScreenshotData: Data?
@@ -16,7 +16,7 @@ class ScreenshotWatcherService: ObservableObject {
     private let logger = Logger(subsystem: "com.zerolose", category: "screenshot-watcher")
     
     init() {
-        // Default screenshot location: ~/Desktop
+        // Varsayılan ekran görüntüsü konumu: ~/Desktop
         self.screenshotFolder = NSHomeDirectory() + "/Desktop"
         startWatching()
     }
@@ -50,15 +50,15 @@ class ScreenshotWatcherService: ObservableObject {
                     let path = paths[i]
                     let flags = eventFlags[i]
                     
-                    // Check if it's a new file creation (not a folder, not removal)
+                    // Yeni dosya oluşturma mı (klasör değil, silinme değil) kontrol et
                     let isCreated = (flags & UInt32(kFSEventStreamEventFlagItemCreated)) != 0
                     let isRenamed = (flags & UInt32(kFSEventStreamEventFlagItemRenamed)) != 0
                     let isFile = (flags & UInt32(kFSEventStreamEventFlagItemIsFile)) != 0
                     let isRemoved = (flags & UInt32(kFSEventStreamEventFlagItemRemoved)) != 0
                     
-                    // Trigger on Creation OR Rename (Screenshots are often renamed from .EkranResmi to EkranResmi)
+                    // Oluşturma VEYA Yeniden Adlandırma üzerinde tetikle (Ekran görüntüleri sık sık .EkranResmi'den EkranResmi'ye yeniden adlandırılır)
                     if (isCreated || isRenamed) && isFile && !isRemoved {
-                        // Dispatch to main thread since this callback is on arbitrary thread
+                        // Bu geri çağrı rastgele bir iş parçacığında olduğu için ana iş parçacığına gönder
                         Task { @MainActor in
                             watcher.handleNewFile(at: path)
                         }
@@ -68,7 +68,7 @@ class ScreenshotWatcherService: ObservableObject {
             &context,
             pathsToWatch,
             FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
-            0.5, // Latency: 500ms to debounce rapid writes
+            0.5, // Gecikme: hızlı yazmaları birleştirmek için 500ms
             flags
         )
         
@@ -91,27 +91,27 @@ class ScreenshotWatcherService: ObservableObject {
     private func handleNewFile(at path: String) {
         let filename = (path as NSString).lastPathComponent.lowercased()
         
-        // Ignore hidden files (starting with dot)
+        // Gizli dosyaları yok say (nokta ile başlayan)
         guard !filename.hasPrefix(".") else { return }
         
-        // Check if filename matches screenshot pattern (Turkish: "Ekran Resmi", English: "Screen Shot")
+        // Dosya adı ekran görüntüsü kalıbıyla eşleşiyor mu kontrol et (Türkçe: "Ekran Resmi", İngilizce: "Screen Shot")
         let isScreenshot = filename.contains("screen shot") ||
                            filename.contains("ekran resmi") ||
                            filename.hasPrefix("screenshot")
         
         guard isScreenshot else { return }
         
-        // Check file extension
+        // Dosya uzantısını kontrol et
         let ext = (path as NSString).pathExtension.lowercased()
         guard ext == "png" || ext == "jpg" || ext == "jpeg" else { return }
         
-        // Don't reprocess the same file
+        // Aynı dosyayı yeniden işleme
         guard path != lastProcessedPath else { return }
         
         logger.info("New screenshot detected")
         lastProcessedPath = path
         
-        // Wait a bit for the file to be fully written
+        // Dosyanın tamamen yazılması için biraz bekle
         Task {
             try? await Task.sleep(nanoseconds: 800_000_000) // 800ms
             await loadScreenshot(from: path)

@@ -7,7 +7,7 @@ class SpeechAnalyticsService: ObservableObject {
     
     @Published var wpm: Double = 0.0
     @Published var fillerWordsCount: Int = 0
-    @Published var fillerWordsRatio: Double = 0.0 // percentage of filler words
+    @Published var fillerWordsRatio: Double = 0.0 // dolgu kelimelerinin yüzdesi
     @Published var pacingFeedback: String = "Not Speaking"
     @Published var sessionTranscripts: [String] = []
     
@@ -15,13 +15,13 @@ class SpeechAnalyticsService: ObservableObject {
     private var totalWordsCount = 0
     private var fillerCount = 0
     
-    // Multi-language filler words list
+    // Çok dilli dolgu kelimeleri listesi
     private let fillerWords: Set<String> = [
-        // English
+        // İngilizce
         "um", "uh", "ah", "eh", "like", "actually", "basically", "so", "you know", "well",
-        // Turkish
+        // Türkçe
         "şey", "yani", "eee", "hım", "mesela", "bence", "falan", "filan",
-        // Finnish
+        // Fince
         "tota", "niinku", "niin", "eli", "joo", "oikeesti", "totta"
     ]
     
@@ -46,7 +46,7 @@ class SpeechAnalyticsService: ObservableObject {
             startTime = Date()
         }
         
-        // Split segment into words
+        // Parçayı kelimelere böl
         let words = clean.lowercased()
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -56,17 +56,17 @@ class SpeechAnalyticsService: ObservableObject {
         
         totalWordsCount += words.count
         
-        // Count filler words
+        // Dolgu kelimelerini say
         for word in words {
             if fillerWords.contains(word) {
                 fillerCount += 1
             }
         }
         
-        // Calculate dynamic WPM based on elapsed time
+        // Geçen süreye göre dinamik WPM hesapla
         if let start = startTime {
             let elapsed = Date().timeIntervalSince(start)
-            if elapsed > 1.5 { // Debounce extremely short durations
+            if elapsed > 1.5 { // Aşırı kısa süreleri birleştir
                 let minutes = elapsed / 60.0
                 wpm = Double(totalWordsCount) / minutes
             } else {
@@ -80,7 +80,7 @@ class SpeechAnalyticsService: ObservableObject {
             fillerWordsRatio = (Double(fillerCount) / Double(totalWordsCount)) * 100.0
         }
         
-        // Pacing categorization
+        // Hız kategorizasyonu
         updatePacingFeedback()
     }
     

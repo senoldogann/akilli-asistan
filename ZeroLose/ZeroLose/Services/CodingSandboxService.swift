@@ -28,7 +28,7 @@ class CodingSandboxService {
         
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/swiftc")
-        // Use swiftc with -typecheck flag. Fast, secure, doesn't generate binaries.
+        // swiftc'yi -typecheck bayrağıyla kullan. Hızlı, güvenli, ikili üretmez.
         process.arguments = ["-typecheck", fileURL.path]
         
         let errorPipe = Pipe()
@@ -44,7 +44,7 @@ class CodingSandboxService {
         let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
         var errorString = String(data: errorData, encoding: .utf8) ?? ""
         
-        // Clean temp filenames from diagnostics output for elegant rendering
+        // Şık görünüm için hata çıktısındaki geçici dosya adlarını temizle
         errorString = errorString.replacingOccurrences(of: fileURL.path, with: "Main.swift")
         
         let success = process.terminationStatus == 0

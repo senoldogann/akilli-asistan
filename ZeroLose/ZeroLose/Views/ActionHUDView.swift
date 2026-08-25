@@ -1,11 +1,15 @@
 import SwiftUI
+import Combine
 
 struct ActionHUDView: View {
     let action: String
+    @State private var animateShimmer = false
+    @State private var dotCount = 0
+    private let dotTimer = Timer.publish(every: 0.4, on: .main, in: .common).autoconnect()
     
     var body: some View {
-        HStack(spacing: 12) {
-            // Animated Pulse Indicator
+        let content = HStack(spacing: 12) {
+            // Animasyonlu Nabız Göstergesi
             ZStack {
                 Circle()
                     .fill(Color.brandPrimary.opacity(0.3))
@@ -19,7 +23,7 @@ struct ActionHUDView: View {
             .pulseAnimation()
             
             VStack(alignment: .leading, spacing: 2) {
-                Text("AGENT ACTIVE")
+                Text("AGENT ACTIVE" + String(repeating: ".", count: dotCount))
                     .font(.system(size: 8, weight: .bold, design: .monospaced))
                     .foregroundColor(.brandPrimary)
                 
@@ -29,6 +33,8 @@ struct ActionHUDView: View {
                     .lineLimit(1)
             }
         }
+        
+        return content
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .background(
@@ -42,10 +48,34 @@ struct ActionHUDView: View {
         )
         .shadow(color: .black.opacity(0.4), radius: 10, x: 0, y: 5)
         .transition(.move(edge: .top).combined(with: .opacity))
+        .overlay(
+            LinearGradient(
+                colors: [.clear, .white.opacity(0.65), .clear],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .frame(width: 80)
+            .offset(x: animateShimmer ? 220 : -100)
+            .blendMode(.plusLighter)
+            .clipShape(
+                RoundedRectangle(cornerRadius: 30)
+            )
+        )
+        .clipped()
+        .onAppear {
+            withAnimation(.linear(duration: 1.1).repeatForever(autoreverses: false)) {
+                animateShimmer = true
+            }
+        }
+        .onReceive(dotTimer) { _ in
+            withAnimation(.easeInOut(duration: 0.2)) {
+                dotCount = (dotCount + 1) % 4
+            }
+        }
     }
 }
 
-// Helper expansion for pulse
+// Nabız için yardımcı genişletme
 extension View {
     func pulseAnimation() -> some View {
         self.modifier(PulseEffect())

@@ -3,19 +3,19 @@ import SwiftUI
 import Observation
 import os
 
-// Custom Window Class to allow Borderless windows to become Key (Focusable)
+// Kenarlıksız pencerelerin Key (Odaklanabilir) olmasına izin veren özel pencere sınıfı.
 class GhostWindow: NSWindow {
     override var canBecomeKey: Bool { return true }
     override var canBecomeMain: Bool { return true }
 }
 
-// Borderless window for Teleprompter
+// Teleprompter için kenarlıksız pencere.
 class TeleprompterWindow: NSWindow {
     override var canBecomeKey: Bool { return true }
     override var canBecomeMain: Bool { return true }
 }
 
-// Dedicated window for Settings
+// Ayarlar için özel pencere.
 class SettingsWindow: NSWindow {
     override var canBecomeKey: Bool { return true }
     override var canBecomeMain: Bool { return true }
@@ -40,7 +40,7 @@ class WindowManager: NSObject, NSWindowDelegate {
     private let logger = Logger(subsystem: "com.zerolose", category: "WindowManager")
     private var stealthModeObserver: NSKeyValueObservation?
     
-    // Use the container to get the shared VM
+    // Paylaşılan VM'i almak için kapsayıcıyı kullan
     private var viewModel: GhostViewModel {
         return DependencyContainer.shared.ghostViewModel
     }
@@ -70,12 +70,12 @@ class WindowManager: NSObject, NSWindowDelegate {
         window.isOpaque = false
         window.backgroundColor = .clear
 
-        // Real shadow so the Liquid Glass panel floats visually
+        // Liquid Glass panelinin görsel olarak yüzmesi için gerçek gölge
         window.hasShadow = true
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         window.ignoresMouseEvents = false
 
-        // NSVisualEffectView as the real blur layer behind SwiftUI content
+        // SwiftUI içeriğinin arkasında gerçek bulanıklık katmanı olarak NSVisualEffectView
         let effectView = NSVisualEffectView()
         effectView.material = .hudWindow
         effectView.blendingMode = .behindWindow
@@ -146,12 +146,12 @@ class WindowManager: NSObject, NSWindowDelegate {
         }
     }
     
-    /// Update window sharing type based on stealth mode setting
-    /// - Parameter stealth: true = invisible to screen sharing, false = visible
+    /// Gizli mod ayarına göre pencere paylaşım türünü günceller.
+    /// - Parameter stealth: true = ekran paylaşımında görünmez, false = görünür
     func updateSharingType(stealth: Bool) {
         let type: NSWindow.SharingType = stealth ? .none : .readOnly
         
-        // Loop through all app windows to catch main window, sheets, teleprompter, etc.
+        // Ana pencere, sayfalar, teleprompter vb. yakalamak için tüm uygulama pencerelerini döngüye al
         for window in NSApp.windows {
             window.sharingType = type
         }
@@ -210,9 +210,9 @@ class WindowManager: NSObject, NSWindowDelegate {
             let h = UserDefaults.standard.double(forKey: "windowHeight")
             
             if x != 0 || y != 0 {
-                // Restore Pos
+                // Konumu geri yükle
                 window.setFrameOrigin(NSPoint(x: x, y: y))
-                // Restore Size if saved
+                // Kaydedilmişse boyutu geri yükle
                 if w > 100 && h > 100 {
                     window.setContentSize(NSSize(width: w, height: h))
                 }
@@ -312,7 +312,7 @@ class WindowManager: NSObject, NSWindowDelegate {
         }
     }
     
-    // MARK: - Settings Window
+    // MARK: - Ayarlar Penceresi
     
     func toggleSettingsWindow() {
         if settingsWindow != nil {
@@ -365,7 +365,7 @@ class WindowManager: NSObject, NSWindowDelegate {
             )
         )
         
-        // NSVisualEffectView as the real blur layer behind Settings
+        // Ayarların arkasında gerçek bulanıklık katmanı olarak NSVisualEffectView
         let effectView = NSVisualEffectView()
         effectView.material = .hudWindow
         effectView.blendingMode = .behindWindow
@@ -406,7 +406,7 @@ class WindowManager: NSObject, NSWindowDelegate {
         }
     }
     
-    // MARK: - Teleprompter Window
+    // MARK: - Teleprompter Penceresi
     
     func toggleTeleprompterWindow() {
         if teleprompterWindow != nil {
@@ -428,7 +428,7 @@ class WindowManager: NSObject, NSWindowDelegate {
             return
         }
         
-        // Restore last known size; fallback to default on first launch
+        // Bilinen son boyutu geri yükle; ilk başlatmada varsayılana düş
         let restoredSize = restoreTeleprompterSize()
         let restoredFrame = restoreTeleprompterFrame(size: restoredSize)
         
@@ -447,7 +447,7 @@ class WindowManager: NSObject, NSWindowDelegate {
         tpWindow.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         tpWindow.isReleasedWhenClosed = false
         
-        // Apply stealth mode to TeleprompterWindow
+        // Teleprompter Penceresine gizli modu uygula
         let stealthEnabled = UserDefaults.standard.bool(forKey: "stealthModeEnabled")
         tpWindow.sharingType = stealthEnabled ? .none : .readOnly
         let tpOpacityRaw = UserDefaults.standard.double(forKey: "windowOpacity")
@@ -462,7 +462,7 @@ class WindowManager: NSObject, NSWindowDelegate {
             )
         )
         
-        // NSVisualEffectView as the real blur layer behind Teleprompter
+        // Teleprompter'ın arkasında gerçek bulanıklık katmanı olarak NSVisualEffectView
         let effectView = NSVisualEffectView()
         effectView.material = .hudWindow
         effectView.blendingMode = .behindWindow
@@ -495,13 +495,13 @@ class WindowManager: NSObject, NSWindowDelegate {
         isClosingTeleprompterWindow = true
         saveTeleprompterFrame(win)
         
-        // Make binding-backed "isPresented" false immediately to avoid SwiftUI state races.
+        // SwiftUI durum yarışlarını önlemek için binding destekli "isPresented" değerini hemen false yap.
         teleprompterWindow = nil
         
-        // Hide immediately to improve perceived responsiveness
+        // Algılanan duyarlılığı artırmak için hemen gizle
         win.orderOut(nil)
         
-        // Close on next runloop to avoid SwiftUI re-entrancy issues/crashes
+        // SwiftUI yeniden giriş sorunlarını/çökmelerini önlemek için sonraki runloop'ta kapat
         DispatchQueue.main.async { [weak self] in
             win.close()
             self?.isClosingTeleprompterWindow = false

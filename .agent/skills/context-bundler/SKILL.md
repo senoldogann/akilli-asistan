@@ -1,3 +1,8 @@
+---
+name: context-bundler
+description: "Flatten a codebase into a single AI-consumable XML/Markdown context file for deep-reasoning sessions."
+---
+
 # Context Bundler Skill
 
 > **Inspired by BMAD-METHOD** | "Codebase Flattener" for Deep Reasoning

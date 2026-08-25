@@ -11,13 +11,23 @@ struct Secrets: Sendable {
     nonisolated private static let legacyGroqKeyStorage = "stored_groq_api_key"
     nonisolated private static let legacyTavilyKeyStorage = "stored_tavily_api_key"
     nonisolated private static let legacyOpenAIKeyStorage = "stored_openai_api_key"
+    nonisolated private static let legacyDeepSeekKeyStorage = "stored_deepseek_api_key"
+    nonisolated private static let legacyOpenCodeZenKeyStorage = "stored_opencode_zen_api_key"
+    nonisolated private static let legacyOpenCodeGoKeyStorage = "stored_opencode_go_api_key"
     nonisolated private static let migrationFlagStorage = "secrets_keychain_migration_v1"
     nonisolated private static let openAIPreferenceStorage = "prefer_openai_provider"
+    nonisolated private static let deepSeekPreferenceStorage = "prefer_deepseek_provider"
+    nonisolated private static let openCodeZenPreferenceStorage = "prefer_opencode_zen_provider"
+    nonisolated private static let openCodeGoPreferenceStorage = "prefer_opencode_go_provider"
+    nonisolated private static let openCodeImportFlag = "opencode_keys_autoimport_v1"
 
     nonisolated private static let ollamaAccount = "ollama_api_key"
     nonisolated private static let groqAccount = "groq_api_key"
     nonisolated private static let tavilyAccount = "tavily_api_key"
     nonisolated private static let openAIAccount = "openai_api_key"
+    nonisolated private static let deepSeekAccount = "deepseek_api_key"
+    nonisolated private static let openCodeZenAccount = "opencode_zen_api_key"
+    nonisolated private static let openCodeGoAccount = "opencode_go_api_key"
     nonisolated private static let keychainService = Bundle.main.bundleIdentifier ?? "com.zerolose"
 
     // MARK: - API Keys
@@ -68,6 +78,39 @@ struct Secrets: Sendable {
         }
     }
 
+    nonisolated static var deepSeekApiKey: String {
+        get {
+            migrateFromUserDefaultsIfNeeded()
+            return readKeychainValue(account: deepSeekAccount) ?? ""
+        }
+        set {
+            migrateFromUserDefaultsIfNeeded()
+            writeKeychainValue(newValue, account: deepSeekAccount)
+        }
+    }
+
+    nonisolated static var openCodeZenApiKey: String {
+        get {
+            migrateFromUserDefaultsIfNeeded()
+            return readKeychainValue(account: openCodeZenAccount) ?? ""
+        }
+        set {
+            migrateFromUserDefaultsIfNeeded()
+            writeKeychainValue(newValue, account: openCodeZenAccount)
+        }
+    }
+
+    nonisolated static var openCodeGoApiKey: String {
+        get {
+            migrateFromUserDefaultsIfNeeded()
+            return readKeychainValue(account: openCodeGoAccount) ?? ""
+        }
+        set {
+            migrateFromUserDefaultsIfNeeded()
+            writeKeychainValue(newValue, account: openCodeGoAccount)
+        }
+    }
+
     // MARK: - Validation
 
     nonisolated static var isOllamaKeyValid: Bool {
@@ -90,6 +133,21 @@ struct Secrets: Sendable {
         return UserDefaults.standard.bool(forKey: openAIPreferenceStorage)
     }
 
+    nonisolated static var isDeepSeekKeyValid: Bool {
+        let value = deepSeekApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !value.isEmpty
+    }
+
+    nonisolated static var isOpenCodeZenKeyValid: Bool {
+        let value = openCodeZenApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !value.isEmpty
+    }
+
+    nonisolated static var isOpenCodeGoKeyValid: Bool {
+        let value = openCodeGoApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !value.isEmpty
+    }
+
     // MARK: - Reset
 
     /// Compatibility method used by settings screen.
@@ -104,6 +162,12 @@ struct Secrets: Sendable {
         deleteKeychainValue(account: groqAccount)
         deleteKeychainValue(account: tavilyAccount)
         deleteKeychainValue(account: openAIAccount)
+        deleteKeychainValue(account: deepSeekAccount)
+        deleteKeychainValue(account: openCodeZenAccount)
+        deleteKeychainValue(account: openCodeGoAccount)
+        UserDefaults.standard.set(false, forKey: deepSeekPreferenceStorage)
+        UserDefaults.standard.set(false, forKey: openCodeZenPreferenceStorage)
+        UserDefaults.standard.set(false, forKey: openCodeGoPreferenceStorage)
     }
 
     // MARK: - Migration
@@ -116,16 +180,34 @@ struct Secrets: Sendable {
         migrateLegacyKey(defaults: defaults, legacyKey: legacyGroqKeyStorage, account: groqAccount)
         migrateLegacyKey(defaults: defaults, legacyKey: legacyTavilyKeyStorage, account: tavilyAccount)
         migrateLegacyKey(defaults: defaults, legacyKey: legacyOpenAIKeyStorage, account: openAIAccount)
+        migrateLegacyKey(defaults: defaults, legacyKey: legacyDeepSeekKeyStorage, account: deepSeekAccount)
+        migrateLegacyKey(defaults: defaults, legacyKey: legacyOpenCodeZenKeyStorage, account: openCodeZenAccount)
+        migrateLegacyKey(defaults: defaults, legacyKey: legacyOpenCodeGoKeyStorage, account: openCodeGoAccount)
         if let legacyOpenAI = defaults.string(forKey: legacyOpenAIKeyStorage)?
             .trimmingCharacters(in: .whitespacesAndNewlines),
            !legacyOpenAI.isEmpty {
             defaults.set(legacyOpenAI.hasPrefix("sk-"), forKey: openAIPreferenceStorage)
+        }
+        if defaults.string(forKey: legacyDeepSeekKeyStorage)?
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+            defaults.set(true, forKey: deepSeekPreferenceStorage)
+        }
+        if defaults.string(forKey: legacyOpenCodeZenKeyStorage)?
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+            defaults.set(true, forKey: openCodeZenPreferenceStorage)
+        }
+        if defaults.string(forKey: legacyOpenCodeGoKeyStorage)?
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+            defaults.set(true, forKey: openCodeGoPreferenceStorage)
         }
 
         defaults.removeObject(forKey: legacyOllamaKeyStorage)
         defaults.removeObject(forKey: legacyGroqKeyStorage)
         defaults.removeObject(forKey: legacyTavilyKeyStorage)
         defaults.removeObject(forKey: legacyOpenAIKeyStorage)
+        defaults.removeObject(forKey: legacyDeepSeekKeyStorage)
+        defaults.removeObject(forKey: legacyOpenCodeZenKeyStorage)
+        defaults.removeObject(forKey: legacyOpenCodeGoKeyStorage)
         defaults.set(true, forKey: migrationFlagStorage)
     }
 
@@ -215,6 +297,38 @@ struct Secrets: Sendable {
         let status = SecItemDelete(query as CFDictionary)
         if status != errSecSuccess && status != errSecItemNotFound {
             logger.error("Failed to delete key from Keychain. Status: \(status, privacy: .public)")
+        }
+    }
+
+    // MARK: - OpenCode Local Import
+
+    /// Reads API keys from the local OpenCode config
+    /// (`~/.local/share/opencode/auth.json`) once and stores the OpenCode Go /
+    /// Zen keys into the ZeroLose Keychain. This lets a user who already logged
+    /// into OpenCode re-use their membership without re-pasting a key.
+    nonisolated static func importOpenCodeKeysIfNeeded() {
+        guard !UserDefaults.standard.bool(forKey: openCodeImportFlag) else { return }
+        defer {
+            UserDefaults.standard.set(true, forKey: openCodeImportFlag)
+        }
+
+        let fileURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".local/share/opencode/auth.json")
+        guard let data = try? Data(contentsOf: fileURL) else { return }
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+
+        let goKey = (json["opencode-go"] as? [String: Any])?["key"] as? String ?? ""
+        let zenKey = (json["opencode"] as? [String: Any])?["key"] as? String ?? ""
+
+        if !goKey.isEmpty, readKeychainValue(account: openCodeGoAccount)?.isEmpty ?? true {
+            writeKeychainValue(goKey, account: openCodeGoAccount)
+            UserDefaults.standard.set(true, forKey: openCodeGoPreferenceStorage)
+            logger.info("Imported OpenCode Go key from local auth.json.")
+        }
+        if !zenKey.isEmpty, readKeychainValue(account: openCodeZenAccount)?.isEmpty ?? true {
+            writeKeychainValue(zenKey, account: openCodeZenAccount)
+            UserDefaults.standard.set(true, forKey: openCodeZenPreferenceStorage)
+            logger.info("Imported OpenCode Zen key from local auth.json.")
         }
     }
 }

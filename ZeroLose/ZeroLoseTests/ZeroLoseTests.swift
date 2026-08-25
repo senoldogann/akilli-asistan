@@ -44,17 +44,24 @@ final class ZeroLoseTests: XCTestCase {
     }
 
     func testAIModelNamesPreferOpenAIProfilesWhenEnabled() {
-        XCTAssertEqual(AIModelNames.reasoning(preferOpenAI: true), "gpt-5-mini")
-        XCTAssertEqual(AIModelNames.coding(preferOpenAI: true), "gpt-5.2-codex")
-        XCTAssertEqual(AIModelNames.fast(preferOpenAI: true), "gpt-4o-mini")
-        XCTAssertEqual(AIModelNames.whisper(preferOpenAI: true), "gpt-4o-mini-transcribe")
+        XCTAssertEqual(AIModelNames.reasoning(forProvider: .openAI), "gpt-5-mini")
+        XCTAssertEqual(AIModelNames.coding(forProvider: .openAI), "gpt-5.2-codex")
+        XCTAssertEqual(AIModelNames.fast(forProvider: .openAI), "gpt-4o-mini")
+        XCTAssertEqual(AIModelNames.whisper(forProvider: .openAI), "gpt-4o-mini-transcribe")
     }
 
-    func testAIModelNamesFallbackToLegacyProfilesWhenOpenAIDisabled() {
-        XCTAssertEqual(AIModelNames.reasoning(preferOpenAI: false), "llama3.1:8b-cloud")
-        XCTAssertEqual(AIModelNames.coding(preferOpenAI: false), "qwen2.5-coder:7b-cloud")
-        XCTAssertEqual(AIModelNames.fast(preferOpenAI: false), "qwen2.5:7b-cloud")
-        XCTAssertEqual(AIModelNames.whisper(preferOpenAI: false), "whisper-large-v3-turbo")
+    func testAIModelNamesFallbackToLegacyProfilesForOllama() {
+        XCTAssertEqual(AIModelNames.reasoning(forProvider: .ollama), "llama3.1:8b-cloud")
+        XCTAssertEqual(AIModelNames.coding(forProvider: .ollama), "qwen2.5-coder:7b-cloud")
+        XCTAssertEqual(AIModelNames.fast(forProvider: .ollama), "qwen2.5:7b-cloud")
+        XCTAssertEqual(AIModelNames.whisper(forProvider: .ollama), "whisper-large-v3-turbo")
+    }
+
+    func testAIModelNamesDeepSeekProfiles() {
+        XCTAssertEqual(AIModelNames.reasoning(forProvider: .deepSeek), "deepseek-v4-pro")
+        XCTAssertEqual(AIModelNames.coding(forProvider: .deepSeek), "deepseek-v4-pro")
+        XCTAssertEqual(AIModelNames.fast(forProvider: .deepSeek), "deepseek-v4-flash")
+        XCTAssertEqual(AIModelNames.whisper(forProvider: .deepSeek), "deepseek-v4-flash-vision-exp")
     }
 
     func testTranscriptionProviderPrefersOpenAIWhenKeyModeEnabled() {
@@ -402,9 +409,9 @@ final class ZeroLoseTests: XCTestCase {
     }
 
     func testMessageContentEquatableUsesTextAndRoleOnly() {
-        let a = MessageContent(text: "Hei maailma", isUser: false)
-        let b = MessageContent(text: "Hei maailma", isUser: false)
-        let c = MessageContent(text: "Hei maailma", isUser: true)
+        let a = MessageContent(text: "Hei maailma", isUser: false, thinking: nil)
+        let b = MessageContent(text: "Hei maailma", isUser: false, thinking: nil)
+        let c = MessageContent(text: "Hei maailma", isUser: true, thinking: nil)
 
         XCTAssertEqual(a, b)
         XCTAssertNotEqual(a, c)

@@ -1,6 +1,10 @@
 import SwiftUI
+import AppKit
 import PDFKit
 import UniformTypeIdentifiers
+import CoreGraphics
+import AVFoundation
+import ApplicationServices
 import os
 
 struct SettingsView: View {
@@ -19,9 +23,14 @@ struct SettingsView: View {
     @AppStorage("activeJobDescription") private var activeJobDescription: String = ""
     @AppStorage("teleprompterText") private var teleprompterText: String = ""
     @AppStorage("selectedThemeName") private var selectedTheme: String = "Red"
+    @AppStorage("llm_provider") private var llmProvider: String = LLMProvider.ollama.rawValue
+    @AppStorage("commandApprovalMode") private var commandApprovalMode: String = "ask"
     
-    // API Keys
+    // API Anahtarları
     @State private var openAIKey: String = ""
+    @State private var deepSeekKey: String = ""
+    @State private var openCodeZenKey: String = ""
+    @State private var openCodeGoKey: String = ""
     @State private var ollamaKey: String = ""
     @State private var groqKey: String = ""
     @State private var tavilyKey: String = ""
@@ -33,6 +42,9 @@ struct SettingsView: View {
     @State private var isDraggingOverCV = false
     @State private var isDraggingOverJD = false
     @State private var openaiModels: [String] = []
+    @State private var deepseekModels: [String] = []
+    @State private var openCodeZenModels: [String] = []
+    @State private var openCodeGoModels: [String] = []
     @State private var ollamaModels: [String] = []
     
     @ObservedObject private var hotkeyManager = HotkeyManager.shared
@@ -40,13 +52,13 @@ struct SettingsView: View {
     
     var body: some View {
         VStack(spacing: 0) {
-            // Header
+            // Başlık
             settingsHeader
                 .padding(.horizontal, 24)
                 .padding(.top, 20)
                 .padding(.bottom, 14)
             
-            // Tab Selector
+            // Sekme Seçici
             tabSelectorBar
                 .padding(.horizontal, 24)
                 .padding(.bottom, 12)
@@ -54,7 +66,7 @@ struct SettingsView: View {
             Divider()
                 .overlay(Color.glassStroke)
             
-            // Scrollable Content
+            // Kaydırılabilir İçerik
             ScrollView {
                 VStack(spacing: 24) {
                     switch selectedTab {
@@ -84,6 +96,9 @@ struct SettingsView: View {
             refreshMemoryState()
             WindowManager.shared.updateWindowOpacity(windowOpacity)
         }
+        .onChange(of: selectedTheme) { _, newValue in
+            ThemeStore.shared.apply(newValue)
+        }
         .onChange(of: windowWidth) { _, newValue in
             WindowManager.shared.updateMainWindowSize(width: newValue, height: windowHeight)
         }
@@ -98,7 +113,7 @@ struct SettingsView: View {
         }
     }
     
-    // MARK: - Tab Bar Components
+    // MARK: - Sekme Çubuğu Bileşenleri
     
     private var tabSelectorBar: some View {
         HStack(spacing: 8) {
@@ -156,6 +171,7 @@ struct SettingsView: View {
     @ViewBuilder
     private var systemTabView: some View {
         hotkeyStatusSection
+        permissionStatusSection
         featuresSection
     }
     
@@ -164,7 +180,7 @@ struct SettingsView: View {
         memorySection
     }
     
-    // MARK: - Header
+    // MARK: - Başlık
     private var settingsHeader: some View {
         HStack {
             ZeroLoseIcon(type: .gear, color: .brandPrimary, size: 24)
@@ -174,7 +190,7 @@ struct SettingsView: View {
             
             Spacer()
             
-            // Close Button
+            // Kapat Düğmesi
             Button(action: { withAnimation { isPresented = false } }) {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 22))
@@ -189,13 +205,13 @@ struct SettingsView: View {
     private var typographySection: some View {
         SettingsSection(title: "Typography", icon: .sparkles) {
             VStack(spacing: 16) {
-                // Font Size
+                // Yazı Boyutu
                 SettingsRow(label: "Font Size", value: "\(Int(fontSize))pt") {
                     Slider(value: $fontSize, in: 10...32, step: 1)
                         .tint(.brandPrimary)
                 }
                 
-                // Font Design
+                // Yazı Tipi Tasarımı
                 HStack {
                     Text("Font Style")
                         .font(.system(size: 13, weight: .medium))
@@ -228,7 +244,7 @@ struct SettingsView: View {
                     
                     Spacer()
                     
-                    // Import PDF/Text Button
+                    // PDF/Metin İçe Aktar Düğmesi
                     Button(action: importPersonaFile) {
                         HStack(spacing: 4) {
                             Image(systemName: "square.and.arrow.down")
@@ -370,7 +386,7 @@ struct SettingsView: View {
                     
                     Spacer()
                     
-                    // Document count badge
+                    // Belge sayısı rozeti
                     Text("\(memoryChunkCount) chunks")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundColor(memoryChunkCount > 0 ? .green : .orange)
@@ -393,7 +409,7 @@ struct SettingsView: View {
                 Divider()
                     .overlay(Color.glassStroke)
                 
-                // Clear Memory Button
+                // Belleği Temizle Düğmesi
                 Button(action: clearMemory) {
                     HStack {
                         Image(systemName: "trash")
@@ -550,7 +566,7 @@ struct SettingsView: View {
     private var featuresSection: some View {
         SettingsSection(title: "Features & Integrations", icon: .eye) {
             VStack(spacing: 16) {
-                // Auto-Analyze Toggle
+                // Otomatik Analiz Aç/Kapa
                 SettingsToggle(
                     title: "Auto-Analyze Screenshots",
                     subtitle: "Process new screenshots automatically",
@@ -576,7 +592,7 @@ struct SettingsView: View {
                 Divider()
                     .overlay(Color.glassStroke)
                 
-                // Audio Language Picker
+                // Ses Dili Seçici
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Audio Language")
@@ -587,7 +603,7 @@ struct SettingsView: View {
                             .foregroundColor(Color.textSecondary)
                     }
                     Spacer()
-                    Picker("", selection: $audioLanguage) {
+                Picker("", selection: $audioLanguage) {
                         Text("Auto Detect").tag("auto")
                         Text("English").tag("en")
                         Text("Finnish").tag("fi")
@@ -598,11 +614,36 @@ struct SettingsView: View {
                     .frame(width: 110)
                     .tint(.brandPrimary)
                 }
+
+                Divider()
+                    .overlay(Color.glassStroke)
+
+                // Command Approval Mode
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Command Approval")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(.white)
+                        Text("How to handle file/terminal commands the assistant runs")
+                            .font(.system(size: 12))
+                            .foregroundColor(Color.textSecondary)
+                    }
+                    Spacer()
+                    Picker("", selection: $commandApprovalMode) {
+                        Text("Onay iste").tag("ask")
+                        Text("Benim için onayla").tag("auto")
+                        Text("Tam erişim").tag("full")
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .frame(width: 150)
+                    .tint(.brandPrimary)
+                }
                 
                 Divider()
                     .overlay(Color.glassStroke)
                 
-                // No-Echo Audio Toggle
+                // Yankısız Ses Aç/Kapa
                 SettingsToggle(
                     title: "No-Echo Mode",
                     subtitle: useExternalAudio ? "🎤 Microphone only" : "🔊 Mic + Digital Meeting Capture",
@@ -613,7 +654,7 @@ struct SettingsView: View {
                 Divider()
                     .overlay(Color.glassStroke)
                 
-                // Open Captures Folder Button
+                // Yakalama Klasörünü Aç Düğmesi
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Screen Captures")
@@ -694,7 +735,7 @@ struct SettingsView: View {
     private var apiKeysSection: some View {
         SettingsSection(title: "API Keys", icon: .gear) {
             VStack(alignment: .leading, spacing: 16) {
-                // Show/Hide Toggle
+                // Göster/Gizle Aç/Kapa
                 HStack {
                     Text(showKeys ? "Hide Keys" : "Show Keys")
                         .font(.system(size: 12, weight: .semibold))
@@ -745,8 +786,113 @@ struct SettingsView: View {
                             .onChange(of: openAIKey) { Secrets.openAIApiKey = openAIKey; fetchModels() }
                     }
                 }
+
+                // DeepSeek Anahtarı
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("DeepSeek Key")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(.white.opacity(0.85))
+                        Spacer()
+                        if Secrets.isDeepSeekKeyValid {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundColor(.green)
+                                .font(.system(size: 12))
+                        }
+                    }
+                    Text("DeepSeek reasoning model via api.deepseek.com. Enables per-message collapsible thinking traces.")
+                        .font(.system(size: 10))
+                        .foregroundColor(Color.textSecondary)
+                    if showKeys {
+                        TextField("DeepSeek API Key", text: $deepSeekKey)
+                            .textFieldStyle(.plain)
+                            .padding(8)
+                            .background(Color.black.opacity(0.18))
+                            .cornerRadius(6)
+                            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.8))
+                            .onChange(of: deepSeekKey) { Secrets.deepSeekApiKey = deepSeekKey; fetchModels() }
+                    } else {
+                        SecureField("DeepSeek API Key", text: $deepSeekKey)
+                            .textFieldStyle(.plain)
+                            .padding(8)
+                            .background(Color.black.opacity(0.18))
+                            .cornerRadius(6)
+                            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.8))
+                            .onChange(of: deepSeekKey) { Secrets.deepSeekApiKey = deepSeekKey; fetchModels() }
+                    }
+                }
                 
-                // Ollama Key
+                // OpenCode Zen Anahtarı
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("OpenCode Zen Key")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(.white.opacity(0.85))
+                        Spacer()
+                        if Secrets.isOpenCodeZenKeyValid {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundColor(.green)
+                                .font(.system(size: 12))
+                        }
+                    }
+                    Text("Tested OpenCode models via https://opencode.ai/zen/v1. Uses the same DeepSeek models and thinking traces.")
+                        .font(.system(size: 10))
+                        .foregroundColor(Color.textSecondary)
+                    if showKeys {
+                        TextField("OpenCode Zen API Key", text: $openCodeZenKey)
+                            .textFieldStyle(.plain)
+                            .padding(8)
+                            .background(Color.black.opacity(0.18))
+                            .cornerRadius(6)
+                            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.8))
+                            .onChange(of: openCodeZenKey) { Secrets.openCodeZenApiKey = openCodeZenKey; fetchModels() }
+                    } else {
+                        SecureField("OpenCode Zen API Key", text: $openCodeZenKey)
+                            .textFieldStyle(.plain)
+                            .padding(8)
+                            .background(Color.black.opacity(0.18))
+                            .cornerRadius(6)
+                            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.8))
+                            .onChange(of: openCodeZenKey) { Secrets.openCodeZenApiKey = openCodeZenKey; fetchModels() }
+                    }
+                }
+                
+                // OpenCode Go Anahtarı
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("OpenCode Go Key")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(.white.opacity(0.85))
+                        Spacer()
+                        if Secrets.isOpenCodeGoKeyValid {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundColor(.green)
+                                .font(.system(size: 12))
+                        }
+                    }
+                    Text("Low-cost OpenCode Go subscription models via https://opencode.ai/zen/go/v1.")
+                        .font(.system(size: 10))
+                        .foregroundColor(Color.textSecondary)
+                    if showKeys {
+                        TextField("OpenCode Go API Key", text: $openCodeGoKey)
+                            .textFieldStyle(.plain)
+                            .padding(8)
+                            .background(Color.black.opacity(0.18))
+                            .cornerRadius(6)
+                            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.8))
+                            .onChange(of: openCodeGoKey) { Secrets.openCodeGoApiKey = openCodeGoKey; fetchModels() }
+                    } else {
+                        SecureField("OpenCode Go API Key", text: $openCodeGoKey)
+                            .textFieldStyle(.plain)
+                            .padding(8)
+                            .background(Color.black.opacity(0.18))
+                            .cornerRadius(6)
+                            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.8))
+                            .onChange(of: openCodeGoKey) { Secrets.openCodeGoApiKey = openCodeGoKey; fetchModels() }
+                    }
+                }
+                
+                // Ollama Anahtarı
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
                         Text("Ollama Cloud Key (Fallback)")
@@ -781,7 +927,7 @@ struct SettingsView: View {
                     }
                 }
                 
-                // Groq Key
+                // Groq Anahtarı
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
                         Text("Groq Key")
@@ -813,7 +959,7 @@ struct SettingsView: View {
                     }
                 }
                 
-                // Tavily Key
+                // Tavily Anahtarı
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
                         Text("Tavily Key")
@@ -861,20 +1007,56 @@ struct SettingsView: View {
                         .font(.system(size: 10))
                         .foregroundColor(Color.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
+
+                    // Active provider picker (persisted; AIModelNames reads "llm_provider")
+                    HStack {
+                        Text("Active Provider")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(.white.opacity(0.85))
+                        Spacer()
+                        Picker("", selection: $llmProvider) {
+                            ForEach(LLMProvider.allCases, id: \.rawValue) { provider in
+                                Text(provider.displayName).tag(provider.rawValue)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .frame(width: 140)
+                        .onChange(of: llmProvider) { _ in fetchModels() }
+                    }
+                    .padding(.top, 2)
                     
                     VStack(spacing: 8) {
-                        if Secrets.isOpenAIKeyValid {
-                            let openAIOpts = openaiModels.isEmpty ? ["gpt-5-mini", "gpt-4o", "gpt-4o-mini"] : openaiModels
-                            modelSelectorRow(label: "OpenAI Fast Model", key: "customOpenAIFastModel", options: openAIOpts)
-                            modelSelectorRow(label: "OpenAI Vision Model", key: "customOpenAIVisionModel", options: openAIOpts)
-                            modelSelectorRow(label: "OpenAI Reasoning Model", key: "customOpenAIReasoningModel", options: openAIOpts)
-                            modelSelectorRow(label: "OpenAI Coding Model", key: "customOpenAICodingModel", options: openAIOpts)
-                        } else {
-                            let ollamaOpts = ollamaModels.isEmpty ? ["qwen2.5:7b-cloud", "gemma2:9b-cloud", "llama3.1:8b-cloud", "qwen2.5-coder:7b-cloud", "gpt-oss:120b", "nemotron-3-ultra"] : ollamaModels
-                            modelSelectorRow(label: "Ollama Fast Model", key: "customOllamaFastModel", options: ollamaOpts)
-                            modelSelectorRow(label: "Ollama Vision Model", key: "customOllamaVisionModel", options: ollamaOpts)
-                            modelSelectorRow(label: "Ollama Reasoning Model", key: "customOllamaReasoningModel", options: ollamaOpts)
-                            modelSelectorRow(label: "Ollama Coding Model", key: "customOllamaCodingModel", options: ollamaOpts)
+                        switch LLMProvider(rawValue: llmProvider) ?? .ollama {
+                        case .openAI:
+                            let opts = openaiModels.isEmpty ? ["gpt-5-mini", "gpt-4o", "gpt-4o-mini"] : openaiModels
+                            modelSelectorRow(label: "OpenAI Fast Model", key: "customOpenAIFastModel", options: opts)
+                            modelSelectorRow(label: "OpenAI Vision Model", key: "customOpenAIVisionModel", options: opts)
+                            modelSelectorRow(label: "OpenAI Reasoning Model", key: "customOpenAIReasoningModel", options: opts)
+                            modelSelectorRow(label: "OpenAI Coding Model", key: "customOpenAICodingModel", options: opts)
+                        case .deepSeek:
+                            let opts = deepseekModels.isEmpty ? ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"] : deepseekModels
+                            modelSelectorRow(label: "DeepSeek Fast Model", key: "customDeepSeekFastModel", options: opts)
+                            modelSelectorRow(label: "DeepSeek Vision Model", key: "customDeepSeekVisionModel", options: opts)
+                            modelSelectorRow(label: "DeepSeek Reasoning Model", key: "customDeepSeekReasoningModel", options: opts)
+                            modelSelectorRow(label: "DeepSeek Coding Model", key: "customDeepSeekCodingModel", options: opts)
+                        case .openCodeZen:
+                            let opts = openCodeZenModels.isEmpty ? ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"] : openCodeZenModels
+                            modelSelectorRow(label: "OpenCode Zen Fast Model", key: "customOpenCodeZenFastModel", options: opts)
+                            modelSelectorRow(label: "OpenCode Zen Vision Model", key: "customOpenCodeZenVisionModel", options: opts)
+                            modelSelectorRow(label: "OpenCode Zen Reasoning Model", key: "customOpenCodeZenReasoningModel", options: opts)
+                            modelSelectorRow(label: "OpenCode Zen Coding Model", key: "customOpenCodeZenCodingModel", options: opts)
+                        case .openCodeGo:
+                            let opts = openCodeGoModels.isEmpty ? ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"] : openCodeGoModels
+                            modelSelectorRow(label: "OpenCode Go Fast Model", key: "customOpenCodeGoFastModel", options: opts)
+                            modelSelectorRow(label: "OpenCode Go Vision Model", key: "customOpenCodeGoVisionModel", options: opts)
+                            modelSelectorRow(label: "OpenCode Go Reasoning Model", key: "customOpenCodeGoReasoningModel", options: opts)
+                            modelSelectorRow(label: "OpenCode Go Coding Model", key: "customOpenCodeGoCodingModel", options: opts)
+                        case .ollama:
+                            let opts = ollamaModels.isEmpty ? ["qwen2.5:7b-cloud", "gemma2:9b-cloud", "llama3.1:8b-cloud", "qwen2.5-coder:7b-cloud", "gpt-oss:120b", "nemotron-3-ultra"] : ollamaModels
+                            modelSelectorRow(label: "Ollama Fast Model", key: "customOllamaFastModel", options: opts)
+                            modelSelectorRow(label: "Ollama Vision Model", key: "customOllamaVisionModel", options: opts)
+                            modelSelectorRow(label: "Ollama Reasoning Model", key: "customOllamaReasoningModel", options: opts)
+                            modelSelectorRow(label: "Ollama Coding Model", key: "customOllamaCodingModel", options: opts)
                         }
                     }
                     .padding(10)
@@ -886,7 +1068,7 @@ struct SettingsView: View {
                 Divider()
                     .overlay(Color.glassStroke)
                 
-                // Clear Keys Button
+                // Anahtarları Temizle Düğmesi
                 Button(action: {
                     Secrets.resetToDefaults()
                     loadAPIKeys()
@@ -912,6 +1094,9 @@ struct SettingsView: View {
     
     private func loadAPIKeys() {
         openAIKey = Secrets.openAIApiKey
+        deepSeekKey = Secrets.deepSeekApiKey
+        openCodeZenKey = Secrets.openCodeZenApiKey
+        openCodeGoKey = Secrets.openCodeGoApiKey
         ollamaKey = Secrets.ollamaApiKey
         groqKey = Secrets.groqApiKey
         tavilyKey = Secrets.tavilyApiKey
@@ -920,6 +1105,9 @@ struct SettingsView: View {
     
     private func fetchModels() {
         let openAIKeyVal = Secrets.openAIApiKey
+        let deepSeekKeyVal = Secrets.deepSeekApiKey
+        let openCodeZenKeyVal = Secrets.openCodeZenApiKey
+        let openCodeGoKeyVal = Secrets.openCodeGoApiKey
         let ollamaKeyVal = Secrets.ollamaApiKey
         
         if !openAIKeyVal.isEmpty {
@@ -931,6 +1119,39 @@ struct SettingsView: View {
             }
         } else {
             self.openaiModels = []
+        }
+
+        if !deepSeekKeyVal.isEmpty {
+            Task {
+                let models = await DependencyContainer.shared.ollamaService.fetchAvailableModels(provider: "deepseek", apiKey: deepSeekKeyVal)
+                await MainActor.run {
+                    self.deepseekModels = models
+                }
+            }
+        } else {
+            self.deepseekModels = []
+        }
+
+        if !openCodeZenKeyVal.isEmpty {
+            Task {
+                let models = await DependencyContainer.shared.ollamaService.fetchAvailableModels(provider: "opencode_zen", apiKey: openCodeZenKeyVal)
+                await MainActor.run {
+                    self.openCodeZenModels = models
+                }
+            }
+        } else {
+            self.openCodeZenModels = []
+        }
+
+        if !openCodeGoKeyVal.isEmpty {
+            Task {
+                let models = await DependencyContainer.shared.ollamaService.fetchAvailableModels(provider: "opencode_go", apiKey: openCodeGoKeyVal)
+                await MainActor.run {
+                    self.openCodeGoModels = models
+                }
+            }
+        } else {
+            self.openCodeGoModels = []
         }
         
         if !ollamaKeyVal.isEmpty {
@@ -982,6 +1203,77 @@ struct SettingsView: View {
             .cornerRadius(12)
             .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.orange.opacity(0.3), lineWidth: 0.8))
         }
+    }
+
+    // MARK: - Permission Status Section
+    @ViewBuilder
+    private var permissionStatusSection: some View {
+        SettingsSection(title: "Privacy Permissions", icon: .eye) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("ZeroLose needs these macOS permissions to capture interviews. Open System Settings and grant any missing ones.")
+                    .font(.system(size: 11))
+                    .foregroundColor(Color.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                permissionRow(
+                    title: "Screen Recording",
+                    granted: CGPreflightScreenCaptureAccess(),
+                    detail: "Required for meeting audio + on-screen analysis.",
+                    pane: "Privacy_Security_ScreenCapture_TCC"
+                )
+                permissionRow(
+                    title: "Microphone",
+                    granted: AVCaptureDevice.authorizationStatus(for: .audio) == .authorized,
+                    detail: "Required for live voice / interview listening.",
+                    pane: "Privacy_Security_Microphone_TCC"
+                )
+                permissionRow(
+                    title: "Accessibility",
+                    granted: AXIsProcessTrusted(),
+                    detail: "Required for global hotkey + Computer Use (element click/type/scroll).",
+                    pane: "Privacy_Security_Accessibility_TCC"
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func permissionRow(
+        title: String,
+        granted: Bool,
+        detail: String,
+        pane: String
+    ) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: granted ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                .foregroundColor(granted ? .green : .orange)
+                .font(.system(size: 16))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.9))
+                Text(detail)
+                    .font(.system(size: 10))
+                    .foregroundColor(Color.textSecondary)
+            }
+            Spacer(minLength: 0)
+            if !granted {
+                Button(action: {
+                    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }) {
+                    Text("Open Settings")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(.brandPrimary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(10)
+        .background(Color.black.opacity(0.14))
+        .cornerRadius(8)
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.glassStroke, lineWidth: 0.8))
     }
     
     private func applyStealthMode(_ enabled: Bool) {
@@ -1128,8 +1420,13 @@ struct SettingsView: View {
     }
     
     private func modelSelectorRow(label: String, key: String, options: [String]) -> some View {
+        // Deterministik, boş olmayan bir seçenek listesi sağla. Kalıcı seçim
+        // her zaman başa eklenir, böylece async model listesi yüklenirken bile
+        // seçici mevcut değeri gösterir.
+        let saved = UserDefaults.standard.string(forKey: key) ?? ""
+        let pickerOptions = Self.mergedModelOptions(options, saved: saved)
         let binding = Binding<String>(
-            get: { UserDefaults.standard.string(forKey: key) ?? options.first ?? "" },
+            get: { UserDefaults.standard.string(forKey: key) ?? pickerOptions.first ?? "" },
             set: { UserDefaults.standard.set($0, forKey: key) }
         )
         
@@ -1139,7 +1436,7 @@ struct SettingsView: View {
                 .foregroundColor(.white.opacity(0.8))
             Spacer()
             Picker("", selection: binding) {
-                ForEach(options, id: \.self) { opt in
+                ForEach(pickerOptions, id: \.self) { opt in
                     Text(opt).tag(opt)
                 }
             }
@@ -1149,9 +1446,21 @@ struct SettingsView: View {
             .tint(.brandPrimary)
         }
     }
+
+    private static func mergedModelOptions(_ options: [String], saved: String) -> [String] {
+        var merged = options
+        if !saved.isEmpty && !merged.contains(saved) {
+            merged.insert(saved, at: 0)
+        }
+        // Guarantee at least one stable option so the picker is never empty.
+        if merged.isEmpty {
+            merged = ["deepseek-v4-pro"]
+        }
+        return merged
+    }
 }
 
-// MARK: - Reusable Components
+// MARK: - Yeniden Kullanılabilir Bileşenler
 
 struct SettingsSection<Content: View>: View {
     let title: String

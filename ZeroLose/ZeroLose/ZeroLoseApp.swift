@@ -1,13 +1,14 @@
 import SwiftUI
 import AppKit
+import CoreGraphics
 
 @main
 struct ZeroLoseApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     var body: some Scene {
-        // WindowManager handles the main overlay window
-        // No WindowGroup needed since we use custom NSWindow
+        // WindowManager ana kaplama penceresini yönetir
+        // Özel NSWindow kullandığımız için WindowGroup gerekmiyor
         Settings {
             EmptyView()
         }
@@ -58,39 +59,68 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        // Check user preference for stealth mode
+        // Gizli mod tercihini kontrol et
         let isStealth = UserDefaults.standard.bool(forKey: "stealthModeEnabled")
+
+        // Bu makinedeki mevcut OpenCode Go / Zen üyeliğini yeniden kullan, böylece
+        // OpenCode sağlayıcısı anahtarı yeniden yapıştırmadan hemen çalışır.
+        Secrets.importOpenCodeKeysIfNeeded()
         
         if isStealth {
             NSApp.setActivationPolicy(.accessory)
         } else {
             NSApp.setActivationPolicy(.regular)
-            // Ensure app comes to foreground if not in stealth mode
+            // Gizli modda değilse uygulamanın ön plana gelmesini sağla
             DispatchQueue.main.async {
                 NSApp.activate(ignoringOtherApps: true)
             }
         }
         
-        // 1. Setup Status Bar Item
+        // 1. Durum Çubuğu Öğesini Kur
+        requestScreenCapturePermissionIfNeeded()
+
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem?.button {
-            // "sun.max" resembles the Keyboard Brightness / Display Brightness icon
-            button.image = NSImage(systemSymbolName: "sun.max", accessibilityDescription: "Brightness")
+            // Gizleme: sıradan bir gözlemcinin bunun bir AI asistanı olduğunu
+            // anlayamaması için klavye simgesi. Aşağıdaki menü gerçek klavye uygulaması
+            // seçeneklerini yansıtır.
+            button.image = NSImage(systemSymbolName: "keyboard", accessibilityDescription: "Keyboard")
             button.action = #selector(menuBarClicked)
         }
         
-        // 2. Initialize the Overlay Window
+        // 2. Kaplama Penceresini Başlat
         windowManager.setupWindow()
+    }
+
+    /// macOS, ScreenCaptureKit (`SCStream` / `SCScreenshotManager`) sistem sesini veya
+    /// pikselleri yakalamadan önce Ekran Kaydı izni gerektirir. Başlatmada bir kez
+    /// iste; zaten verilmişse çağrı işlem yapmaz.
+    private func requestScreenCapturePermissionIfNeeded() {
+        if !CGPreflightScreenCaptureAccess() {
+            CGRequestScreenCaptureAccess()
+        }
     }
     
     @objc func menuBarClicked() {
         let menu = NSMenu()
-        menu.addItem(NSMenuItem(title: "Toggle Overlay", action: #selector(toggleOverlay), keyEquivalent: "t"))
+        // Bu etiketler bilerek normal bir klavye/yardımcı uygulaması gibi görünür,
+        // böylece menü çubuğuna göz atan yetkisiz bir kişi şüpheli bir şey görmez.
+        // Gizlenmiş "Keyboard Settings" seçimi yine de kaplamamızı açar/kapatır.
+        let kbHeader = NSMenuItem(title: "Keyboard", action: nil, keyEquivalent: "")
+        kbHeader.isEnabled = false
+        menu.addItem(kbHeader)
         menu.addItem(NSMenuItem.separator())
-        menu.addItem(NSMenuItem(title: "Quit ZeroLose", action: #selector(quitApp), keyEquivalent: "q"))
+        menu.addItem(NSMenuItem(title: "Show Keyboard Settings…", action: #selector(toggleOverlay), keyEquivalent: ","))
+        menu.addItem(NSMenuItem(title: "Show Emoji & Symbols", action: #selector(toggleOverlay), keyEquivalent: "e"))
+        menu.addItem(NSMenuItem(title: "Text Input Feedback", action: #selector(toggleOverlay), keyEquivalent: "o"))
+        menu.addItem(NSMenuItem.separator())
+        menu.addItem(NSMenuItem(title: "About Keyboard", action: #selector(toggleOverlay), keyEquivalent: ""))
+        menu.addItem(NSMenuItem.separator())
+        let quitTitle = UserDefaults.standard.bool(forKey: "stealthModeEnabled") ? "Quit Keyboard" : "Quit ZeroLose"
+        menu.addItem(NSMenuItem(title: quitTitle, action: #selector(quitApp), keyEquivalent: "q"))
         
         statusItem?.menu = menu
-        statusItem?.button?.performClick(nil) // Show menu immediately
+        statusItem?.button?.performClick(nil) // Menüyü hemen göster
         statusItem?.menu = nil
     }
     

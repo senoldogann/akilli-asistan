@@ -6,7 +6,7 @@ extension Notification.Name {
     nonisolated static let vectorStoreDidChange = Notification.Name("VectorStoreDidChange")
 }
 
-/// Vector database for storing and retrieving embeddings
+/// Embedding'leri saklamak ve almak için vektör veritabanı.
 actor VectorStore {
     private var db: OpaquePointer?
     nonisolated private let logger = Logger(subsystem: "com.senoldogan.ZeroLose", category: "VectorStore")
@@ -27,7 +27,7 @@ actor VectorStore {
         }
     }
     
-    // MARK: - Lifecycle
+    // MARK: - Yaşam Döngüsü
     
     func initialize() async throws {
         try initializeIfNeeded()
@@ -176,11 +176,11 @@ actor VectorStore {
             results.append(SearchResult(chunk: chunk, similarity: similarity, embedding: embedding))
         }
         
-        // Sort by similarity (descending) and return top-K
+        // Benzerliğe göre sırala (azalan) ve ilk-K sonucu döndür
         return results.sorted { $0.similarity > $1.similarity }.prefix(topK).map { $0 }
     }
     
-    // MARK: - Delete
+    // MARK: - Silme
     
     func deleteDocument(sourceID: String) async throws {
         try initializeIfNeeded()

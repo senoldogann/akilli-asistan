@@ -12,12 +12,12 @@ extension Logger {
 }
 
 extension NSImage {
-    /// Converts NSImage to a Base64 String (JPEG compressed)
+    /// NSImage'ı (JPEG sıkıştırılmış) bir Base64 String'e dönüştürür.
     func base64String() -> String? {
         guard let tiffRepresentation = self.tiffRepresentation,
               let bitmapImage = NSBitmapImageRep(data: tiffRepresentation) else { return nil }
         
-        // Use JPEG compression (0.7 quality) to reduce payload size
+        // Yük boyutunu azaltmak için JPEG sıkıştırma kullan (0.7 kalite)
         guard let imageData = bitmapImage.representation(using: .jpeg, properties: [.compressionFactor: 0.7]) else { return nil }
         
         return imageData.base64EncodedString()
@@ -25,7 +25,7 @@ extension NSImage {
 }
 
 extension View {
-    /// Adds a pointing hand cursor on hover (macOS)
+    /// Üzerine gelince işaret eden el imlecini ekler (macOS)
     func pointerCursor() -> some View {
         self.onHover { inside in
             if inside {
@@ -37,7 +37,7 @@ extension View {
     }
 }
 
-/// Plain-style button with subtle hover feedback and pointer cursor.
+/// Zarif hover geri bildirimi ve işaretçi imleci içeren sade stil buton.
 struct InteractiveButtonStyle: ButtonStyle {
     var cornerRadius: CGFloat = 8
     var hoverColor: Color = Color.white.opacity(0.08)
@@ -84,7 +84,7 @@ extension ButtonStyle where Self == InteractiveButtonStyle {
     static var interactive: InteractiveButtonStyle { InteractiveButtonStyle() }
 }
 
-/// Native macOS Blur Effect wrapper for SwiftUI
+/// SwiftUI için yerel macOS Blur Effect sarmalayıcısı
 struct VisualEffectView: NSViewRepresentable {
     var material: NSVisualEffectView.Material
     var blendingMode: NSVisualEffectView.BlendingMode

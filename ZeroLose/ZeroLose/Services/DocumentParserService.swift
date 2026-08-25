@@ -1,8 +1,10 @@
 import Foundation
 import PDFKit
+import os
 
 class DocumentParserService {
     static let shared = DocumentParserService()
+    private static let logger = Logger(subsystem: "com.zerolose", category: "document-parser")
     
     private init() {}
     
@@ -18,7 +20,7 @@ class DocumentParserService {
         
         if fileExtension == "pdf" {
             guard let document = PDFDocument(url: url) else {
-                print("Failed to initialize PDFDocument for URL: \(url)")
+                Self.logger.error("Failed to initialize PDFDocument for URL: \(url, privacy: .public)")
                 return nil
             }
             var fullText = ""
@@ -30,13 +32,15 @@ class DocumentParserService {
             let trimmed = fullText.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed.isEmpty ? nil : trimmed
         } else {
-            // Text/JSON files
+            // Metin/JSON dosyaları
             do {
                 let text = try String(contentsOf: url, encoding: .utf8)
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 return trimmed.isEmpty ? nil : trimmed
             } catch {
-                print("Failed to read text contents from URL: \(url), error: \(error.localizedDescription)")
+                Self.logger.error(
+                    "Failed to read text contents from URL: \(url, privacy: .public) error: \(error.localizedDescription, privacy: .public)"
+                )
                 return nil
             }
         }

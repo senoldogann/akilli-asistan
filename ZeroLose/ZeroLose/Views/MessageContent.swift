@@ -1,12 +1,29 @@
 import Foundation
 import SwiftUI
+import Combine
 
 struct MessageContent: View, Equatable {
     let text: String
     let isUser: Bool
+    let thinking: String?
+    let isStreaming: Bool
     
     @AppStorage("fontSize") private var fontSize: Double = 14.0
     @AppStorage("fontDesign") private var fontDesignStr: String = "monospaced"
+    @AppStorage("selectedThemeName") private var selectedTheme: String = "Red"
+    @State private var showThinking: Bool = false
+    @State private var hasBeenExplicitlyToggled: Bool = false
+
+    private var accent: Color {
+        ThemeStore.accent(for: selectedTheme)
+    }
+
+    init(text: String, isUser: Bool, thinking: String?, isStreaming: Bool = false) {
+        self.text = text
+        self.isUser = isUser
+        self.thinking = thinking
+        self.isStreaming = isStreaming
+    }
     
     var fontDesign: Font.Design {
         switch fontDesignStr {
@@ -18,8 +35,26 @@ struct MessageContent: View, Equatable {
     }
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            let segments = MessageParser.parse(text, forUserMessage: isUser)
+        // Keep the thinking header on the same visual line as the answer
+        // content so the icon + "Thinking" label reads as part of the reply,
+        // not as a separate block floating above it.
+        VStack(alignment: .leading, spacing: 6) {
+            if let thinking, !thinking.isEmpty, !isUser {
+                ThinkingCollapsePanel(
+                    thinking: thinking,
+                    isExpanded: Binding(
+                        get: { showThinking },
+                        set: { newValue in
+                            hasBeenExplicitlyToggled = true
+                            showThinking = newValue
+                        }
+                    ),
+                    fontSize: fontSize,
+                    fontDesign: fontDesign
+                )
+            }
+            let isPlaceholder = text.isEmpty || text == "Thinking..."
+            let segments = isPlaceholder ? [] : MessageParser.parse(text, forUserMessage: isUser)
             ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
                 switch segment.type {
                 case .heading(let level, let content):
@@ -45,10 +80,10 @@ struct MessageContent: View, Equatable {
                     }
                 case .searchIndicator(let content):
                     HStack(spacing: 8) {
-                        ZeroLoseIcon(type: .globe, color: .brandPrimary, size: 14)
+                        ZeroLoseIcon(type: .globe, color: accent, size: 14)
                         Text(content)
                             .font(.system(size: fontSize - 2, weight: .bold, design: .rounded))
-                            .foregroundColor(.brandPrimary)
+                            .foregroundColor(accent)
                             .kerning(0.5)
                     }
                     .padding(.vertical, 4)
@@ -56,7 +91,7 @@ struct MessageContent: View, Equatable {
                     HStack(spacing: 8) {
                         Image(systemName: "terminal")
                             .font(.system(size: 12, weight: .semibold))
-                            .foregroundColor(.brandPrimary)
+                            .foregroundColor(accent)
                         Text(verbatim: content)
                             .font(.system(size: fontSize - 1, weight: .semibold, design: .monospaced))
                             .foregroundColor(.white.opacity(0.96))
@@ -64,10 +99,10 @@ struct MessageContent: View, Equatable {
                         Spacer(minLength: 0)
                         Text("SLASH")
                             .font(.system(size: 9, weight: .bold, design: .rounded))
-                            .foregroundColor(.brandPrimary)
+                            .foregroundColor(accent)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
-                            .background(Color.brandPrimary.opacity(0.14))
+                            .background(accent.opacity(0.14))
                             .cornerRadius(4)
                     }
                     .padding(.horizontal, 10)
@@ -75,17 +110,53 @@ struct MessageContent: View, Equatable {
                     .background(Color.white.opacity(0.05))
                     .overlay(
                         RoundedRectangle(cornerRadius: 8)
-                            .stroke(Color.brandPrimary.opacity(0.35), lineWidth: 1)
+                            .stroke(accent.opacity(0.35), lineWidth: 1)
                     )
                     .cornerRadius(8)
                 }
             }
         }
         .textSelection(.enabled)
+        // While the model is still producing the answer the thinking panel is
+        // held open so the user can watch reasoning live. Once the final answer
+        // arrives it auto-collapses (unless the user manually expanded it).
+        .onAppear {
+            if (text.isEmpty || text == "Thinking...") && !(self.thinking ?? "").isEmpty {
+                showThinking = true
+            }
+        }
+        .onChange(of: text) { _, newValue in
+            guard !hasBeenExplicitlyToggled else { return }
+            if (newValue.isEmpty || newValue == "Thinking...") && !(self.thinking ?? "").isEmpty {
+                showThinking = true
+            } else if !newValue.isEmpty && !isStreaming {
+                // Only collapse the thinking panel once the final answer is
+                // fully present. While the agent is still producing text we
+                // keep it open so the user can read the reasoning live.
+                showThinking = false
+            }
+        }
+        .onChange(of: thinking) { _, newThinking in
+            guard !hasBeenExplicitlyToggled else { return }
+            if !(newThinking ?? "").isEmpty && (text.isEmpty || text == "Thinking...") {
+                showThinking = true
+            }
+        }
+        .onChange(of: isStreaming) { _, newStreaming in
+            guard !hasBeenExplicitlyToggled else { return }
+            if newStreaming && !(self.thinking ?? "").isEmpty {
+                showThinking = true
+            } else if !newStreaming && !(self.thinking ?? "").isEmpty {
+                showThinking = false
+            }
+        }
     }
 
     static func == (lhs: MessageContent, rhs: MessageContent) -> Bool {
-        lhs.text == rhs.text && lhs.isUser == rhs.isUser
+        lhs.text == rhs.text &&
+            lhs.isUser == rhs.isUser &&
+            lhs.thinking == rhs.thinking &&
+            lhs.isStreaming == rhs.isStreaming
     }
     
     private func headingFont(_ level: Int) -> Font {
@@ -97,6 +168,62 @@ struct MessageContent: View, Equatable {
         }
     }
 }
+
+
+/// A collapsible, model-agnostic "thinking" panel.
+///
+/// Any provider that surfaces a reasoning trace (DeepSeek `reasoning_content`,
+/// OpenAI-compatible `delta.reasoning_content`, etc.) is streamed into
+/// `ChatMessage.thinking`. This panel renders it collapsed by default and lets
+/// the user expand / collapse it per message.
+struct ThinkingCollapsePanel: View {
+    let thinking: String
+    @Binding var isExpanded: Bool
+    let fontSize: Double
+    let fontDesign: Font.Design
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    isExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "brain.head.profile")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.brandPrimary)
+                    Text("Thinking")
+                        .font(.system(size: fontSize - 2, weight: .semibold, design: .rounded))
+                        .foregroundColor(.primary.opacity(0.85))
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.up")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(.secondary)
+                        .rotationEffect(.degrees(isExpanded ? 0 : 180))
+                }
+                .padding(.horizontal, 0)
+                .padding(.vertical, 8)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                Text(verbatim: thinking)
+                    .font(.system(size: fontSize - 1, weight: .regular, design: fontDesign))
+                    .foregroundColor(.secondary)
+                    .lineSpacing(3)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .transition(.opacity)
+            }
+        }
+    }
+}
+
 
 struct CodeBlockView: View {
     let language: String
@@ -574,5 +701,182 @@ class MessageParser {
         normalized = normalized.replacingOccurrences(of: "**", with: "")
         normalized = normalized.replacingOccurrences(of: "__", with: "")
         return normalized.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+
+/// Sohbette ajanın çalıştırdığı bir aracı (komut) görünür bir kart olarak gösterir.
+/// Çalışırken shimmer animasyonu akar; bitince "Başarılı" + çıktı; hata olursa kırmızı.
+struct MessagingToolRunCard: View {
+    let run: ChatMessage.ToolRun
+    @State private var animateShimmer = false
+    @State private var dotCount = 0
+    @State private var expanded = false
+    private let dotTimer = Timer.publish(every: 0.4, on: .main, in: .common).autoconnect()
+
+    private var isRunning: Bool {
+        if case .running = run.status { return true }
+        return false
+    }
+
+    /// Çıktı bu eşiği aşarsa kart varsayılan olarak daraltılmış gösterilir.
+    private var isLongOutput: Bool {
+        run.output.count > 700
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: iconName)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(iconColor)
+                Text(run.command)
+                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 0)
+                statusBadge
+            }
+
+            if isRunning {
+                HStack(spacing: 6) {
+                    ZeroLoseIcon(type: .sparkles, color: .brandPrimary, size: 12)
+                        .symbolEffect(.pulse)
+                    Text("Komut çalışıyor" + String(repeating: ".", count: dotCount))
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .foregroundStyle(.secondary)
+                }
+                .overlay(
+                    LinearGradient(
+                        colors: [.clear, .white.opacity(0.5), .clear],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                    .frame(width: 70)
+                    .offset(x: animateShimmer ? 160 : -70)
+                    .blendMode(.plusLighter)
+                )
+                .clipped()
+            } else if !run.output.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    if run.output.hasPrefix("Directory:") || run.output.contains("\n") {
+                        if isLongOutput {
+                            shouldExpandToggle
+                        }
+                        Text(displayOutput)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(10)
+                            .background(Color.primary.opacity(0.05))
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .lineLimit(expanded ? nil : 6)
+                    } else {
+                        Text(displayOutput)
+                            .font(.system(size: 12, design: .rounded))
+                            .foregroundStyle(.primary.opacity(0.85))
+                            .textSelection(.enabled)
+                            .lineLimit(expanded ? nil : 3)
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.primary.opacity(0.04))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(isRunning ? Color.brandPrimary.opacity(0.4) : Color.primary.opacity(0.08), lineWidth: 0.8)
+        )
+        .onAppear {
+            if isRunning {
+                withAnimation(.linear(duration: 1.1).repeatForever(autoreverses: false)) {
+                    animateShimmer = true
+                }
+            }
+        }
+        .onReceive(dotTimer) { _ in
+            withAnimation(.easeInOut(duration: 0.2)) {
+                dotCount = (dotCount + 1) % 4
+            }
+        }
+    }
+
+    /// Uzun çıktılarda daralt/ genişlet düğmesi.
+    @ViewBuilder
+    private var shouldExpandToggle: some View {
+        HStack {
+            Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(Color.textSecondary)
+            Text(expanded ? "Daralt" : "\(run.output.count) karakter göster")
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .foregroundStyle(Color.brandPrimary)
+            Spacer(minLength: 0)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                expanded.toggle()
+            }
+        }
+    }
+
+    /// Daraltılmışken çıktının ilk kısmını gösterir.
+    private var displayOutput: String {
+        guard isLongOutput, !expanded else { return run.output }
+        return String(run.output.prefix(500)) + (run.output.count > 500 ? "\n…" : "")
+    }
+
+    private var iconName: String {
+        switch run.kind {
+        case "shell": return "terminal"
+        case "web_search": return "globe"
+        case "applescript": return "applescript"
+        case "file": return "folder"
+        case "computer": return "cursorarrow.click.2"
+        case "system_status": return "gauge.with.dots.needle.67percent"
+        default: return "gearshape"
+        }
+    }
+
+    private var iconColor: Color {
+        if case .error = run.status { return .red }
+        return isRunning ? .brandPrimary : .secondary
+    }
+
+    @ViewBuilder
+    private var statusBadge: some View {
+        switch run.status {
+        case .running:
+            HStack(spacing: 4) {
+                Circle().fill(Color.brandPrimary).frame(width: 6, height: 6)
+                Text("Çalışıyor")
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .foregroundColor(.brandPrimary)
+            }
+        case .done:
+            HStack(spacing: 4) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.green)
+                Text("Başarılı")
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.green)
+            }
+        case .error(let message):
+            HStack(spacing: 4) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.red)
+                Text(message.isEmpty ? "Hata" : "Hata")
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.red)
+            }
+        }
     }
 }

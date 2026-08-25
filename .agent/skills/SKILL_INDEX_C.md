@@ -3,7 +3,7 @@
 | Skill | Description |
 |-------|-------------|
 | `@c-pro` | "Write efficient C code with proper memory management, pointer" |
-| `@c4-architecture` | No description found. |
+| `@c4-architecture` | "Document system architecture at four levels (Context, Container, Component, Code) using C4 Model with Mermaid diagrams." |
 | `@c4-architecture-c4-architecture` | "Generate comprehensive C4 architecture documentation for an existing repository/codebase using a bottom-up analysis approach." |
 | `@c4-code` | Expert C4 Code-level documentation specialist. Analyzes code directories to create comprehensive C4 code-level documentation including function signatures, arguments, dependencies, and code structure. |
 | `@c4-component` | Expert C4 Component-level documentation specialist. Synthesizes C4 Code-level documentation into Component-level architecture, defining component boundaries, interfaces, and relationships. |
@@ -84,7 +84,7 @@
 | `@constant-time-analysis` | Detects timing side-channel vulnerabilities in cryptographic code. Use when implementing or reviewing crypto code, encountering division on secrets, secret-dependent branches, or constant-time programming questions in C, C++, Go, Rust, Swift, Java, Kotlin, C#, PHP,... |
 | `@content-creator` | "Create SEO-optimized marketing content with consistent brand voice. Includes brand voice analyzer, SEO optimizer, content frameworks, and social media templates. Use when writing blog posts, creati..." |
 | `@content-marketer` | Elite content marketing strategist specializing in AI-powered content creation, omnichannel distribution, SEO optimization, and data-driven performance marketing. |
-| `@context-bundler` | No description found. |
+| `@context-bundler` | "Flatten a codebase into a single AI-consumable XML/Markdown context file for deep-reasoning sessions." |
 | `@context-compression` | This skill should be used when the user asks to "compress context", "summarize conversation history", "implement compaction", "reduce token usage", or mentions context compression, structured summarization, tokens-per-task optimization, or long-running agent sessions... |
 | `@context-degradation` | This skill should be used when the user asks to "diagnose context problems", "fix lost-in-middle issues", "debug agent failures", "understand context poisoning", or mentions context degradation, attention patterns, context clash, context confusion, or agent performance... |
 | `@context-driven-development` | Use this skill when working with Conductor's context-driven development methodology, managing project context artifacts, or understanding the relationship between product.md, tech-stack.md, and... |

@@ -4,6 +4,9 @@ Context Optimizer - Smart Rule Loading for Maestro
 Reduces context window usage by loading only essential rules.
 """
 
+import os
+
+
 def get_minimal_rules(workflow_type: str) -> list[str]:
     """
     Return only essential rule files for the given workflow type.
@@ -15,7 +18,7 @@ def get_minimal_rules(workflow_type: str) -> list[str]:
         List of absolute paths to essential rule files
     """
     
-    base_dir = "/Users/dogan/Desktop/rules/.agent"
+    base_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".agent")
     
     # Always load these
     base_rules = [

@@ -1,8 +1,10 @@
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
+import os
 
 struct InterviewVaultView: View {
+    private static let logger = Logger(subsystem: "com.zerolose", category: "interview-vault")
     @Binding var isPresented: Bool
     @ObservedObject private var vaultService = VaultService.shared
     @AppStorage("activeJobDescription") private var activeJobDescription: String = ""
@@ -19,18 +21,18 @@ struct InterviewVaultView: View {
     @State private var warmUpFeedbackIsWarning = false
     @State private var warmUpFeedbackTask: Task<Void, Never>? = nil
     
-    // Management State
+    // Yönetim Durumu
     @State private var editingItem: (categoryID: UUID, item: VaultInterviewItem)? = nil
-    @State private var isAddingItem: UUID? = nil // categoryID
+    @State private var isAddingItem: UUID? = nil // kategoriID
     @State private var isAddingCategory: Bool = false
     
-    // Action handler for Warm-up
+    // Isınma için eylem işleyici
     var onWarmUp: (() -> String)?
     
     var body: some View {
         ScrollViewReader { proxy in
             VStack(spacing: 0) {
-                // Header
+                // Başlık
                 HStack(spacing: 12) {
                     ZeroLoseIcon(type: .book, color: .orange, size: 22)
                     Text(vaultTitle)
@@ -129,10 +131,10 @@ struct InterviewVaultView: View {
                     .padding(.top, warmUpFeedback == nil ? 14 : 0)
                     .padding(.bottom, 6)
                 
-                // List
+                // Liste
                 ScrollView {
                     VStack(spacing: 16) {
-                        // Add Category Button
+                        // Kategori Ekle Butonu
                         Button(action: { isAddingCategory = true }) {
                             HStack {
                                 Image(systemName: "plus.circle.fill")
@@ -192,12 +194,7 @@ struct InterviewVaultView: View {
             }
         }
         .frame(minWidth: 450, idealWidth: 600, maxWidth: 900, minHeight: 400, idealHeight: 650, maxHeight: 1000)
-        .background(
-            ZStack {
-                Rectangle().fill(.ultraThinMaterial)
-                Color.black.opacity(0.75)
-            }
-        )
+        .modifier(VaultGlassBackground())
         .cornerRadius(16)
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
@@ -229,7 +226,7 @@ struct InterviewVaultView: View {
     }
 }
 
-// Helpers for Sheet Identifiable items
+// Sayfa Identifiable öğeleri için yardımcılar
 struct IDWrapper: Identifiable {
     let id: UUID
 }
@@ -362,7 +359,9 @@ private extension InterviewVaultView {
             do {
                 _ = try vaultService.importVault(from: url, strategy: .mergeExisting)
             } catch {
-                print("Failed to import vault: \(error.localizedDescription)")
+                Self.logger.error(
+                    "Failed to import vault: \(error.localizedDescription, privacy: .public)"
+                )
             }
         }
     }
@@ -381,7 +380,7 @@ private extension InterviewVaultView {
     }
 }
 
-// MARK: - Category View
+// MARK: - Kategori Görünümü
 
 struct CategoryView: View {
     let category: VaultInterviewCategory
@@ -470,13 +469,28 @@ struct CategoryView: View {
     }
 }
 
+/// macOS 26+'da kasa için şeffaf Liquid Glass yüzey, eski sistemlerde buzlu
+/// cam geri dönüşüyle.
+private struct VaultGlassBackground: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content.glassEffect(.regular.tint(.white.opacity(0.08)), in: .rect(cornerRadius: 16))
+        } else {
+            content.background(ZStack {
+                Rectangle().fill(.ultraThinMaterial)
+                Color.white.opacity(0.04)
+            })
+        }
+    }
+}
+
 struct ItemView: View {
     let item: VaultInterviewItem
     let categoryID: UUID
     let isSearchMatch: Bool
     @ObservedObject private var vaultService = VaultService.shared
     
-    // Dynamic Font Settings
+    // Dinamik Yazı Tipi Ayarları
     @AppStorage("fontSize") private var fontSize: Double = 14.0
     @AppStorage("fontDesign") private var fontDesignStr: String = "monospaced"
     
@@ -491,7 +505,7 @@ struct ItemView: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            // Question Header
+            // Soru Başlığı
             HStack {
                 Text(item.question)
                     .font(.system(size: CGFloat(fontSize), weight: .bold, design: fontDesign))
@@ -525,7 +539,7 @@ struct ItemView: View {
                 }
             }
             
-            // Answer Content (Always Visible)
+            // Yanıt İçeriği (Her Zaman Görünür)
             VStack(alignment: .leading, spacing: 8) {
                 Text(item.answerFinnish)
                     .font(.system(size: CGFloat(fontSize), design: fontDesign))
@@ -568,7 +582,7 @@ struct ItemView: View {
     }
 }
 
-// MARK: - Management Views
+// MARK: - Yönetim Görünümleri
 
 struct AddCategoryView: View {
     @Binding var isPresented: Bool
@@ -618,7 +632,7 @@ struct AddCategoryView: View {
 
 struct EditItemView: View {
     let categoryID: UUID
-    let item: VaultInterviewItem? // nil if adding
+    let item: VaultInterviewItem? // ekleniyorsa nil
     
     @Environment(\.dismiss) var dismiss
     @State private var question: String = ""

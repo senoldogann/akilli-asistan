@@ -26,6 +26,7 @@ EXTRANEOUS_PATHS = [
     ".DS_Store",
     ".opencode/.gitignore",
     ".opencode/package.json",
+    ".opencode/package-lock.json",
     ".opencode/bun.lock",
     ".opencode/node_modules",
 ]
@@ -119,13 +120,41 @@ CLAUDE_SETTINGS = {
 
 OPENCODE_CONFIG = {
     "$schema": "https://opencode.ai/config.json",
-    "model": "opencode/minimax-m2.5-free",
-    "small_model": "opencode/minimax-m2.5-free",
+    "model": "deepseek/deepseek-v4-pro",
+    "small_model": "opencode/mimo-v2.5-free",
     "default_agent": "build",
     "instructions": [
         ".agent/SYSTEM.md",
         ".agent/rules/GEMINI.md",
     ],
+    "provider": {
+        "opencode-go": {},
+        "opencode": {},
+        "deepseek": {
+            "npm": "@ai-sdk/openai-compatible",
+            "name": "DeepSeek",
+            "options": {
+                "baseURL": "https://api.deepseek.com/v1"
+            },
+            "models": {
+                "deepseek-v4-flash": {
+                    "name": "DeepSeek V4 Flash",
+                    "reasoning": True,
+                    "interleaved": {"field": "reasoning_content"},
+                },
+                "deepseek-v4-pro": {
+                    "name": "DeepSeek V4 Pro",
+                    "reasoning": True,
+                    "interleaved": {"field": "reasoning_content"},
+                },
+                "deepseek-v4-flash-vision-exp": {
+                    "name": "DeepSeek V4 Flash Vision",
+                    "reasoning": True,
+                    "interleaved": {"field": "reasoning_content"},
+                },
+            },
+        },
+    },
     "permission": {
         "*": "ask",
         "external_directory": "deny",

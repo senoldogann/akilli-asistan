@@ -31,3 +31,29 @@ DerivedData/
 # Project Specific
 *.dmg
 *.xcresult
+
+# Maestro / agent-runtime generated data (never commit large graph/vector caches)
+data/
+ZeroLose/.derived/
+ZeroLose/.review-derived/
+.derived/
+ZeroLose/dist/
+ZeroLose/build.log
+ZeroLose/*.log
+
+# Python caches
+__pycache__/
+*.pyc
+*.pyo
+
+# OpenCode / node runtime lockfiles generated locally are repo-local artifacts
+.opencode/node_modules/
+
+# macOS / editor noise
+.DS_Store
+.idea/
+*.swp
+
+# Local skill backup (single source of truth is .agent/skills)
+_library/
+.review-myderived/

@@ -4,12 +4,12 @@ struct SlashCommand: Identifiable {
     let id = UUID()
     let command: String
     let description: String
-    let category: String // "Media", "System", "Web", "General"
+    let category: String // "Medya", "Sistem", "Web", "Genel"
 }
 
 struct SlashCommandRegistry {
     static let commands: [SlashCommand] = [
-        // System
+        // Sistem
         SlashCommand(command: "/Desktop", description: "Masaüstünü düzenle ve hizala", category: "System"),
         SlashCommand(command: "/Trash", description: "Çöp kutusunu güvenli şekilde boşalt", category: "System"),
         SlashCommand(command: "/Mute", description: "Sesi kapat", category: "System"),
@@ -26,17 +26,17 @@ struct SlashCommandRegistry {
         SlashCommand(command: "/GitHub owner/repo", description: "GitHub repo veya arama aç", category: "Web"),
         SlashCommand(command: "/News topic", description: "Google News üzerinde konu ara", category: "Web"),
         
-        // Media
+        // Medya
         SlashCommand(command: "/Music play|pause|next|prev", description: "Music uygulamasını kontrol et", category: "Media"),
         SlashCommand(command: "/Spotify play|pause|next|prev", description: "Spotify kontrol komutları", category: "Media"),
         
-        // Apps
+        // Uygulamalar
         SlashCommand(command: "/App open Safari", description: "Uygulama aç", category: "Apps"),
         SlashCommand(command: "/App close Safari", description: "Uygulama kapat", category: "Apps"),
         SlashCommand(command: "/Open Safari", description: "Kısa yol: uygulama aç", category: "Apps"),
         SlashCommand(command: "/Close Safari", description: "Kısa yol: uygulama kapat", category: "Apps"),
 
-        // Files
+        // Dosyalar
         SlashCommand(command: "/Fs pwd", description: "Aktif çalışma klasörünü göster", category: "Files"),
         SlashCommand(command: "/Fs ls ~/Desktop", description: "Klasör içeriğini listele", category: "Files"),
         SlashCommand(command: "/Fs mkdir ~/Desktop/Test", description: "Yeni klasör oluştur", category: "Files"),

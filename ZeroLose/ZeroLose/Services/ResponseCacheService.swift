@@ -2,8 +2,8 @@ import Foundation
 import CryptoKit
 import os
 
-/// Cache service for storing AI responses to interview questions
-/// Provides instant answers during interviews by caching warm-up responses
+/// Mülakat sorularına AI yanıtlarını saklamak için önbellek hizmeti.
+/// Isınma yanıtlarını önbelleğe alarak mülakatlar sırasında anında yanıt sağlar.
 class ResponseCacheService {
     static let shared = ResponseCacheService()
 
@@ -36,7 +36,7 @@ class ResponseCacheService {
     struct ResponseCache: Codable {
         var version: String = "1.1"
         var timestamp: Date
-        var sourceHash: String // SHA256 of InterviewData.json
+        var sourceHash: String // InterviewData.json dosyasının SHA256'sı
         var responses: [CachedResponse]
     }
     
@@ -90,7 +90,7 @@ class ResponseCacheService {
             let parentDir = customCacheURL.deletingLastPathComponent()
             try? FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
         } else {
-            // Store cache in app support directory
+            // Önbelleği uygulama destek dizininde sakla
             let appSupport = Self.applicationSupportBaseURL()
             let appDir = appSupport.appendingPathComponent("ZeroLose", isDirectory: true)
             try? FileManager.default.createDirectory(at: appDir, withIntermediateDirectories: true)
@@ -99,7 +99,7 @@ class ResponseCacheService {
         loadCache()
     }
     
-    // MARK: - Public Methods
+    // MARK: - Genel Metotlar
     
     func saveResponse(
         question: String,
@@ -125,8 +125,8 @@ class ResponseCacheService {
         persistCache()
     }
     
-    /// Bulk primes cache from interview vault entries.
-    /// Returns number of unique questions kept in cache.
+    /// Mülakat kasası girişlerinden önbelleği toplu olarak ısıtır.
+    /// Önbellekte tutulan benzersiz soru sayısını döndürür.
     @discardableResult
     func primeInterviewVault(entries: [(question: String, answer: String, category: String)]) -> Int {
         let normalizedEntries = entries.map {
@@ -139,8 +139,8 @@ class ResponseCacheService {
         return primeInterviewVault(entries: normalizedEntries)
     }
 
-    /// Bulk primes cache from interview vault entries with optional search aliases.
-    /// Returns number of unique questions kept in cache.
+    /// İsteğe bağlı arama takma adlarıyla mülakat kasası girişlerinden önbelleği toplu olarak ısıtır.
+    /// Önbellekte tutulan benzersiz soru sayısını döndürür.
     @discardableResult
     func primeInterviewVault(entries: [InterviewCacheEntry]) -> Int {
         if cache == nil {
@@ -186,7 +186,7 @@ class ResponseCacheService {
         let queryTokenCount = normalizedQuery.split(separator: " ").count
         let compensationIntent = isCompensationIntent(question)
         
-        // Try exact match first
+        // Önce tam eşleşmeyi dene
         if let match = cache.responses.first(where: {
             normalize($0.question) == normalizedQuery ||
             normalize($0.translation) == normalizedQuery
@@ -194,7 +194,7 @@ class ResponseCacheService {
             return match.answer
         }
         
-        // Variant-aware semantic-ish matching via shared interview matcher.
+        // Paylaşılan mülakat eşleştiricisi aracılığıyla varyant-farkındalıklı yarı-anlamsal eşleştirme.
         let records = cache.responses.map { response in
             InterviewKnowledgeRecord(
                 category: response.category,
@@ -397,12 +397,12 @@ class ResponseCacheService {
     func validateCache(against dataHash: String) -> Bool {
         guard let cache = cache else { return false }
         
-        // Check if source data changed
+        // Kaynak verisinin değişip değişmediğini kontrol et
         if cache.sourceHash != dataHash {
             return false
         }
         
-        // Check if cache is older than 24 hours
+        // Önbelleğin 24 saatten eski olup olmadığını kontrol et
         let hoursSinceCache = Date().timeIntervalSince(cache.timestamp) / 3600
         if hoursSinceCache > 24 {
             return false
@@ -417,7 +417,7 @@ class ResponseCacheService {
         persistCache()
     }
     
-    // MARK: - Private Methods
+    // MARK: - Özel Metotlar
     
     private func loadCache() {
         guard FileManager.default.fileExists(atPath: cacheURL.path) else { return }
@@ -450,10 +450,10 @@ class ResponseCacheService {
         return fileManager.temporaryDirectory
     }
     
-    // Similarity handled in InterviewKnowledgeMatcher for consistent vault/cache behavior.
+    // Tutarlı kasa/önbellek davranışı için benzerlik InterviewKnowledgeMatcher'da ele alınır.
 }
 
-// MARK: - Hash Extension
+// MARK: - Hash Uzantısı
 
 extension String {
     func sha256() -> String {

@@ -1,3 +1,8 @@
+---
+name: c4-architecture
+description: "Document system architecture at four levels (Context, Container, Component, Code) using C4 Model with Mermaid diagrams."
+---
+
 # Skill: C4 Architecture Diagramming
 Description: Professional architectural mapping using the C4 Model (Context, Container, Component, Code) with Mermaid syntax.
 

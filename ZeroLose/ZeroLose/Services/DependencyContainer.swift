@@ -3,13 +3,13 @@ import Foundation
 class DependencyContainer {
     static let shared = DependencyContainer()
     
-    // Core Services
+    // Çekirdek Hizmetler
     let ollamaService: OllamaService
     let groqService: GroqService
     let tavilyService = TavilyService()
     let visionService = VisionService()
     
-    // RAG Services
+    // RAG Hizmetleri
     let vectorStore: VectorStore
     let embeddingService: OllamaEmbeddingService
     let documentProcessor: DocumentProcessor
@@ -17,6 +17,8 @@ class DependencyContainer {
     let chatHistoryService: ChatHistoryService
     let screenshotWatcher: ScreenshotWatcherService
     let audioService: AudioService
+    let computerUseService = ComputerUseService()
+    let browserCDPService = BrowserCDPService()
     let intelligenceService: IntelligenceService
     let zeroOperator = ZeroOperator()
     let systemStatusService = SystemStatusService()
@@ -40,14 +42,14 @@ class DependencyContainer {
         self.screenshotWatcher = watcher
         self.audioService = audio
         
-        // Initialize RAG Components
+        // RAG Bileşenlerini Başlat
         self.vectorStore = VectorStore()
         self.embeddingService = OllamaEmbeddingService()
         self.documentProcessor = DocumentProcessor()
         self.semanticRetriever = SemanticRetriever(vectorStore: vectorStore, embeddingService: embeddingService)
         self.chatHistoryService = ChatHistoryService(vectorStore: vectorStore, documentProcessor: documentProcessor, embeddingService: embeddingService)
         
-        // Initialize Intelligence Service with RAG
+        // Intelligence Service'i RAG ile Başlat
         self.intelligenceService = IntelligenceService(
             ollamaService: ollamaService,
             tavilyService: tavilyService,
@@ -63,6 +65,8 @@ class DependencyContainer {
             clipboardService: clipboard,
             screenshotWatcher: watcher,
             audioService: audio,
+            computerUseService: computerUseService,
+            browserCDPService: browserCDPService,
             intelligenceService: intelligenceService,
             documentProcessor: documentProcessor,
             embeddingService: embeddingService,

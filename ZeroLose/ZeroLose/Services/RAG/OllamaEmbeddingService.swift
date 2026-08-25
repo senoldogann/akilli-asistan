@@ -1,7 +1,7 @@
 import Foundation
 import os
 
-/// Service for generating text embeddings using Ollama's local models
+/// Ollama'nın yerel modellerini kullanarak metin embedding'leri üreten hizmet.
 actor OllamaEmbeddingService {
     private let baseURL: String
     private let model: String
@@ -12,13 +12,13 @@ actor OllamaEmbeddingService {
         self.model = model
     }
     
-    // MARK: - Public API
+    // MARK: - Genel API
     
-    /// Generate embeddings for a batch of texts
+    /// Bir grup metin için embedding üretir.
     func embed(texts: [String]) async throws -> [[Float]] {
         var allEmbeddings: [[Float]] = []
         
-        // Process in batches of 10 for performance
+        // Performans için 10'lu gruplar halinde işle
         let batchSize = 10
         for batch in texts.chunked(into: batchSize) {
             let batchEmbeddings = try await processBatch(batch)
@@ -28,7 +28,7 @@ actor OllamaEmbeddingService {
         return allEmbeddings
     }
     
-    /// Generate embedding for a single text
+    /// Tek bir metin için embedding üretir.
     func embedSingle(text: String) async throws -> [Float] {
         let embeddings = try await embed(texts: [text])
         guard let embedding = embeddings.first else {
@@ -37,7 +37,7 @@ actor OllamaEmbeddingService {
         return embedding
     }
     
-    // MARK: - Private Implementation
+    // MARK: - Özel Uygulama
     
     private func processBatch(_ texts: [String]) async throws -> [[Float]] {
         var embeddings: [[Float]] = []
@@ -56,7 +56,7 @@ actor OllamaEmbeddingService {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         
-        // Add prefix for better semantic understanding
+        // Daha iyi anlamsal anlama için önek ekle
         let prefixedText = "search_document: \(text)"
         
         let requestBody: [String: Any] = [
@@ -89,7 +89,7 @@ actor OllamaEmbeddingService {
     }
 }
 
-// MARK: - Array Extension for Chunking
+// MARK: - Parçalama için Dizi Uzantısı
 
 extension Array {
     nonisolated func chunked(into size: Int) -> [[Element]] {
@@ -99,7 +99,7 @@ extension Array {
     }
 }
 
-// MARK: - Errors
+// MARK: - Hatalar
 
 enum RAGError: LocalizedError {
     case embeddingFailed(String)

@@ -11,7 +11,7 @@
 | `@emergency-card` | 生成紧急情况下快速访问的医疗信息摘要卡片。当用户需要旅行、就诊准备、紧急情况或询问"紧急信息"、"医疗卡片"、"急救信息"时使用此技能。提取关键信息（过敏、用药、急症、植入物），支持多格式输出（JSON、文本、二维码），用于急救或快速就医。 |
 | `@employment-contract-templates` | "Create employment contracts, offer letters, and HR policy documents following legal best practices. Use when drafting employment agreements, creating HR policies, or standardizing employment docume..." |
 | `@energy-procurement` | Codified expertise for electricity and gas procurement, tariff optimisation, demand charge management, renewable PPA evaluation, and multi-facility energy cost management. |
-| `@engineering-checklist` | No description found. |
+| `@engineering-checklist` | "Modular checklist of software engineering anti-patterns, best practices, code review, architecture, and pre-deployment gates." |
 | `@enhance-prompt` | Transforms vague UI ideas into polished, Stitch-optimized prompts. Enhances specificity, adds UI/UX keywords, injects design system context, and structures output for better generation results. |
 | `@environment-setup-guide` | "Guide developers through setting up development environments with proper tools, dependencies, and configurations" |
 | `@error-debugging-error-analysis` | "You are an expert error analysis specialist with deep expertise in debugging distributed systems, analyzing production incidents, and implementing comprehensive observability solutions." |

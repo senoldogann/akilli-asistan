@@ -20,12 +20,12 @@ class SpeechSynthesizerService: NSObject, ObservableObject, AVSpeechSynthesizerD
         self.onCompletion = onCompletion
         
         let utterance = AVSpeechUtterance(string: text)
-        // Select matching neural/default voice
+        // Eşleşen sinirsel/varsayılan sesi seç
         if let voice = AVSpeechSynthesisVoice(language: language) {
             utterance.voice = voice
         }
         
-        // Speed rate (0.5 is default/normal)
+        // Hız oranı (0.5 varsayılan/normal)
         utterance.rate = 0.48
         utterance.pitchMultiplier = 1.0
         utterance.volume = 1.0

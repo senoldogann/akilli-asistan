@@ -1,3 +1,8 @@
+---
+name: engineering-checklist
+description: "Modular checklist of software engineering anti-patterns, best practices, code review, architecture, and pre-deployment gates."
+---
+
 # Engineering Checklist Skill
 
 > **Version 1.0** | Anti-Patterns & Best Practices for Software Engineering

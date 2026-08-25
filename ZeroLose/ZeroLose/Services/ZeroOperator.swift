@@ -3,8 +3,8 @@ import os
 import AppKit
 import Combine
 
-/// ZeroOperator executes system-level commands and AppleScripts to control the OS and applications.
-/// This is the core 'hands' of the ZeroLose assistant.
+/// ZeroOperator, işletim sistemini ve uygulamaları kontrol etmek için sistem düzeyinde
+/// komutları ve AppleScript'leri yürütür. ZeroLose asistanının çekirdek 'elleri'dir.
 @MainActor
 class ZeroOperator: ObservableObject {
     @Published var activeAction: String? = nil
@@ -35,7 +35,7 @@ class ZeroOperator: ObservableObject {
     
     init() {}
     
-    /// Executes a given AppleScript and returns the output (Async & Background)
+    /// Verilen AppleScript'i yürütür ve çıktıyı döndürür (Async & Arka plan)
     @discardableResult
     func executeAppleScript(_ scriptSource: String, background: Bool = true) async throws -> String {
         if SafetyGuard.isDangerous(scriptSource, type: "applescript") {
@@ -65,7 +65,7 @@ class ZeroOperator: ObservableObject {
         }.value
     }
     
-    /// Executes a shell command in strict allowlist mode (no shell interpreter).
+    /// Strict izin listesi modunda bir shell komutu yürütür (shell yorumlayıcısı yok).
     @discardableResult
     func executeShell(_ command: String) async throws -> String {
         guard UserDefaults.standard.bool(forKey: unsafeShellCommandsFlag) else {
@@ -110,8 +110,8 @@ class ZeroOperator: ObservableObject {
         }.value
     }
 
-    /// Executes a shell command via AppleScript with administrator privileges.
-    /// This will trigger macOS admin password prompt.
+    /// AppleScript aracılığıyla yönetici ayrıcalıklarıyla bir shell komutu yürütür.
+    /// Bu, macOS yönetici parolası istemini tetikler.
     @discardableResult
     func executePrivilegedShell(_ command: String) async throws -> String {
         let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -173,7 +173,7 @@ class ZeroOperator: ObservableObject {
             .replacingOccurrences(of: "\n", with: " ")
     }
     
-    /// Starts a recurring task (e.g., scroll every X seconds)
+    /// Yinelenen bir görev başlatır (örn. her X saniyede bir kaydır)
     func startRecurringTask(script: String, interval: Double, label: String) {
         if SafetyGuard.isDangerous(script, type: "applescript") { return }
         let safeInterval = SafetyGuard.validateInterval(interval)

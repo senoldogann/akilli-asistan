@@ -125,7 +125,7 @@ class VaultService: ObservableObject {
             ?? FileManager.default.temporaryDirectory
         let appSupportDir = appSupportBase.appendingPathComponent("ZeroLose", isDirectory: true)
         
-        // Ensure directory exists
+        // Dizinin var olduğundan emin ol
         if !FileManager.default.fileExists(atPath: appSupportDir.path) {
             try? FileManager.default.createDirectory(at: appSupportDir, withIntermediateDirectories: true)
         }
@@ -163,12 +163,12 @@ class VaultService: ObservableObject {
     }
     
     private func loadDefaultData() {
-        // Start empty on first launch. Open-source builds must not seed personal interview data.
+        // İlk başlatmada boş başla. Açık kaynak derlemeler kişisel mülakat verisi beslememeli.
         categories = []
         save()
     }
     
-    // CRUD Operations
+    // CRUD İşlemleri
     func addCategory(_ category: VaultInterviewCategory) {
         categories.append(category)
         save()

@@ -1,6 +1,6 @@
 # 🧠 Master Skill Index (Hierarchical)
 
-> **Total Skills:** 1211
+> **Total Skills:** 1210
 
 To minimize memory usage, skills are grouped alphabetically. **Click a letter to view skills:**
 

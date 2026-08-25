@@ -1,10 +1,10 @@
 import Foundation
 
-/// Configuration for text chunking strategy
+/// Metin parçalama stratejisi için yapılandırma.
 struct ChunkConfig: Sendable {
-    let chunkSize: Int        // Target tokens per chunk
-    let chunkOverlap: Int     // Overlap between chunks for semantic continuity
-    let minChunkSize: Int     // Minimum viable chunk size
+    let chunkSize: Int        // Parça başına hedef token sayısı
+    let chunkOverlap: Int     // Anlamsal süreklilik için parçalar arası örtüşme
+    let minChunkSize: Int     // Minimum geçerli parça boyutu
     
     nonisolated static let `default` = ChunkConfig(
         chunkSize: 512,
@@ -13,7 +13,7 @@ struct ChunkConfig: Sendable {
     )
 }
 
-/// Splits text into overlapping chunks for embedding
+/// Metni embedding için örtüşen parçalara böler.
 class TextChunker {
     private let config: ChunkConfig
     
@@ -21,9 +21,9 @@ class TextChunker {
         self.config = config
     }
     
-    /// Chunk text using sliding window with overlap
+    /// Metni örtüşmeli kaydırmalı pencere kullanarak parçalara böler.
     func chunk(text: String) -> [String] {
-        // Simple word-based tokenization (can be improved with NaturalLanguage framework)
+        // Basit kelime tabanlı tokenizasyon (NaturalLanguage framework ile geliştirilebilir)
         let words = text.components(separatedBy: .whitespacesAndNewlines)
             .filter { !$0.isEmpty }
         
@@ -37,7 +37,7 @@ class TextChunker {
             let chunkWords = words[currentPosition..<endPosition]
             let chunkText = chunkWords.joined(separator: " ")
             
-            // Only add if meets minimum size requirement
+            // Yalnızca minimum boyut gereksinimini karşılıyorsa ekle
             if chunkWords.count >= config.minChunkSize || endPosition == words.count {
                 chunks.append(chunkText)
             }
@@ -54,9 +54,9 @@ class TextChunker {
         return chunks
     }
     
-    /// Chunk text respecting natural language boundaries (sentences/paragraphs)
+    /// Doğal dil sınırlarına (cümle/paragraf) saygı göstererek metni parçalara böler.
     nonisolated func chunkWithBoundaries(text: String) -> [String] {
-        // Split by paragraphs first
+        // Önce paragraflara böl
         let paragraphs = text.components(separatedBy: "\n\n")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
@@ -69,7 +69,7 @@ class TextChunker {
             let paragraphWords = paragraph.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
             let paragraphWordCount = paragraphWords.count
             
-            // If adding this paragraph exceeds chunk size, finalize current chunk
+            // Bu paragrafı eklemek parça boyutunu aşarsa mevcut parçayı sonlandır
             if currentWordCount + paragraphWordCount > config.chunkSize && !currentChunk.isEmpty {
                 chunks.append(currentChunk)
                 
@@ -79,7 +79,7 @@ class TextChunker {
                 currentChunk = overlapWords.joined(separator: " ") + " " + paragraph
                 currentWordCount = overlapWords.count + paragraphWordCount
             } else {
-                // Add to current chunk
+                // Mevcut parçaya ekle
                 if !currentChunk.isEmpty {
                     currentChunk += "\n\n"
                 }
@@ -88,14 +88,14 @@ class TextChunker {
             }
         }
         
-        // Add final chunk
+        // Son parçayı ekle
         if !currentChunk.isEmpty {
             chunks.append(currentChunk)
         }
         
         let filtered = chunks.filter { $0.components(separatedBy: .whitespaces).count >= config.minChunkSize }
         
-        // If everything is below minChunkSize, keep the largest chunk instead of dropping all context.
+        // Her şey minChunkSize altındaysa tüm bağlamı bırakmak yerine en büyük parçayı koru.
         if filtered.isEmpty, let fallback = chunks.max(by: {
             $0.components(separatedBy: .whitespaces).count < $1.components(separatedBy: .whitespaces).count
         }) {

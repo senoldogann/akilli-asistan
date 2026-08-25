@@ -14,7 +14,7 @@ class ClipboardService: ObservableObject {
     }
     
     private func startMonitoring() {
-        // Poll every 0.4 seconds (Fast enough for double Cmd+C)
+        // Her 0.4 saniyede bir kontrol et (çift Cmd+C için yeterince hızlı)
         timer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] _ in
             self?.checkForChanges()
         }
@@ -25,7 +25,7 @@ class ClipboardService: ObservableObject {
         lastChangeCount = pasteboard.changeCount
         
         if let newString = pasteboard.string(forType: .string) {
-            // Avoid triggering on empty strings or huge blobs if needed
+            // Gerekirse boş dizeler veya devasa içeriklerde tetiklemeyi önle
             if !newString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 DispatchQueue.main.async {
                     self.copiedText = newString

@@ -21,13 +21,15 @@
 	<key>CFBundleVersion</key>
 	<string>4</string>
 	<key>LSMinimumSystemVersion</key>
-	<string>14.0</string>
+	<string>26.0</string>
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>ZeroLose needs access to the microphone to listen to meetings in real-time.</string>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>ZeroLose needs screen recording access to capture system meeting audio and analyze on-screen content during interviews.</string>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>ZeroLose needs to control the screen.</string>
 </dict>

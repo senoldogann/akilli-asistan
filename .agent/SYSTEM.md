@@ -15,6 +15,22 @@
 | `Claude Code` | `CLAUDE.md`, `.claude/settings.json`, `.claude/agents/`, `.claude/skills/`, `.claude/commands/` | `CLAUDE.md` is a symlink to `AGENTS.md`; `settings.json` allows `WebSearch` / `WebFetch` for current verification |
 | `OpenCode` | `AGENTS.md`, `opencode.json`, `.opencode/agents/`, `.opencode/skills/`, `.opencode/commands/` | OpenCode uses `AGENTS.md` first, loads extra instructions from config, enables `websearch` / `webfetch`, and blocks repeat loops with global `doom_loop` |
 
+## Provider Credentials & Model Routing
+
+`opencode.json` declares a `provider` map so the installed OpenCode CLI can select:
+
+- `opencode-go/*` — OpenCode Go subscription models (e.g. `qwen3.8-max`, `glm-5.2`).
+  Note: some `opencode-go/deepseek-*` variants are China-hosted and require explicit
+  workspace opt-in before they respond.
+- `opencode/*` — OpenCode Zen free models (e.g. `mimo-v2.5-free`).
+- `deepseek/*` — the user's own DeepSeek API key (`api.deepseek.com/v1`), configured
+  with `reasoning: true` + `interleaved.reasoning_content` so thinking traces are
+  captured. Verified working with `deepseek/deepseek-v4-pro`.
+
+Credentials live in `~/.local/share/opencode/auth.json` (`opencode auth list`).
+ZeroLose mirrors this with its own Keychain-backed `Secrets.deepSeekApiKey` and
+`AIModelNames` DeepSeek defaults.
+
 ## Directory Contract
 ```text
 .

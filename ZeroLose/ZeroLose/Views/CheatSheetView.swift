@@ -11,7 +11,7 @@ struct CheatSheetView: View {
         self._viewModel = State(initialValue: CheatSheetViewModel(intelligenceService: intelligenceService))
     }
     
-    // Theme helper
+    // Tema yardımcısı
     @AppStorage("selectedThemeName") private var selectedTheme: String = "Red"
     private var themeColor: Color {
         switch selectedTheme {
@@ -27,7 +27,7 @@ struct CheatSheetView: View {
     
     var body: some View {
         VStack(spacing: 0) {
-            // Header
+            // Başlık
             HStack {
                 ZeroLoseIcon(type: .book, color: themeColor, size: 18)
                 Text("TECH PREP VAULT (Huutokaupat.fi)")
@@ -36,7 +36,7 @@ struct CheatSheetView: View {
                 
                 Spacer()
                 
-                // Warm-up Button
+                // Isınma Butonu
                 if !viewModel.isWarmingUp {
                     Button(action: {
                         Task {
@@ -77,9 +77,9 @@ struct CheatSheetView: View {
             .padding(16)
             .background(Color.white.opacity(0.03))
             
-            // Search & Filter Bar
+            // Arama & Filtre Çubuğu
             VStack(spacing: 12) {
-                // Search Field
+                // Arama Alanı
                 HStack {
                     Image(systemName: "magnifyingglass")
                         .foregroundColor(.white.opacity(0.4))
@@ -98,7 +98,7 @@ struct CheatSheetView: View {
                         .stroke(Color.white.opacity(0.1), lineWidth: 1)
                 )
                 
-                // Category Tags
+                // Kategori Etiketleri
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         CategoryTag(title: "All", isSelected: viewModel.selectedCategory == nil, color: themeColor) {
@@ -117,7 +117,7 @@ struct CheatSheetView: View {
             
             Divider().background(Color.white.opacity(0.1))
             
-            // Content List
+            // İçerik Listesi
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 16) {
                     if viewModel.filteredItems.isEmpty {

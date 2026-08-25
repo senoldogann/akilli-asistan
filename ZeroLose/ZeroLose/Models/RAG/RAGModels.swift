@@ -1,6 +1,6 @@
 import Foundation
 
-/// Represents a chunk of text extracted from a document or conversation
+/// Bir belgeden veya sohbetten çıkarılan bir metin parçasını temsil eder.
 struct DocumentChunk: Codable, Sendable {
     let id: UUID
     let text: String
@@ -13,11 +13,11 @@ struct DocumentChunk: Codable, Sendable {
     }
 }
 
-/// Metadata about the source of a chunk
+/// Bir parçanın kaynağı hakkında meta veri.
 struct ChunkMetadata: Codable, Sendable {
     let sourceType: SourceType
-    let sourceID: String        // Filename or chat session ID
-    let pageNumber: Int?        // For PDF sources
+    let sourceID: String        // Dosya adı veya sohbet oturumu kimliği
+    let pageNumber: Int?        // PDF kaynakları için
     let timestamp: Date
     
     nonisolated init(sourceType: SourceType, sourceID: String, pageNumber: Int? = nil, timestamp: Date = Date()) {
@@ -28,21 +28,21 @@ struct ChunkMetadata: Codable, Sendable {
     }
 }
 
-/// Type of document source
+/// Belge kaynağı türü.
 enum SourceType: String, Codable, Sendable {
     case pdf
     case chat
     case clipboard
 }
 
-/// Result from a semantic search
+/// Anlamsal arama sonucu.
 struct SearchResult: Sendable {
     let chunk: DocumentChunk
     let similarity: Float
     let embedding: [Float]
 }
 
-/// Retrieved context for RAG augmentation
+/// RAG genişletmesi için alınan bağlam.
 struct RetrievedContext: Sendable {
     let chunkText: String
     let similarity: Float

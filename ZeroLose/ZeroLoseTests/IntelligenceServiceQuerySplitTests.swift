@@ -346,13 +346,14 @@ final class IntelligenceServiceQuerySplitTests: XCTestCase {
         let english = IntelligenceService.supportedResponseLanguageCode(
             for: "What is your strongest backend stack?"
         )
-        let fallbackEnglish = IntelligenceService.supportedResponseLanguageCode(
+        // "Neden bu rol?" Türkçe sinyaller içerir ("neden"), bu yüzden "tr" döner.
+        let turkish = IntelligenceService.supportedResponseLanguageCode(
             for: "Neden bu rol?"
         )
 
         XCTAssertEqual(finnish, "fi")
         XCTAssertEqual(english, "en")
-        XCTAssertEqual(fallbackEnglish, "en")
+        XCTAssertEqual(turkish, "tr")
     }
 
     func testShouldSuppressAutomaticWebSearchForSelfContainedCodeQuestion() {

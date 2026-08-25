@@ -1,7 +1,7 @@
 import Foundation
 import os
 
-/// Retrieves relevant context from vector store for RAG
+/// RAG için vektör deposundan ilgili bağlamı alır.
 actor SemanticRetriever {
     private let vectorStore: VectorStore
     private let embeddingService: OllamaEmbeddingService
@@ -12,18 +12,18 @@ actor SemanticRetriever {
         self.embeddingService = embeddingService
     }
     
-    /// Retrieve top-K most relevant chunks for a query
+    /// Bir sorgu için en alakalı ilk-K parçayı alır.
     func retrieve(query: String, topK: Int = 5) async throws -> [RetrievedContext] {
         logger.info("Retrieving context for query: \(query.prefix(50))...")
         
-        // Generate query embedding
+        // Sorgu embedding'i üret
         let queryText = "search_query: \(query)"
         let queryEmbedding = try await embeddingService.embedSingle(text: queryText)
         
-        // Search vector store
+        // Vektör deposunda ara
         let results = try await vectorStore.search(queryEmbedding: queryEmbedding, topK: topK)
         
-        // Convert to RetrievedContext
+        // RetrievedContext'e dönüştür
         let contexts = results.map { result in
             RetrievedContext(
                 chunkText: result.chunk.text,

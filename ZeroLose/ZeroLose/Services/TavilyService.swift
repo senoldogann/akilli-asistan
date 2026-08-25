@@ -1,7 +1,7 @@
 import Foundation
 import OSLog
 
-/// A service to interact with the Tavily Search API.
+/// Tavily Arama API'si ile etkileşim kuran bir hizmet.
 actor TavilyService {
     private let baseURL = URL(string: "https://api.tavily.com")!
     private let logger = Logger(subsystem: "com.zerolose", category: "tavily")
@@ -47,7 +47,7 @@ actor TavilyService {
         let answer: String?
     }
     
-    /// Performs a web search and returns a structured evidence context.
+    /// Bir web araması yapar ve yapılandırılmış bir kanıt bağlamı döndürür.
     func search(query: String, detailLevel: DetailLevel = .brief) async throws -> String {
         let preparedQuery = Self.preferredQuery(from: query, maxLength: maxProviderQueryLength)
         let normalizedQuery = preparedQuery

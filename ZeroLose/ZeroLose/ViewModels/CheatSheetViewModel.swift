@@ -10,7 +10,7 @@ class CheatSheetViewModel: ObservableObject {
     @Published var isWarmingUp: Bool = false
     @Published var warmupProgress: String = ""
     
-    // Unique categories from data
+    // Veriden benzersiz kategoriler
     var categories: [String] {
         Array(Set(items.map { $0.category })).sorted()
     }
@@ -24,7 +24,7 @@ class CheatSheetViewModel: ObservableObject {
         self.intelligenceService = intelligenceService
         loadData()
         
-        // Reactive search and filter
+        // Tepkisel arama ve filtre
         $searchText
             .combineLatest($selectedCategory)
             .sink { [weak self] (query, category) in
@@ -51,12 +51,12 @@ class CheatSheetViewModel: ObservableObject {
     private func filterData(query: String, category: String?) {
         var results = items
         
-        // Category Filter
+        // Kategori Filtresi
         if let category = category {
             results = results.filter { $0.category == category }
         }
         
-        // Search Filter
+        // Arama Filtresi
         if !query.isEmpty {
             results = results.filter { item in
                 item.question.localizedCaseInsensitiveContains(query) ||
@@ -68,21 +68,21 @@ class CheatSheetViewModel: ObservableObject {
         self.filteredItems = results
     }
     
-    // MARK: - Warm-up Mode
+    // MARK: - Isınma Modu
     
     func startWarmup() async {
         await MainActor.run { isWarmingUp = true }
         
-        // 1. Calculate current data hash
+        // 1. Güncel veri özetini hesapla
         let currentHash = calculateDataHash(from: items)
         
-        // 2. Validate cache (Auto-invalidation)
+        // 2. Önbelleği doğrula (Otomatik geçersiz kılma)
         if !cacheService.validateCache(against: currentHash) {
             await MainActor.run { warmupProgress = "Cache outdated. Clearing..." }
             cacheService.clearCache()
         }
         
-        // 3. Warm-up all questions
+        // 3. Tüm soruları ısıt
         for (index, item) in items.enumerated() {
             await MainActor.run {
                 warmupProgress = "Processing \(index + 1)/\(items.count): \(item.category)"
@@ -100,7 +100,7 @@ class CheatSheetViewModel: ObservableObject {
                 )
                 fullAnswer = processedResponse.text
                 
-                // Save to cache
+                // Önbelleğe kaydet
                 cacheService.saveResponse(
                     question: item.question,
                     answer: fullAnswer,
@@ -111,7 +111,7 @@ class CheatSheetViewModel: ObservableObject {
             }
         }
         
-        // 4. Save hash
+        // 4. Özeti kaydet
         cacheService.saveSourceHash(currentHash)
         
         await MainActor.run {

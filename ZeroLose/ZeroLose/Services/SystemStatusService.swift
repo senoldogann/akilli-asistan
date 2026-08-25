@@ -3,7 +3,7 @@ import Foundation
 import os
 import CoreAudio
 
-/// Provides real-time information about the macOS system state for AI context.
+/// MacOS sistem durumu hakkında AI bağlamı için gerçek zamanlı bilgi sağlar.
 actor SystemStatusService {
     private let logger = Logger(subsystem: "com.zerolose", category: "system-status")
     
@@ -15,7 +15,7 @@ actor SystemStatusService {
         let isMuted: Bool
     }
     
-    /// Collects a summary of the current system state, including RAM usage.
+    /// RAM kullanımı dahil mevcut sistem durumunun bir özetini toplar.
     func getSystemContextSummary() async -> String {
         let frontmost = NSWorkspace.shared.frontmostApplication?.localizedName ?? "Unknown"
         
@@ -44,15 +44,18 @@ actor SystemStatusService {
         guard let trashURL = fileManager.urls(for: .trashDirectory, in: .userDomainMask).first else { return 0 }
         do {
             return try fileManager.contentsOfDirectory(at: trashURL, includingPropertiesForKeys: nil, options: .skipsHiddenFiles).count
-        } catch { return 0 }
+        } catch {
+            logger.error("Çöp kutusu içeriği okunamadı: \(error.localizedDescription, privacy: .public)")
+            return 0
+        }
     }
     
     private func getVolumeSettings() -> (Int, Bool) {
         let script = NSAppleScript(source: "get volume settings")
         var error: NSDictionary?
         if let desc = script?.executeAndReturnError(&error) {
-            let vol = Int(desc.atIndex(1)?.int32Value ?? 0) // Output volume
-            let muted = desc.atIndex(3)?.booleanValue ?? false // Output muted
+            let vol = Int(desc.atIndex(1)?.int32Value ?? 0) // Çıkış ses düzeyi
+            let muted = desc.atIndex(3)?.booleanValue ?? false // Çıkış sessiz mi
             return (vol, muted)
         }
         return (0, false)
@@ -76,9 +79,9 @@ actor SystemStatusService {
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             guard let output = String(data: data, encoding: .utf8) else { return "Unknown" }
             
-            // Parse: PID RSS
+            // Ayrıştır: PID RSS
             var pidToRSS: [Int32: Int] = [:]
-            let lines = output.components(separatedBy: .newlines).dropFirst() // Skip header
+            let lines = output.components(separatedBy: .newlines).dropFirst() // Başlığı atla
             
             for line in lines {
                 let parts = line.trimmingCharacters(in: .whitespaces).components(separatedBy: .whitespaces).filter { !$0.isEmpty }
@@ -87,13 +90,13 @@ actor SystemStatusService {
                 }
             }
             
-            // Map back to apps and sort
+            // Uygulamalara geri eşle ve sırala
             let sortedApps = apps.compactMap { app -> (String, Int)? in
                 guard let rss = pidToRSS[app.processIdentifier] else { return nil }
                 return (app.localizedName ?? "Unknown", rss)
             }.sorted { $0.1 > $1.1 }
             
-            // Return top 3
+            // İlk 3 sonucu döndür
             return sortedApps.prefix(3).map { app in
                 let mb = Double(app.1) / 1024.0
                 return String(format: "%@ (%.0f MB)", app.0, mb)

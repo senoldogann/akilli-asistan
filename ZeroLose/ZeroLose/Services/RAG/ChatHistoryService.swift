@@ -1,7 +1,7 @@
 import Foundation
 import os
 
-/// Service for persisting and retrieving chat history for RAG
+/// RAG için sohbet geçmişini kalıcı hale getiren ve alan hizmet.
 actor ChatHistoryService {
     private let vectorStore: VectorStore
     private let documentProcessor: DocumentProcessor
@@ -10,7 +10,7 @@ actor ChatHistoryService {
     
     private var currentSessionID: String
     private var conversationBuffer: [String] = []
-    private let bufferSize = 2 // Save quickly (user+assistant pair) so RAG becomes active early
+    private let bufferSize = 2 // Hızlı kaydet (kullanıcı+asistan ikilisi) böylece RAG erken aktif olur
     
     init(vectorStore: VectorStore, documentProcessor: DocumentProcessor, embeddingService: OllamaEmbeddingService) {
         self.vectorStore = vectorStore
@@ -19,9 +19,9 @@ actor ChatHistoryService {
         self.currentSessionID = "session_\(UUID().uuidString.prefix(8))"
     }
     
-    // MARK: - Save Messages
+    // MARK: - Mesajları Kaydet
     
-    /// Add a message to the conversation buffer
+    /// Sohbet tamponuna bir mesaj ekler.
     func addMessage(text: String, isUser: Bool) async throws {
         let prefix = isUser ? "USER: " : "AI: "
         let message = "\(prefix)\(text)"
@@ -29,25 +29,25 @@ actor ChatHistoryService {
         conversationBuffer.append(message)
         logger.info("📝 Message added to buffer (\(self.conversationBuffer.count)/\(self.bufferSize))")
         
-        // Flush buffer when it reaches capacity
+        // Tampon kapasiteye ulaştığında boşalt
         if conversationBuffer.count >= bufferSize {
             try await flushBuffer()
         }
     }
     
-    /// Flush the conversation buffer to vector store
+    /// Sohbet tamponunu vektör deposuna boşaltır.
     func flushBuffer() async throws {
         guard !conversationBuffer.isEmpty else { return }
         
         logger.info("💾 Flushing \(self.conversationBuffer.count) messages to vector store...")
         
-        // Process chat messages into chunks
+        // Sohbet mesajlarını parçalara işle
         let chunks = await documentProcessor.processChatHistory(
             messages: conversationBuffer,
             sessionID: currentSessionID
         )
         
-        // Generate embeddings and insert
+        // Embedding üret ve ekle
         for chunk in chunks {
             let embedding = try await embeddingService.embedSingle(text: chunk.text)
             try await vectorStore.insert(chunk: chunk, embedding: embedding)
@@ -55,18 +55,18 @@ actor ChatHistoryService {
         
         logger.info("✅ Saved \(chunks.count) chunks from chat history")
         
-        // Clear buffer
+        // Tamponu temizle
         conversationBuffer.removeAll()
     }
     
-    /// Start a new conversation session
+    /// Yeni bir sohbet oturumu başlatır.
     func startNewSession() {
         currentSessionID = "session_\(UUID().uuidString.prefix(8))_\(Date().timeIntervalSince1970)"
         conversationBuffer.removeAll()
         logger.info("🆕 Started new session: \(self.currentSessionID)")
     }
     
-    /// Manually save current buffer (e.g., on app termination)
+    /// Mevcut tamponu elle kaydeder (örn. uygulama kapanışında)
     func saveAndClose() async throws {
         try await flushBuffer()
         logger.info("💾 Chat history saved on close")

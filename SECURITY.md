@@ -22,3 +22,10 @@ triaged and fixed before public disclosure when feasible.
 - Never commit API keys or credentials.
 - Assume model output is untrusted input.
 - Prefer allowlist-based command execution over free-form shell execution.
+- Verified: ZeroLose stores API keys in the macOS Keychain (via `Secrets.swift`); no
+  hardcoded keys are present in the source tree or the packaged binary.
+- Generated runtime artifacts (Xcode `DerivedData`, build logs, CCM vector caches,
+  `ZeroLose/dist`) are git-ignored and must never be committed.
+- Run `python3 scripts/verify_all.py` before declaring any provider/config change
+  complete; it validates provider config, git-ignore coverage, symlink contract,
+  and real secret presence.
