@@ -759,6 +759,77 @@ class GhostViewModel {
             }
             return
         }
+
+        // Açık "site/URL aç" isteklerini deterministik olarak yakala: ajan önbelleğe
+        // ya da mülakat biyografisi fast-path'ine düşüp kullanıcının istediği sayfayı
+        // açmadan düz metin cevap vermesin. "codex web sitesi aç", "github'ı aç",
+        // "https://example.com'a git" gibi ifadeler doğrudan doğrulanmış açma
+        // eylemine gider; modelin `[ACTION]` üretmesine gerek kalmaz.
+        if resolvedAllowActions,
+           let browserURL = deterministicBrowserURL(for: cleanedText) {
+            Task { @MainActor in
+                do {
+                    if showUserMessage {
+                        addMessage(text, isUser: true)
+                    }
+                    let commandLine = "Tarayıcıda aç: \(browserURL.absoluteString)"
+                    let toolMessageID = UUID()
+                    messages.append(
+                        ChatMessage(
+                            id: toolMessageID,
+                            text: commandLine,
+                            isUser: false,
+                            type: .text,
+                            toolRun: ChatMessage.ToolRun(
+                                kind: "browser",
+                                command: commandLine,
+                                status: .running,
+                                output: ""
+                            )
+                        )
+                    )
+                    let toolIndex = messages.count - 1
+                    let opened = openURL(browserURL)
+                    let sourceName = browserURL.host ?? browserURL.absoluteString
+                    let output = opened ? "Açıldı: \(sourceName)" : "URL açılamadı: \(browserURL.absoluteString)"
+                    var updated = messages[toolIndex]
+                    updated = ChatMessage(
+                        id: updated.id,
+                        text: updated.text,
+                        isUser: false,
+                        type: .text,
+                        toolRun: ChatMessage.ToolRun(
+                            kind: "browser",
+                            command: commandLine,
+                            status: .done,
+                            output: output
+                        )
+                    )
+                    messages[toolIndex] = updated
+                    statusMessage = "Ready"
+                } catch {
+                    statusMessage = "Error"
+                    if !messages.isEmpty {
+                        let idx = messages.count - 1
+                        var existing = messages[idx]
+                        existing = ChatMessage(
+                            id: existing.id,
+                            text: existing.text,
+                            isUser: false,
+                            type: .error,
+                            toolRun: ChatMessage.ToolRun(
+                                kind: "browser",
+                                command: existing.text,
+                                status: .error(error.localizedDescription),
+                                output: ""
+                            )
+                        )
+                        messages[idx] = existing
+                    }
+                }
+            }
+            return
+        }
         
         isBusy = true
         activeQuerySource = source
@@ -951,6 +1022,76 @@ class GhostViewModel {
         if normalized.contains("hangi klasör") || normalized.contains("bulunduğum") || normalized.contains("working directory") ||
            normalized == "pwd" || normalized.contains("aktif klasör") {
             return .pwd
+        }
+
+        return nil
+    }
+
+    /// "codex web sitesi aç", "github'ı aç", "https://example.com'a git" gibi
+    /// doğal dil isteklerinden bir tarayıcı URL'si çıkarır. Amaç, kullanıcının
+    /// görmek istediği sayfayı model üzerinden geçmeden güvenilir şekilde açmaktır.
+    /// Doğrudan URL verilmişse onu, aksi hâlde iyi bilinen site eşleşmelerini ve
+    /// "site adı .com" kalıbını kullanır. Tanınamazsa `nil` döner.
+    private func deterministicBrowserURL(for text: String) -> URL? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = trimmed.lowercased()
+        guard !normalized.isEmpty else { return nil }
+
+        // Açık bir URL verilmişse doğrudan kullan. `trimmed` üzerinde ararız;
+        // çünkü `normalized` (lowercased) farklı bir String olduğundan endeksleri
+        // `trimmed`'e doğrudan uygulanamaz.
+        if let lowerRange = trimmed.lowercased().range(of: "https://") {
+            let candidate = String(trimmed[lowerRange.upperBound...]).split(separator: " ").first.map(String.init) ?? ""
+            if let url = URL(string: "https://\(candidate)"), url.host != nil {
+                return url
+            }
+        }
+        if let lowerRange = trimmed.lowercased().range(of: "http://") {
+            let candidate = String(trimmed[lowerRange.upperBound...]).split(separator: " ").first.map(String.init) ?? ""
+            if let url = URL(string: "http://\(candidate)"), url.host != nil {
+                return url
+            }
+        }
+
+        // İyi bilinen kısayollar (Türkçe/İngilizce).
+        let knownSites: [String: String] = [
+            "codex": "https://chatgpt.com/codex/",
+            "openai": "https://openai.com/",
+            "github": "https://github.com/",
+            "youtube": "https://www.youtube.com/",
+            "google": "https://www.google.com/",
+            "chatgpt": "https://chatgpt.com/",
+            "linkedin": "https://www.linkedin.com/",
+            "twitter": "https://x.com/",
+            "x": "https://x.com/",
+            "spotify": "https://open.spotify.com/",
+            "stackoverflow": "https://stackoverflow.com/",
+            "reddit": "https://www.reddit.com/"
+        ]
+
+        // "Aç/git/site/websitesi/broser" niyetini doğrula: yalnızca kullanıcı açıkça
+        // bir sayfa görmek istiyorsa yakala, sohbette isim geçince değil.
+        let openIntentTokens = [
+            "aç", "ac", "open", "git", "go to", "siteye git", "websitesini aç",
+            "sitesi aç", "web sitesi aç", "web sitesine", "siteyi aç", "tarayıcıda aç"
+        ]
+        let hasOpenIntent = openIntentTokens.contains(where: { normalized.contains($0) })
+        guard hasOpenIntent else { return nil }
+
+        // "codex sitesi", "codex web sitesi" gibi ifadelerde geçen tanınan site adını bul.
+        for (key, urlString) in knownSites where normalized.contains(key) {
+            if let url = URL(string: urlString) {
+                return url
+            }
+        }
+
+        // "example.com aç" gibi domain kalıbı: "x.yyy" + .com/.net/.org/.io vb.
+        let domainPattern = #"\b[a-z0-9-]+\.(com|net|org|io|dev|app|ai|me|co|tr)\b"#
+        if let regex = try? NSRegularExpression(pattern: domainPattern),
+           let match = regex.firstMatch(in: normalized, range: NSRange(normalized.startIndex..., in: normalized)),
+           let range = Range(match.range, in: normalized) {
+            let domain = String(normalized[range])
+            return URL(string: "https://\(domain)")
         }
 
         return nil

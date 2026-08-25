@@ -165,6 +165,10 @@ class IntelligenceService {
         let normalizedQueryForIntent = InterviewKnowledgeMatcher.normalize(query)
         let compensationIntent = isCompensationIntent(normalizedQueryForIntent)
         let selfIntroIntent = isSelfIntroIntent(normalizedQueryForIntent)
+        // Kullanıcı bir eylem istiyorsa (site aç, uygulama çalıştır, terminal
+        // komutu, dosya sil, çöp kutusu boşalt vb.) önbellek/mülakat biyografisi
+        // fast-path'i eylemi yutmamalı. Modelin `[ACTION]` üretmesine izin ver.
+        let imperativeActionIntent = allowAgentActions && Self.isImperativeActionIntent(normalizedQueryForIntent)
         let isCodingQuery = imageData == nil && Self.isCodingRelatedQuery(normalizedQueryForIntent)
         let isSelfContainedCodingQuery = imageData == nil && Self.isSelfContainedCodingDebugQuery(query)
         let activeRoleProfile = currentActiveRoleProfile()
@@ -308,7 +312,7 @@ class IntelligenceService {
             profile: responseProfile
         )
 
-        let bypassCache = forceAIReasoning || shouldBypassCache(for: searchDecision)
+        let bypassCache = forceAIReasoning || imperativeActionIntent || shouldBypassCache(for: searchDecision)
         
         // 0. ÖNBELLEK KONTROLÜ
         if !bypassCache, !shouldPreferInterviewKnowledgeOverCache, let cachedAnswer = cacheService.getResponse(for: query) {
@@ -1333,6 +1337,29 @@ class IntelligenceService {
             "itsestasi", "itsestäsi", "sinusta", "aboutyourself", "yourself", "introduce", "intro"
         ]
         return containsAnyToken(in: normalizedQuery, tokens: introTokens)
+    }
+
+    /// Kullanıcının kendisine bir işlem yapmasını istediğini belirler. Bu niyet
+    /// algılanırsa önbellek/mülakat biyografisi fast-path'i atlanır; böylece
+    /// "codex sitesini aç", "Safari'yi çalıştır", "bu klasörü sil" gibi istekler
+    /// düz metin cevaba dönüşmeden model `[ACTION]` üretebilir.
+    nonisolated private static func isImperativeActionIntent(_ normalized: String) -> Bool {
+        guard !normalized.isEmpty else { return false }
+        let imperativeTokens = [
+            // Türkçe eylem fiileri
+            "aç", "ac", "çalıştır", "calistir", "başlat", "baslat", "göster", "goster",
+            "sil", "oluştur", "olustur", "taşı", "tasi", "yeniden adlandır",
+            "yeniden adlandir", "kapat", "boşalt", "bosalt", "temizle", "temiz",
+            "liste", "değiştir", "degistir", "uygula", "kopyala", "yapıştır", "yapistir",
+            "kıs", "kis", "sustur", "yükle", "yukle",
+            // Site/URL açma
+            "site", "sitesi", "web sitesi", "web sitesine", "url", "link", "tarayıcıda",
+            "browser", "sayfayı aç", "sayfayi ac", "açıver", "aciver",
+            // İngilizce eylemler
+            "open", "launch", "start", "run", "create", "delete", "remove", "move",
+            "rename", "close", "empty", "list", "show", "open website", "go to"
+        ]
+        return imperativeTokens.contains(where: { normalized.contains($0) })
     }
 
     private func isCompensationIntent(_ normalizedQuery: String) -> Bool {
