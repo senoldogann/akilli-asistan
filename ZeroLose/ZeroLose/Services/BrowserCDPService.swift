@@ -175,6 +175,11 @@ final class BrowserCDPService {
     func auditPage() async throws -> String {
         (try await sendBridge("audit", []) as? String) ?? ""
     }
+
+    /// Sayfada rastgele bir JS ifadesi çalıştırır (doğrulama/debug için).
+    func evaluateCustom(_ expression: String) async throws -> String {
+        (try await sendBridge("evaluate", [expression]) as? String) ?? ""
+    }
 }
 
 /// Köprü stdout'undan gelen satırları thread-safe biriktiren yardımcı.
