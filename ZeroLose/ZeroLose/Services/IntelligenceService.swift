@@ -47,6 +47,17 @@ class IntelligenceService {
     
     private var conversationHistory: [OllamaService.ChatMessage] = []
     private let maxHistoryLimit = 15 // Bağlam için son 15 mesajı sakla
+
+    /// Modele GERÇEKTE gönderilecek sohbet geçmişinin kaba token tahmini.
+    /// Konteks sayacı bunu kullanır (UI'nin 220 mesajlık görünür listesi değil),
+    /// böylece sayaç gerçek gönderilen bağlamı yansıtır.
+    var contextTokenEstimate: Int {
+        conversationHistory.reduce(0) { partial, message in
+            let text = message.content
+            let charCount = text.count + (message.images?.count ?? 0) * 1200
+            return partial + max(1, charCount / 4)
+        }
+    }
     private let conciseHistoryLimit = 8
     private var transientPersonaContext: String = ""
     private var cachedActiveRoleDescription: String = ""
@@ -138,6 +149,7 @@ class IntelligenceService {
         allowAgentActions: Bool = false,
         processingMode: ProcessingMode = .automatic,
         detectedLanguage: String? = nil,
+        nativeToolExecutor: AgentToolExecutor? = nil,
         onStatusUpdate: @escaping (String) -> Void,
         onPartialResponse: @escaping (String) -> Void,
         onPartialThinking: ((String) -> Void)? = nil
@@ -163,6 +175,7 @@ class IntelligenceService {
             .split(separator: " ")
             .count
         let normalizedQueryForIntent = InterviewKnowledgeMatcher.normalize(query)
+        let capabilityDiscoveryIntent = Self.isCapabilityDiscoveryQuery(normalizedQueryForIntent)
         let compensationIntent = isCompensationIntent(normalizedQueryForIntent)
         let selfIntroIntent = isSelfIntroIntent(normalizedQueryForIntent)
         // Kullanıcı bir eylem istiyorsa (site aç, uygulama çalıştır, terminal
@@ -208,6 +221,7 @@ class IntelligenceService {
 
         if !forceAIReasoning,
            imageData == nil,
+           !capabilityDiscoveryIntent,
            Self.canUseInstantInterviewCache(
             isInterviewConcise: responseProfile == .interviewConcise,
             requiresWebSearch: searchDecision == .required,
@@ -242,7 +256,7 @@ class IntelligenceService {
         var interviewMatches: [InterviewKnowledgeMatch] = []
         var interviewFallbackAnchors: [InterviewKnowledgeMatch] = []
         var multiQuestionPromptContext = ""
-        if imageData == nil && !isSelfContainedCodingQuery {
+        if imageData == nil && !isSelfContainedCodingQuery && !capabilityDiscoveryIntent {
             await MainActor.run { onStatusUpdate("Checking interview notes + vault...") }
             let vaultResultLimit: Int = {
                 if responseProfile == .interviewConcise {
@@ -256,9 +270,10 @@ class IntelligenceService {
                 minimumScore: 0.16,
                 codingOnly: isCodingQuery
             )
-            finalLanguageCode = resolvedInterviewLanguageCode(
+            finalLanguageCode = Self.resolvedInterviewLanguageCode(
                 currentLanguageCode: finalLanguageCode,
-                topMatch: interviewMatches.first
+                topMatch: interviewMatches.first,
+                spokenLanguageCode: detectedLanguage
             )
 
             let strongestPrimaryScore = interviewMatches.first?.score ?? 0
@@ -299,6 +314,7 @@ class IntelligenceService {
         }
         let strongestInterviewScore = interviewMatches.first?.score ?? 0
         let shouldPreferInterviewKnowledgeOverCache =
+            capabilityDiscoveryIntent ||
             isCodingQuery ||
             isMultiQuestionQuery ||
             isFollowUpQuery ||
@@ -346,6 +362,7 @@ class IntelligenceService {
         // Düşük gecikmeli mülakat akışı için varyant-farkındalıklı doğrudan mülakat yanıtı.
         if !forceAIReasoning,
            imageData == nil,
+           !capabilityDiscoveryIntent,
            !isFollowUpQuery,
            searchDecision != .required,
            responseProfile == .interviewConcise,
@@ -439,6 +456,7 @@ class IntelligenceService {
         var ragContext = ""
         
         let shouldSkipRAGForInterview =
+            !capabilityDiscoveryIntent &&
             responseProfile == .interviewConcise &&
             imageData == nil &&
             !interviewGroundingContext.isEmpty &&
@@ -502,7 +520,13 @@ class IntelligenceService {
                     let searchDetailLevel: TavilyService.DetailLevel =
                         responseProfile == .interviewConcise ? .brief : .detailed
                     let preparedWebQuery = TavilyService.preferredQuery(from: query)
-                    searchContext = try await tavilyService.search(query: preparedWebQuery, detailLevel: searchDetailLevel)
+                    searchContext = try await tavilyService.search(
+                        query: preparedWebQuery,
+                        detailLevel: searchDetailLevel,
+                        onProgress: { progress in
+                            Task { @MainActor in onStatusUpdate("Web: \(progress)") }
+                        }
+                    )
                     webSearchSucceeded = true
                     await MainActor.run { onStatusUpdate("Synthesizing...") }
                 } catch {
@@ -525,15 +549,19 @@ class IntelligenceService {
         }
         
         // 2. SİSTEM PROMPT'UNU OLUŞTUR
-        let rolePrompt: String = (imageData != nil) ? 
-            "senior software engineer identifying issues from a screen capture. CRITICAL: Identify language of text in image FIRST, then respond IN THAT LANGUAGE." : 
-            (isSelfContainedCodingQuery
-             ? "senior software engineer debugging and fixing production code quickly and clearly"
-             : (isCodingQuery
-             ? "senior software engineer solving a coding problem quickly and clearly"
-             : "senior software engineer assistant in a live interview/meeting")
-            )
-            
+        let rolePrompt: String
+        if capabilityDiscoveryIntent {
+            rolePrompt = "helpful general-purpose desktop AI agent explaining its actual capabilities and available tools"
+        } else if imageData != nil {
+            rolePrompt = "senior software engineer identifying issues from a screen capture. CRITICAL: Identify language of text in image FIRST, then respond IN THAT LANGUAGE."
+        } else if isSelfContainedCodingQuery {
+            rolePrompt = "senior software engineer debugging and fixing production code quickly and clearly"
+        } else if isCodingQuery {
+            rolePrompt = "senior software engineer solving a coding problem quickly and clearly"
+        } else {
+            rolePrompt = "senior software engineer assistant in a live interview/meeting"
+        }
+
         let storedPersona = UserDefaults.standard.string(forKey: "userPersonaContext") ?? ""
         let persistentPersona = storedPersona.trimmingCharacters(in: .whitespacesAndNewlines)
         let sessionPersona = transientPersonaContext.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -609,6 +637,13 @@ class IntelligenceService {
         }
 
         let responseStyleInstruction = responseStyleInstruction(for: responseProfile)
+        let capabilityInstruction = capabilityDiscoveryIntent ? """
+            - The user is asking what you can do in this application, not about their interview role.
+            - Answer directly about the actual capabilities listed below: chat, live web search, file reading, safe terminal inspection, screen/image analysis, clipboard, system status, and approved desktop/app automation.
+            - Do not answer as an interview candidate, frontend developer, or employee. Do not invent a role, team, company, project, or experience.
+            - Explain that web search is automatic for current/fresh/uncertain questions and can also be explicitly forced from the Web Search control.
+            - Mention that destructive actions and desktop mutations require confirmation according to the selected approval mode.
+            """ : ""
         let codingInstruction = isCodingQuery
             ? """
             - This is a coding-focused request. Answer the coding question directly without overthinking aloud.
@@ -689,6 +724,7 @@ class IntelligenceService {
         
         4. RESPONSE STYLE:
            \(responseStyleInstruction)
+           \(capabilityInstruction)
            \(codingInstruction)
            - Write in natural spoken language for read-aloud (not robotic, no slang overload).
            - Understand the exact question before answering; avoid irrelevant detours.
@@ -762,6 +798,7 @@ class IntelligenceService {
         let shouldUseActionFastPath = allowAgentActions && (isSlashCommand || isSystemCommand)
         let strongestInterviewGroundingScore = interviewMatches.first?.score ?? 0
         let shouldUseFastInterviewFallback =
+            !capabilityDiscoveryIntent &&
             imageData == nil &&
             responseProfile == .interviewConcise &&
             !isCodingQuery &&
@@ -769,6 +806,7 @@ class IntelligenceService {
             !shouldUseActionFastPath &&
             searchDecision != .required
         let shouldUseSingleShotInterviewReply =
+            !capabilityDiscoveryIntent &&
             shouldSkipRAGForInterview &&
             !shouldUseActionFastPath &&
             strongestInterviewGroundingScore >= 0.16
@@ -802,13 +840,21 @@ class IntelligenceService {
             var fullAnswer = ""
             var collectedThinking = ""
 
+            let useNativeTools = allowAgentActions && nativeToolExecutor != nil
             if shouldUseSingleShotInterviewReply {
                 logger.info("Using single-shot interview-grounded reply path (score: \(strongestInterviewGroundingScore, privacy: .public))")
-                fullAnswer = try await ollamaService.generate(messages: messages, model: model)
+                fullAnswer = try await ollamaService.generate(
+                    messages: messages,
+                    model: model,
+                    enableNativeTools: useNativeTools,
+                    toolExecutor: nativeToolExecutor
+                )
             } else {
                 try await ollamaService.generateStreaming(
                     messages: messages,
                     model: model,
+                    enableNativeTools: useNativeTools,
+                    toolExecutor: nativeToolExecutor,
                     onPartialResponse: { partialAnswer in
                         fullAnswer = partialAnswer
                         onPartialResponse(partialAnswer)
@@ -915,9 +961,12 @@ class IntelligenceService {
     /// Ajanın kendi kararıyla tetiklediği bir web aramasını çalıştırır.
     /// `[ACTION: {"type": "web_search", "query": "..."}]` etiketi geldiğinde
     /// çağrılır ve sonucu kullanıcıya aktarılmak üzere düz metne çevirir.
-    func performWebSearch(query: String) async throws -> String {
+    func performWebSearch(
+        query: String,
+        onProgress: (@Sendable (String) -> Void)? = nil
+    ) async throws -> String {
         let prepared = TavilyService.preferredQuery(from: query)
-        return try await tavilyService.search(query: prepared, detailLevel: .brief)
+        return try await tavilyService.search(query: prepared, detailLevel: .brief, onProgress: onProgress)
     }
     
     /// Günlüklerdeki hassas bilgileri gizler.
@@ -949,6 +998,12 @@ class IntelligenceService {
     
     private func searchDecisionForQuery(_ query: String) -> SearchDecision {
         let normalized = query.lowercased()
+
+        // Current/uncertain factual questions must search automatically; never
+        // delegate this decision to the model when a clear temporal signal exists.
+        if Self.isCurrentInformationQuery(normalized) {
+            return .required
+        }
 
         // Kendi kendine yeterli kodlama/hata ayıklama soruları, kullanıcı açıkça web/doküman/güncel bilgi istemedikçe yerel kalmalı.
         if Self.shouldSuppressAutomaticWebSearch(for: query) {
@@ -987,6 +1042,29 @@ class IntelligenceService {
         return .notNeeded
     }
     
+    nonisolated static func isCapabilityDiscoveryQuery(_ normalized: String) -> Bool {
+        let capabilitySignals = [
+            "bu sistemde", "bu uygulamada", "neler yapabilirsin", "ne yapabilirsin",
+            "neler yapabiliyorsun", "yeteneklerin", "özelliklerin", "hangi işlemleri",
+            "what can you do", "what are your capabilities", "your capabilities",
+            "what can you help me with"
+        ]
+        return capabilitySignals.contains { normalized.contains($0) }
+    }
+
+    nonisolated static func isCurrentInformationQuery(_ normalized: String) -> Bool {
+        let signals = [
+            "güncel", "en son", "şu an", "bugün", "dünya", "son durum", "haber",
+            "fiyat", "kur", "hava durumu", "en yeni", "çıktı mı", "yayınlandı mı",
+            "latest", "current", "today", "right now", "newest", "recent", "news",
+            "price", "exchange rate", "weather", "released", "announced", "who is"
+        ]
+        return signals.contains { signal in
+            if signal.contains(" ") { return normalized.contains(signal) }
+            return normalized.split(whereSeparator: { $0.isWhitespace || $0.isPunctuation }).contains { $0 == signal }
+        }
+    }
+
     private func containsAnyToken(in text: String, tokens: [String]) -> Bool {
         tokens.contains { token in
             text.contains(token)
@@ -2218,11 +2296,28 @@ class IntelligenceService {
         return shortAnswerCode == shortQueryCode
     }
 
-    private func resolvedInterviewLanguageCode(
+    nonisolated static func resolvedInterviewLanguageCode(
         currentLanguageCode: String?,
-        topMatch: InterviewKnowledgeMatch?
+        topMatch: InterviewKnowledgeMatch?,
+        spokenLanguageCode: String? = nil
     ) -> String? {
         let normalizedCurrent = String((currentLanguageCode ?? "en").lowercased().prefix(2))
+
+        // Konuşma/transkripsiyon bir dil TESPIT ettiyse bu kesin kaynaktır:
+        // görüşmeci ne dilde konuşuyorsa o dilde cevap verilir. Vault/not
+        // dil bilgisi gerçekte konuşulan dili ASLA ezmemelidir (örn. Fince
+        // vault kaydı varken aday İngilizce/Türkçe sorulsa bile Fince cevap
+        // vermemeli).
+        let trimmedSpoken = spokenLanguageCode?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        if !trimmedSpoken.isEmpty, trimmedSpoken != "auto" {
+            switch String(trimmedSpoken.prefix(2)) {
+            case "en", "tr", "fi":
+                return String(trimmedSpoken.prefix(2))
+            default:
+                break
+            }
+        }
+
         guard let topMatch else { return normalizedCurrent }
 
         // Kanıt zayıf olduğunda mevcut kilidi koru.
@@ -2238,7 +2333,9 @@ class IntelligenceService {
         let shortQuestionLanguage = String((questionLanguage ?? "").prefix(2))
         let shortAnswerLanguage = String((answerLanguage ?? "").prefix(2))
 
-        // Tespit İngilizceye varsayılan döndüyse ancak en güçlü kasa kanıtı Fince ise Finceye kilitle.
+        // Spoken bir dil tespiti olmadiginda (ör. yazılı/metin sorgusu veya
+        // belirsiz "en" varsayilani) güçlü Fince kasa kanıtı varsa Finceyi
+        // ipucu olarak kullanır.
         if normalizedCurrent == "en",
            (shortQuestionLanguage == "fi" || shortAnswerLanguage == "fi") {
             return "fi"

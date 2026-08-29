@@ -24,6 +24,49 @@ enum LLMProvider: String, Sendable, CaseIterable {
 enum AIModelNames: Sendable {
     nonisolated private static let providerKey = "llm_provider"
 
+    /// Tests and callers can explicitly choose a provider without depending on
+    /// whichever API keys happen to exist in the local machine environment.
+    nonisolated static func currentProvider(forced provider: LLMProvider? = nil) -> LLMProvider {
+        if let provider { return provider }
+        return LLMProvider(rawValue: UserDefaults.standard.string(forKey: providerKey) ?? "") ?? .ollama
+    }
+
+    /// Native reasoning-effort values exposed by each provider/model family.
+    /// `nil` means the provider does not expose a supported effort control.
+    nonisolated static func reasoningEffortOptions(for provider: LLMProvider, model: String) -> [String] {
+        let normalized = model.lowercased()
+        switch provider {
+        case .openAI:
+            if normalized.contains("gpt-5") || normalized.contains("o1") || normalized.contains("o3") || normalized.contains("o4") {
+                return ["none", "low", "medium", "high", "xhigh"]
+            }
+            return []
+        case .deepSeek:
+            if normalized.contains("deepseek-v4") || normalized.contains("reason") {
+                return ["low", "high", "max"]
+            }
+            return []
+        case .openCodeZen, .openCodeGo:
+            // OpenCode proxies expose the native model controls where supported;
+            // the provider catalog may contain models with different capabilities.
+            if normalized.contains("gpt-5") || normalized.contains("o3") || normalized.contains("o4") ||
+                normalized.contains("deepseek-v4") || normalized.contains("glm-5") || normalized.contains("qwen3") {
+                return ["low", "medium", "high", "xhigh"]
+            }
+            return []
+        case .ollama:
+            return []
+        }
+    }
+
+    nonisolated static func defaultReasoningEffort(for provider: LLMProvider, model: String) -> String? {
+        reasoningEffortOptions(for: provider, model: model).last
+    }
+
+    nonisolated static func reasoningEffortStorageKey(for provider: LLMProvider) -> String {
+        "reasoning_effort_\(provider.rawValue)"
+    }
+
     internal nonisolated static var providerStorageKey: String { providerKey }
 
     nonisolated private static let openAIVisionModel = "gpt-5-mini"
@@ -213,12 +256,46 @@ enum AIModelNames: Sendable {
         }
     }
 
-    /// Conservative context-window size (tokens) for the active provider.
-    /// These are safe lower bounds used only by the UI fullness meter; the real
-    /// model-specific window may be larger. Keeping a provider-level value means
-    /// the meter reflects the actual conversation budget instead of a hardcoded
-    /// 128k that under-reports on small-window models.
-    nonisolated static func contextWindow(forProvider provider: LLMProvider) -> Int {
+    /// Konteks penceresi (token) — model bazlıdır. UI doluluk sayacı bu değeri
+    /// kullanır; bilinen model ailelerinin gerçek pencere boyutlarını yansıtır,
+    /// bilinmeyen modellerde provider-seviyesi muhafazakâr alt sınıra düşer.
+    nonisolated static func contextWindow(forProvider provider: LLMProvider, model: String) -> Int {
+        let normalized = model.lowercased()
+
+        // 1M konteks aileleri
+        if normalized.contains("codex")
+            || normalized.contains("claude")
+            || normalized.contains("gemini")
+            || normalized.contains("1m")
+            || normalized.contains("1-million") {
+            return 1_000_000
+        }
+
+        // 400k frontier reasoning aileleri
+        if normalized.contains("gpt-5")
+            || normalized.contains("o1")
+            || normalized.contains("o3")
+            || normalized.contains("o4") {
+            return 400_000
+        }
+
+        // 256k aileleri
+        if normalized.contains("qwen3")
+            || normalized.contains("grok") {
+            return 256_000
+        }
+
+        // 128k aileleri
+        if normalized.contains("deepseek")
+            || normalized.contains("glm")
+            || normalized.contains("kimi")
+            || normalized.contains("minimax")
+            || normalized.contains("gpt-4")
+            || normalized.contains("nemotron") {
+            return 128_000
+        }
+
+        // Provider-seviyesi muhafazakâr varsayılanlar
         switch provider {
         case .openAI:
             return 128_000
@@ -229,8 +306,13 @@ enum AIModelNames: Sendable {
         case .openCodeGo:
             return 200_000
         case .ollama:
-            return 128_000
+            return 32_000
         }
+    }
+
+    /// Model belirtilmeden çağrılan eski imza; bilinmeyen model gibi davranır.
+    nonisolated static func contextWindow(forProvider provider: LLMProvider) -> Int {
+        contextWindow(forProvider: provider, model: "")
     }
 
     private nonisolated static func fallbackProvider() -> LLMProvider {

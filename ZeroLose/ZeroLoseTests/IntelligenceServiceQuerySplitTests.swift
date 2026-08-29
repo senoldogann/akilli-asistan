@@ -2,6 +2,18 @@ import XCTest
 @testable import ZeroLose
 
 final class IntelligenceServiceQuerySplitTests: XCTestCase {
+    func testCapabilityDiscoveryIsRecognizedInTurkish() {
+        XCTAssertTrue(IntelligenceService.isCapabilityDiscoveryQuery("merhaba bu sistemde benim için neler yapabilirsiniz"))
+        XCTAssertTrue(IntelligenceService.isCapabilityDiscoveryQuery("what can you do"))
+        XCTAssertFalse(IntelligenceService.isCapabilityDiscoveryQuery("frontend ekibi ne kullanıyor"))
+    }
+
+    func testCurrentInformationQueriesAreMarkedForLiveSearch() {
+        XCTAssertTrue(IntelligenceService.isCurrentInformationQuery("dünyanın en yeni yanardağı nedir"))
+        XCTAssertTrue(IntelligenceService.isCurrentInformationQuery("what is the latest Swift release"))
+        XCTAssertFalse(IntelligenceService.isCurrentInformationQuery("Swift'te closure nedir"))
+    }
+
     func testSplitQuestionSegmentsHandlesTwoFinnishQuestions() {
         let query = "Voitko kertoa itsestäsi? Miksi Loihde?"
         let segments = IntelligenceService.splitQuestionSegments(query)
@@ -354,6 +366,76 @@ final class IntelligenceServiceQuerySplitTests: XCTestCase {
         XCTAssertEqual(finnish, "fi")
         XCTAssertEqual(english, "en")
         XCTAssertEqual(turkish, "tr")
+    }
+
+    /// Konuşma/transkripsiyon açıkça bir dil tespit ettiğinde, güçlü Fince
+    /// vault kanıtı olsa bile cevap dili KESİNLİKLE konuşulan dile göre
+    /// belirlenir. Aday İngilizce sorulsa Fince vault notu yüzünden Fince
+    /// cevap verilmemelidir.
+    func testResolvedInterviewLanguageNeverOverriddenByVaultWhenSpokenLanguageDetected() {
+        let finnishVaultMatch = InterviewKnowledgeMatch(
+            record: InterviewKnowledgeRecord(
+                category: "Teknologia",
+                question: "Mikä on vahvin teknologiasi rakentamisessa?",
+                answer: "Vahvin teknologiani on tehokkuuteen keskittynyt palvelinratkaisu.",
+                keyPoints: []
+            ),
+            score: 0.92,
+            matchedTokenCount: 2
+        )
+
+        // Aday İngilizce konuşuyor -> Fince vault notu olsa bile EN kalmalı.
+        let englishSpoken = IntelligenceService.resolvedInterviewLanguageCode(
+            currentLanguageCode: "en",
+            topMatch: finnishVaultMatch,
+            spokenLanguageCode: "en"
+        )
+        XCTAssertEqual(englishSpoken, "en")
+
+        // Aday Türkçe konuşuyor -> Fince vault notu olsa bile TR kalmalı.
+        let turkishSpoken = IntelligenceService.resolvedInterviewLanguageCode(
+            currentLanguageCode: "tr",
+            topMatch: finnishVaultMatch,
+            spokenLanguageCode: "tr"
+        )
+        XCTAssertEqual(turkishSpoken, "tr")
+
+        // Aday Fince konuşuyor -> FI korunur.
+        let finnishSpoken = IntelligenceService.resolvedInterviewLanguageCode(
+            currentLanguageCode: "fi",
+            topMatch: finnishVaultMatch,
+            spokenLanguageCode: "fi"
+        )
+        XCTAssertEqual(finnishSpoken, "fi")
+    }
+
+    /// Spoken dil sinyali YOKKEN (metin sorgusu / belirsiz en-varsayılanı)
+    /// güçlü Fince vault kanıtı varsa hâlâ ipucu olarak Finceye düşer.
+    func testResolvedInterviewLanguageUsesVaultHintOnlyWhenNoSpokenLanguage() {
+        let finnishVaultMatch = InterviewKnowledgeMatch(
+            record: InterviewKnowledgeRecord(
+                category: "Teknologia",
+                question: "Mikä on vahvin teknologiasi rakentamisessa?",
+                answer: "Vahvin teknologiani on tehokkuuteen keskittynyt palvelinratkaisu.",
+                keyPoints: []
+            ),
+            score: 0.9,
+            matchedTokenCount: 2
+        )
+
+        let withVaultHint = IntelligenceService.resolvedInterviewLanguageCode(
+            currentLanguageCode: "en",
+            topMatch: finnishVaultMatch,
+            spokenLanguageCode: nil
+        )
+        XCTAssertEqual(withVaultHint, "fi")
+
+        let noMatch = IntelligenceService.resolvedInterviewLanguageCode(
+            currentLanguageCode: "en",
+            topMatch: nil,
+            spokenLanguageCode: nil
+        )
+        XCTAssertEqual(noMatch, "en")
     }
 
     func testShouldSuppressAutomaticWebSearchForSelfContainedCodeQuestion() {

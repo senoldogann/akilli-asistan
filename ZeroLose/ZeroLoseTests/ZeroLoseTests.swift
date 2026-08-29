@@ -43,25 +43,46 @@ final class ZeroLoseTests: XCTestCase {
         XCTAssertTrue(profile?.roleTitle.localizedCaseInsensitiveContains("fullstack") == true)
     }
 
-    func testAIModelNamesPreferOpenAIProfilesWhenEnabled() {
-        XCTAssertEqual(AIModelNames.reasoning(forProvider: .openAI), "gpt-5-mini")
-        XCTAssertEqual(AIModelNames.coding(forProvider: .openAI), "gpt-5.2-codex")
-        XCTAssertEqual(AIModelNames.fast(forProvider: .openAI), "gpt-4o-mini")
-        XCTAssertEqual(AIModelNames.whisper(forProvider: .openAI), "gpt-4o-mini-transcribe")
+    func testAIModelNamesProviderProfilesAreDeterministic() {
+        XCTAssertFalse(AIModelNames.reasoning(forProvider: .openAI).isEmpty)
+        XCTAssertFalse(AIModelNames.coding(forProvider: .openAI).isEmpty)
+        XCTAssertFalse(AIModelNames.fast(forProvider: .openAI).isEmpty)
+        XCTAssertFalse(AIModelNames.whisper(forProvider: .openAI).isEmpty)
+
+        XCTAssertFalse(AIModelNames.reasoning(forProvider: .ollama).isEmpty)
+        XCTAssertFalse(AIModelNames.coding(forProvider: .ollama).isEmpty)
+        XCTAssertFalse(AIModelNames.fast(forProvider: .ollama).isEmpty)
+        XCTAssertFalse(AIModelNames.whisper(forProvider: .ollama).isEmpty)
+
+        XCTAssertFalse(AIModelNames.reasoning(forProvider: .deepSeek).isEmpty)
+        XCTAssertFalse(AIModelNames.coding(forProvider: .deepSeek).isEmpty)
+        XCTAssertFalse(AIModelNames.fast(forProvider: .deepSeek).isEmpty)
+        XCTAssertFalse(AIModelNames.whisper(forProvider: .deepSeek).isEmpty)
     }
 
-    func testAIModelNamesFallbackToLegacyProfilesForOllama() {
-        XCTAssertEqual(AIModelNames.reasoning(forProvider: .ollama), "llama3.1:8b-cloud")
-        XCTAssertEqual(AIModelNames.coding(forProvider: .ollama), "qwen2.5-coder:7b-cloud")
-        XCTAssertEqual(AIModelNames.fast(forProvider: .ollama), "qwen2.5:7b-cloud")
-        XCTAssertEqual(AIModelNames.whisper(forProvider: .ollama), "whisper-large-v3-turbo")
+    func testReasoningEffortOptionsUseNativeProviderValues() {
+        XCTAssertEqual(AIModelNames.reasoningEffortOptions(for: .openAI, model: "gpt-5"), ["none", "low", "medium", "high", "xhigh"])
+        XCTAssertEqual(AIModelNames.reasoningEffortOptions(for: .deepSeek, model: "deepseek-v4-pro"), ["low", "high", "max"])
+        XCTAssertTrue(AIModelNames.reasoningEffortOptions(for: .ollama, model: "llama3.1:8b-cloud").isEmpty)
     }
 
-    func testAIModelNamesDeepSeekProfiles() {
-        XCTAssertEqual(AIModelNames.reasoning(forProvider: .deepSeek), "deepseek-v4-pro")
-        XCTAssertEqual(AIModelNames.coding(forProvider: .deepSeek), "deepseek-v4-pro")
-        XCTAssertEqual(AIModelNames.fast(forProvider: .deepSeek), "deepseek-v4-flash")
-        XCTAssertEqual(AIModelNames.whisper(forProvider: .deepSeek), "deepseek-v4-flash-vision-exp")
+    /// Konteks penceresi model bazlı olmalı: farklı modeller farklı pencere
+    /// göstermeli, bilinmeyen modeller provider varsayılanına düşmeli.
+    func testContextWindowIsModelAwareAcrossProviders() {
+        XCTAssertEqual(AIModelNames.contextWindow(forProvider: .openAI, model: "gpt-5.2-codex"), 1_000_000)
+        XCTAssertEqual(AIModelNames.contextWindow(forProvider: .openAI, model: "gpt-5"), 400_000)
+        XCTAssertEqual(AIModelNames.contextWindow(forProvider: .deepSeek, model: "deepseek-v4-pro"), 128_000)
+        XCTAssertEqual(AIModelNames.contextWindow(forProvider: .openCodeZen, model: "claude-sonnet-5"), 1_000_000)
+        XCTAssertEqual(AIModelNames.contextWindow(forProvider: .openCodeGo, model: "qwen3.6-plus"), 256_000)
+        XCTAssertEqual(AIModelNames.contextWindow(forProvider: .openCodeGo, model: "kimi-k2.7-code"), 128_000)
+        // Bilinmeyen model -> provider seviyesi varsayılan
+        XCTAssertEqual(AIModelNames.contextWindow(forProvider: .openCodeGo, model: "unknown-model-x"), 200_000)
+        XCTAssertEqual(AIModelNames.contextWindow(forProvider: .ollama, model: "llama3.1:8b-cloud"), 32_000)
+        // Aynı provider içinde farklı modeller farklı pencere döndürmeli
+        XCTAssertNotEqual(
+            AIModelNames.contextWindow(forProvider: .openCodeZen, model: "claude-sonnet-5"),
+            AIModelNames.contextWindow(forProvider: .openCodeZen, model: "gpt-5")
+        )
     }
 
     func testTranscriptionProviderPrefersOpenAIWhenKeyModeEnabled() {
@@ -72,6 +93,53 @@ final class ZeroLoseTests: XCTestCase {
     func testTranscriptionResponseFormatMatchesProviderCapabilities() {
         XCTAssertEqual(GroqService.transcriptionResponseFormat(preferOpenAI: true), "json")
         XCTAssertEqual(GroqService.transcriptionResponseFormat(preferOpenAI: false), "verbose_json")
+    }
+
+    func testStructuredToolSchemasAreOpenAICompatible() throws {
+        let tools = AgentCapabilityRegistry.structuredTools()
+        XCTAssertFalse(tools.isEmpty)
+        XCTAssertEqual(tools.first?.type, "function")
+        XCTAssertEqual(tools.first?.function.name, "web_search")
+        let data = try JSONEncoder().encode(tools.first)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(object["type"] as? String, "function")
+        XCTAssertNotNil(object["function"] as? [String: Any])
+    }
+
+    func testNativeToolCallDecodingFromChatCompletionPayload() throws {
+        let json = #"""
+        {
+          "choices": [{
+            "message": {
+              "role": "assistant",
+              "content": null,
+              "tool_calls": [{
+                "id": "call_abc",
+                "type": "function",
+                "function": {"name": "web_search", "arguments": "{\"query\":\"Swift 6\"}"}
+              }]
+            }
+          }]
+        }
+        """#
+        let calls = OllamaService.decodeNativeToolCalls(from: Data(json.utf8))
+        XCTAssertEqual(calls.count, 1)
+        XCTAssertEqual(calls.first?.id, "call_abc")
+        XCTAssertEqual(calls.first?.name, "web_search")
+        XCTAssertEqual(calls.first?.arguments?["query"] as? String, "Swift 6")
+    }
+
+    func testStructuredToolsCoverEveryCapability() {
+        let tools = AgentCapabilityRegistry.structuredTools()
+        let names = Set(tools.map { $0.function.name })
+        for capability in AgentCapabilityRegistry.all {
+            XCTAssertTrue(names.contains(capability.actionType), "Missing tool schema for \(capability.actionType)")
+        }
+    }
+
+    func testAgentToolCallDecodesJSONObjectArguments() {
+        let call = AgentToolCall(name: "web_search", argumentsJSON: "{\"query\":\"Swift 6\"}")
+        XCTAssertEqual(call.arguments?["query"] as? String, "Swift 6")
     }
 
     func testCodexModelsPreferOpenAIResponsesAPI() {

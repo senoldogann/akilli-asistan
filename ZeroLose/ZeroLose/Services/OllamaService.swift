@@ -81,6 +81,7 @@ actor OllamaService {
         let model: String
         let messages: [OpenAIChatMessage]
         let stream: Bool
+        let tools: [AgentFunctionTool]?
         let thinking: ThinkingParam?
         let reasoning_effort: String?
 
@@ -88,19 +89,21 @@ actor OllamaService {
             model: String,
             messages: [OpenAIChatMessage],
             stream: Bool,
+            tools: [AgentFunctionTool]? = nil,
             thinking: ThinkingParam? = nil,
             reasoning_effort: String? = nil
         ) {
             self.model = model
             self.messages = messages
             self.stream = stream
+            self.tools = tools
             self.thinking = thinking
             self.reasoning_effort = reasoning_effort
         }
 
         // Omit nil optional fields so OpenAI/DeepSeek do not receive null params.
         private enum CodingKeys: String, CodingKey {
-            case model, messages, stream, thinking, reasoning_effort
+            case model, messages, stream, tools, thinking, reasoning_effort
         }
 
         func encode(to encoder: Encoder) throws {
@@ -108,6 +111,7 @@ actor OllamaService {
             try container.encode(model, forKey: .model)
             try container.encode(messages, forKey: .messages)
             try container.encode(stream, forKey: .stream)
+            try container.encodeIfPresent(tools, forKey: .tools)
             try container.encodeIfPresent(thinking, forKey: .thinking)
             try container.encodeIfPresent(reasoning_effort, forKey: .reasoning_effort)
         }
@@ -117,9 +121,60 @@ actor OllamaService {
         let type: String
     }
 
+    private struct OpenAIReasoning: Encodable, Sendable {
+        let effort: String
+    }
+
+    nonisolated private static func selectedReasoningEffort(for provider: LLMProvider, model: String) -> String? {
+        let options = AIModelNames.reasoningEffortOptions(for: provider, model: model)
+        guard !options.isEmpty else { return nil }
+        let stored = UserDefaults.standard.string(forKey: AIModelNames.reasoningEffortStorageKey(for: provider)) ?? ""
+        return options.contains(stored) ? stored : AIModelNames.defaultReasoningEffort(for: provider, model: model)
+    }
+
     private struct OpenAIChatMessage: Encodable, Sendable {
         let role: String
-        let content: [OpenAIContentPart]
+        let content: [OpenAIContentPart]?
+        let toolCalls: [ToolCallPayload]?
+        let toolCallID: String?
+
+        enum CodingKeys: String, CodingKey {
+            case role, content
+            case toolCalls = "tool_calls"
+            case toolCallID = "tool_call_id"
+        }
+
+        init(
+            role: String,
+            content: [OpenAIContentPart]?,
+            toolCalls: [ToolCallPayload]? = nil,
+            toolCallID: String? = nil
+        ) {
+            self.role = role
+            self.content = content
+            self.toolCalls = toolCalls
+            self.toolCallID = toolCallID
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(role, forKey: .role)
+            try container.encodeIfPresent(content, forKey: .content)
+            try container.encodeIfPresent(toolCalls, forKey: .toolCalls)
+            try container.encodeIfPresent(toolCallID, forKey: .toolCallID)
+        }
+    }
+
+    /// Assistant tool_calls payload sent back to the API in the next round.
+    private struct ToolCallPayload: Encodable, Sendable {
+        let id: String
+        let type: String
+        let function: Function
+
+        struct Function: Encodable, Sendable {
+            let name: String
+            let arguments: String
+        }
     }
 
     private struct OpenAIContentPart: Encodable, Sendable {
@@ -160,6 +215,17 @@ actor OllamaService {
         struct Message: Decodable, Sendable {
             let content: String?
             let reasoning_content: String?
+            let tool_calls: [ToolCall]?
+
+            struct ToolCall: Decodable, Sendable {
+                let id: String?
+                let function: Function
+
+                struct Function: Decodable, Sendable {
+                    let name: String
+                    let arguments: String
+                }
+            }
         }
     }
 
@@ -168,6 +234,8 @@ actor OllamaService {
         let input: [OpenAIResponseInputMessage]
         let stream: Bool
         let store: Bool
+        let reasoning: OpenAIReasoning?
+        let tools: [AgentFunctionTool]?
     }
 
     private struct OpenAIResponseInputMessage: Encodable, Sendable {
@@ -224,6 +292,18 @@ actor OllamaService {
         struct Delta: Decodable, Sendable {
             let content: String?
             let reasoning_content: String?
+            let tool_calls: [ToolCallDelta]?
+
+            struct ToolCallDelta: Decodable, Sendable {
+                let index: Int?
+                let id: String?
+                let function: FunctionDelta?
+
+                struct FunctionDelta: Decodable, Sendable {
+                    let name: String?
+                    let arguments: String?
+                }
+            }
             // OpenCode / Kimi models stream the trace under `reasoning`.
             let reasoning: String?
 
@@ -245,21 +325,27 @@ actor OllamaService {
         }
     }
 
-    func generate(messages: [ChatMessage], model: String? = nil) async throws -> String {
+    func generate(
+        messages: [ChatMessage],
+        model: String? = nil,
+        enableNativeTools: Bool = false,
+        toolExecutor: AgentToolExecutor? = nil
+    ) async throws -> String {
         let selectedModel = resolvedModel(from: messages, explicitModel: model)
+        let selectedEffort = Self.selectedReasoningEffort(for: AIModelNames.currentProvider(), model: selectedModel)
         let provider = provider(for: selectedModel)
         logger.info("Sending request... Provider: \(self.providerLabel(provider), privacy: .public) Model: \(selectedModel, privacy: .public) (Messages: \(messages.count))")
 
         return try await withRetry {
             switch provider {
             case .openAI:
-                return try await self.generateOpenAI(messages: messages, model: selectedModel)
+                return try await self.generateOpenAI(messages: messages, model: selectedModel, reasoningEffort: selectedEffort, enableNativeTools: enableNativeTools, toolExecutor: toolExecutor)
             case .deepSeek:
-                return try await self.generateDeepSeek(messages: messages, model: selectedModel)
+                return try await self.generateDeepSeek(messages: messages, model: selectedModel, reasoningEffort: selectedEffort, enableNativeTools: enableNativeTools, toolExecutor: toolExecutor)
             case .openCodeZen:
-                return try await self.generateOpenCodeZen(messages: messages, model: selectedModel)
+                return try await self.generateOpenCodeZen(messages: messages, model: selectedModel, reasoningEffort: selectedEffort, enableNativeTools: enableNativeTools, toolExecutor: toolExecutor)
             case .openCodeGo:
-                return try await self.generateOpenCodeGo(messages: messages, model: selectedModel)
+                return try await self.generateOpenCodeGo(messages: messages, model: selectedModel, reasoningEffort: selectedEffort, enableNativeTools: enableNativeTools, toolExecutor: toolExecutor)
             case .ollamaCloud:
                 return try await self.generateOllama(messages: messages, model: selectedModel)
             }
@@ -269,6 +355,8 @@ actor OllamaService {
     func generateStreaming(
         messages: [ChatMessage],
         model: String? = nil,
+        enableNativeTools: Bool = false,
+        toolExecutor: AgentToolExecutor? = nil,
         onPartialResponse: @escaping (String) -> Void,
         onPartialThinking: ((String) -> Void)? = nil
     ) async throws {
@@ -282,28 +370,36 @@ actor OllamaService {
                 messages: messages,
                 model: selectedModel,
                 onPartialResponse: onPartialResponse,
-                onPartialThinking: onPartialThinking
+                onPartialThinking: onPartialThinking,
+                enableNativeTools: enableNativeTools,
+                toolExecutor: toolExecutor
             )
         case .deepSeek:
             try await generateStreamingDeepSeek(
                 messages: messages,
                 model: selectedModel,
                 onPartialResponse: onPartialResponse,
-                onPartialThinking: onPartialThinking
+                onPartialThinking: onPartialThinking,
+                enableNativeTools: enableNativeTools,
+                toolExecutor: toolExecutor
             )
         case .openCodeZen:
             try await generateStreamingOpenCodeZen(
                 messages: messages,
                 model: selectedModel,
                 onPartialResponse: onPartialResponse,
-                onPartialThinking: onPartialThinking
+                onPartialThinking: onPartialThinking,
+                enableNativeTools: enableNativeTools,
+                toolExecutor: toolExecutor
             )
         case .openCodeGo:
             try await generateStreamingOpenCodeGo(
                 messages: messages,
                 model: selectedModel,
                 onPartialResponse: onPartialResponse,
-                onPartialThinking: onPartialThinking
+                onPartialThinking: onPartialThinking,
+                enableNativeTools: enableNativeTools,
+                toolExecutor: toolExecutor
             )
         case .ollamaCloud:
             try await generateStreamingOllama(
@@ -327,7 +423,6 @@ actor OllamaService {
     }
 
     private func provider(for model: String) -> Provider {
-        let normalizedModel = model.lowercased()
         switch AIModelNames.currentProvider() {
         case .openAI:
             return .openAI
@@ -360,58 +455,65 @@ actor OllamaService {
 
     // MARK: - OpenAI chat completions
 
-    private func generateOpenAI(messages: [ChatMessage], model: String) async throws -> String {
+    private func generateOpenAI(
+        messages: [ChatMessage],
+        model: String,
+        reasoningEffort: String? = nil,
+        enableNativeTools: Bool = false,
+        toolExecutor: AgentToolExecutor? = nil
+    ) async throws -> String {
         if Self.shouldUseResponsesAPI(for: model) {
-            return try await generateOpenAIResponses(messages: messages, model: model)
+            return try await generateOpenAIResponses(messages: messages, model: model, reasoningEffort: reasoningEffort)
         }
 
         let apiKey = Secrets.openAIApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !apiKey.isEmpty else {
             throw OllamaError.missingAPIKey("OpenAI API key is missing.")
         }
+        let effort = reasoningEffort ?? Self.selectedReasoningEffort(for: AIModelNames.currentProvider(), model: model)
 
-        let url = openAIBaseURL.appendingPathComponent("chat/completions")
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.timeoutInterval = 90
+        if enableNativeTools, let toolExecutor {
+            do {
+                return try await generateWithNativeToolLoop(
+                    model: model,
+                    messages: messages,
+                    reasoningEffort: effort,
+                    thinking: nil,
+                    executor: toolExecutor,
+                    send: { payload in
+                        try await self.sendOpenAICompatibleRound(
+                            baseURL: self.openAIBaseURL,
+                            apiKey: apiKey,
+                            label: "OpenAI",
+                            payload: payload
+                        )
+                    }
+                )
+            } catch OllamaError.serverError(let message) {
+                logger.warning("OpenAI native tool loop failed; falling back to single-shot: \(message, privacy: .public)")
+            }
+        }
 
         let payload = OpenAIChatCompletionRequest(
             model: model,
             messages: messages.map(Self.toOpenAIMessage),
-            stream: false
+            stream: false,
+            reasoning_effort: effort
         )
-        request.httpBody = try JSONEncoder().encode(payload)
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw OllamaError.serverError("Network Error")
+        let result = try await sendOpenAICompatibleRound(baseURL: openAIBaseURL, apiKey: apiKey, label: "OpenAI", payload: payload)
+        guard let content = result.choices.first?.message.content, !content.isEmpty else {
+            throw OllamaError.noData
         }
-
-        if httpResponse.statusCode != 200 {
-            let errorBody = String(data: data, encoding: .utf8) ?? "Unknown"
-            logger.error("OpenAI Error: \(httpResponse.statusCode, privacy: .public) | Body: \(errorBody, privacy: .public)")
-            throw OllamaError.serverError("OpenAI API Error (\(httpResponse.statusCode)): \(errorBody)")
-        }
-
-        do {
-            let result = try JSONDecoder().decode(OpenAIChatCompletionResponse.self, from: data)
-            guard let content = result.choices.first?.message.content, !content.isEmpty else {
-                throw OllamaError.noData
-            }
-            return content
-        } catch {
-            logger.error("OpenAI decode error: \(error.localizedDescription, privacy: .public)")
-            throw OllamaError.decodingError
-        }
+        return content
     }
 
     private func generateStreamingOpenAI(
         messages: [ChatMessage],
         model: String,
         onPartialResponse: @escaping (String) -> Void,
-        onPartialThinking: ((String) -> Void)? = nil
+        onPartialThinking: ((String) -> Void)? = nil,
+        enableNativeTools: Bool = false,
+        toolExecutor: AgentToolExecutor? = nil
     ) async throws {
         if Self.shouldUseResponsesAPI(for: model) {
             try await generateStreamingOpenAIResponses(messages: messages, model: model, onPartialResponse: onPartialResponse)
@@ -422,57 +524,50 @@ actor OllamaService {
         guard !apiKey.isEmpty else {
             throw OllamaError.missingAPIKey("OpenAI API key is missing.")
         }
+        let effort = Self.selectedReasoningEffort(for: AIModelNames.currentProvider(), model: model)
 
-        let url = openAIBaseURL.appendingPathComponent("chat/completions")
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.timeoutInterval = 90
-
-        let payload = OpenAIChatCompletionRequest(
-            model: model,
-            messages: messages.map(Self.toOpenAIMessage),
-            stream: true
-        )
-        request.httpBody = try JSONEncoder().encode(payload)
-
-        let (asyncBytes, response) = try await URLSession.shared.bytes(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw OllamaError.serverError("Network Error")
-        }
-
-        if httpResponse.statusCode != 200 {
-            let errorBody = try await Self.readAsyncErrorBody(from: asyncBytes)
-            throw OllamaError.serverError("OpenAI API Error (\(httpResponse.statusCode)): \(errorBody)")
-        }
-
-        var buffer = ""
-        for try await rawLine in asyncBytes.lines {
-            try Task.checkCancellation()
-
-            guard rawLine.hasPrefix("data: ") else { continue }
-            let payloadLine = String(rawLine.dropFirst(6))
-            if payloadLine == "[DONE]" {
-                break
-            }
-
+        if enableNativeTools, let toolExecutor {
             do {
-                let chunk = try JSONDecoder().decode(OpenAIStreamChunk.self, from: Data(payloadLine.utf8))
-                if let content = chunk.choices.first?.delta.content, !content.isEmpty {
-                    buffer += content
-                    onPartialResponse(buffer)
-                }
-                if let thinking = chunk.choices.first?.delta.thinking, !thinking.isEmpty {
-                    onPartialThinking?(thinking)
-                }
-            } catch {
-                logger.error("OpenAI stream decode error: \(error.localizedDescription, privacy: .public)")
+                try await generateStreamingWithNativeToolLoop(
+                    model: model,
+                    messages: messages,
+                    reasoningEffort: effort,
+                    thinking: nil,
+                    executor: toolExecutor,
+                    onPartialThinking: onPartialThinking,
+                    stream: { payload in
+                        try await self.streamOpenAICompatibleRound(
+                            baseURL: self.openAIBaseURL,
+                            apiKey: apiKey,
+                            label: "OpenAI",
+                            payload: payload,
+                            onPartialResponse: onPartialResponse,
+                            onPartialThinking: onPartialThinking
+                        )
+                    }
+                )
+                return
+            } catch OllamaError.serverError(let message) {
+                logger.warning("OpenAI native tool streaming failed; falling back to legacy: \(message, privacy: .public)")
             }
         }
+
+        _ = try await streamOpenAICompatibleRound(
+            baseURL: openAIBaseURL,
+            apiKey: apiKey,
+            label: "OpenAI",
+            payload: OpenAIChatCompletionRequest(
+                model: model,
+                messages: messages.map(Self.toOpenAIMessage),
+                stream: true,
+                reasoning_effort: effort
+            ),
+            onPartialResponse: onPartialResponse,
+            onPartialThinking: onPartialThinking
+        )
     }
 
-    private func generateOpenAIResponses(messages: [ChatMessage], model: String) async throws -> String {
+    private func generateOpenAIResponses(messages: [ChatMessage], model: String, reasoningEffort: String? = nil) async throws -> String {
         let apiKey = Secrets.openAIApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !apiKey.isEmpty else {
             throw OllamaError.missingAPIKey("OpenAI API key is missing.")
@@ -489,7 +584,9 @@ actor OllamaService {
             model: model,
             input: messages.map(Self.toOpenAIResponseMessage),
             stream: false,
-            store: false
+            store: false,
+            reasoning: reasoningEffort.map { OpenAIReasoning(effort: $0) },
+            tools: nil
         )
         request.httpBody = try JSONEncoder().encode(payload)
 
@@ -537,7 +634,9 @@ actor OllamaService {
             model: model,
             input: messages.map(Self.toOpenAIResponseMessage),
             stream: true,
-            store: false
+            store: false,
+            reasoning: Self.selectedReasoningEffort(for: AIModelNames.currentProvider(), model: model).map { OpenAIReasoning(effort: $0) },
+            tools: nil
         )
         request.httpBody = try JSONEncoder().encode(payload)
 
@@ -591,116 +690,116 @@ actor OllamaService {
         messages: [ChatMessage],
         model: String,
         onPartialResponse: @escaping (String) -> Void,
-        onPartialThinking: ((String) -> Void)? = nil
+        onPartialThinking: ((String) -> Void)? = nil,
+        enableNativeTools: Bool = false,
+        toolExecutor: AgentToolExecutor? = nil
     ) async throws {
         let apiKey = Secrets.deepSeekApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !apiKey.isEmpty else {
             throw OllamaError.missingAPIKey("DeepSeek API key is missing.")
         }
+        let effort = Self.selectedReasoningEffort(for: .deepSeek, model: model) ?? "high"
 
-        let url = deepSeekBaseURL.appendingPathComponent("chat/completions")
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue(
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-            forHTTPHeaderField: "User-Agent"
-        )
-        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-        request.timeoutInterval = 120
-
-        let payload = OpenAIChatCompletionRequest(
-            model: model,
-            messages: messages.map(Self.toOpenAIMessage),
-            stream: true,
-            thinking: ThinkingParam(type: "enabled"),
-            reasoning_effort: "high"
-        )
-        request.httpBody = try JSONEncoder().encode(payload)
-
-        let (asyncBytes, response) = try await URLSession.shared.bytes(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw OllamaError.serverError("Network Error")
-        }
-        if httpResponse.statusCode != 200 {
-            let errorBody = try await Self.readAsyncErrorBody(from: asyncBytes)
-            throw OllamaError.serverError("DeepSeek API Error (\(httpResponse.statusCode)): \(errorBody)")
-        }
-
-        var answerBuffer = ""
-        for try await rawLine in asyncBytes.lines {
-            try Task.checkCancellation()
-            guard rawLine.hasPrefix("data: ") else { continue }
-            let payloadLine = String(rawLine.dropFirst(6))
-            if payloadLine == "[DONE]" { break }
-
+        if enableNativeTools, let toolExecutor {
             do {
-                let chunk = try JSONDecoder().decode(OpenAIStreamChunk.self, from: Data(payloadLine.utf8))
-                if let thinking = chunk.choices.first?.delta.thinking, !thinking.isEmpty {
-                    onPartialThinking?(thinking)
-                }
-                if let content = chunk.choices.first?.delta.content, !content.isEmpty {
-                    answerBuffer += content
-                    onPartialResponse(answerBuffer)
-                }
-            } catch {
-                logger.error("DeepSeek stream decode error: \(error.localizedDescription, privacy: .public)")
+                try await generateStreamingWithNativeToolLoop(
+                    model: model,
+                    messages: messages,
+                    reasoningEffort: effort,
+                    thinking: ThinkingParam(type: "enabled"),
+                    executor: toolExecutor,
+                    onPartialThinking: onPartialThinking,
+                    stream: { payload in
+                        try await self.streamOpenAICompatibleRound(
+                            baseURL: self.deepSeekBaseURL,
+                            apiKey: apiKey,
+                            label: "DeepSeek",
+                            payload: payload,
+                            onPartialResponse: onPartialResponse,
+                            onPartialThinking: onPartialThinking
+                        )
+                    }
+                )
+                return
+            } catch OllamaError.serverError(let message) {
+                logger.warning("DeepSeek native tool streaming failed; falling back to legacy: \(message, privacy: .public)")
             }
         }
+
+        _ = try await streamOpenAICompatibleRound(
+            baseURL: deepSeekBaseURL,
+            apiKey: apiKey,
+            label: "DeepSeek",
+            payload: OpenAIChatCompletionRequest(
+                model: model,
+                messages: messages.map(Self.toOpenAIMessage),
+                stream: true,
+                thinking: ThinkingParam(type: "enabled"),
+                reasoning_effort: effort
+            ),
+            onPartialResponse: onPartialResponse,
+            onPartialThinking: onPartialThinking
+        )
     }
 
-    private func generateDeepSeek(messages: [ChatMessage], model: String) async throws -> String {
+    private func generateDeepSeek(
+        messages: [ChatMessage],
+        model: String,
+        reasoningEffort: String? = nil,
+        enableNativeTools: Bool = false,
+        toolExecutor: AgentToolExecutor? = nil
+    ) async throws -> String {
         let apiKey = Secrets.deepSeekApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !apiKey.isEmpty else {
             throw OllamaError.missingAPIKey("DeepSeek API key is missing.")
         }
+        let effort = reasoningEffort ?? Self.selectedReasoningEffort(for: .deepSeek, model: model) ?? "high"
 
-        let url = deepSeekBaseURL.appendingPathComponent("chat/completions")
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue(
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-            forHTTPHeaderField: "User-Agent"
-        )
-        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-        request.timeoutInterval = 120
+        if enableNativeTools, let toolExecutor {
+            do {
+                return try await generateWithNativeToolLoop(
+                    model: model,
+                    messages: messages,
+                    reasoningEffort: effort,
+                    thinking: ThinkingParam(type: "enabled"),
+                    executor: toolExecutor,
+                    send: { payload in
+                        try await self.sendOpenAICompatibleRound(
+                            baseURL: self.deepSeekBaseURL,
+                            apiKey: apiKey,
+                            label: "DeepSeek",
+                            payload: payload
+                        )
+                    }
+                )
+            } catch OllamaError.serverError(let message) {
+                logger.warning("DeepSeek native tool loop failed; falling back to single-shot: \(message, privacy: .public)")
+            }
+        }
 
         let payload = OpenAIChatCompletionRequest(
             model: model,
             messages: messages.map(Self.toOpenAIMessage),
             stream: false,
             thinking: ThinkingParam(type: "enabled"),
-            reasoning_effort: "high"
+            reasoning_effort: effort
         )
-        request.httpBody = try JSONEncoder().encode(payload)
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw OllamaError.serverError("Network Error")
+        let result = try await sendOpenAICompatibleRound(baseURL: deepSeekBaseURL, apiKey: apiKey, label: "DeepSeek", payload: payload)
+        guard let content = result.choices.first?.message.content, !content.isEmpty else {
+            throw OllamaError.noData
         }
-        if httpResponse.statusCode != 200 {
-            let errorBody = String(data: data, encoding: .utf8) ?? "Unknown"
-            throw OllamaError.serverError("DeepSeek API Error (\(httpResponse.statusCode)): \(errorBody)")
-        }
-
-        do {
-            let result = try JSONDecoder().decode(OpenAIChatCompletionResponse.self, from: data)
-            guard let content = result.choices.first?.message.content, !content.isEmpty else {
-                throw OllamaError.noData
-            }
-            return content
-        } catch {
-            logger.error("DeepSeek decode error: \(error.localizedDescription, privacy: .public)")
-            throw OllamaError.decodingError
-        }
+        return content
     }
 
     // MARK: - OpenCode Zen / Go (OpenAI-compatible)
 
-    private func generateOpenCodeZen(messages: [ChatMessage], model: String) async throws -> String {
+    private func generateOpenCodeZen(
+        messages: [ChatMessage],
+        model: String,
+        reasoningEffort: String? = nil,
+        enableNativeTools: Bool = false,
+        toolExecutor: AgentToolExecutor? = nil
+    ) async throws -> String {
         let apiKey = Secrets.openCodeZenApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !apiKey.isEmpty else {
             throw OllamaError.missingAPIKey("OpenCode Zen API key is missing. Generate one at https://opencode.ai/auth")
@@ -710,11 +809,20 @@ actor OllamaService {
             model: model,
             baseURL: openCodeZenBaseURL,
             apiKey: apiKey,
-            label: "OpenCode Zen"
+            label: "OpenCode Zen",
+            reasoningEffort: reasoningEffort,
+            enableNativeTools: enableNativeTools,
+            toolExecutor: toolExecutor
         )
     }
 
-    private func generateOpenCodeGo(messages: [ChatMessage], model: String) async throws -> String {
+    private func generateOpenCodeGo(
+        messages: [ChatMessage],
+        model: String,
+        reasoningEffort: String? = nil,
+        enableNativeTools: Bool = false,
+        toolExecutor: AgentToolExecutor? = nil
+    ) async throws -> String {
         let apiKey = Secrets.openCodeGoApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !apiKey.isEmpty else {
             throw OllamaError.missingAPIKey("OpenCode Go API key is missing. Generate one at https://opencode.ai/auth")
@@ -724,7 +832,10 @@ actor OllamaService {
             model: model,
             baseURL: openCodeGoBaseURL,
             apiKey: apiKey,
-            label: "OpenCode Go"
+            label: "OpenCode Go",
+            reasoningEffort: reasoningEffort,
+            enableNativeTools: enableNativeTools,
+            toolExecutor: toolExecutor
         )
     }
 
@@ -732,7 +843,9 @@ actor OllamaService {
         messages: [ChatMessage],
         model: String,
         onPartialResponse: @escaping (String) -> Void,
-        onPartialThinking: ((String) -> Void)? = nil
+        onPartialThinking: ((String) -> Void)? = nil,
+        enableNativeTools: Bool = false,
+        toolExecutor: AgentToolExecutor? = nil
     ) async throws {
         let apiKey = Secrets.openCodeZenApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !apiKey.isEmpty else {
@@ -745,7 +858,9 @@ actor OllamaService {
             apiKey: apiKey,
             label: "OpenCode Zen",
             onPartialResponse: onPartialResponse,
-            onPartialThinking: onPartialThinking
+            onPartialThinking: onPartialThinking,
+            enableNativeTools: enableNativeTools,
+            toolExecutor: toolExecutor
         )
     }
 
@@ -753,7 +868,9 @@ actor OllamaService {
         messages: [ChatMessage],
         model: String,
         onPartialResponse: @escaping (String) -> Void,
-        onPartialThinking: ((String) -> Void)? = nil
+        onPartialThinking: ((String) -> Void)? = nil,
+        enableNativeTools: Bool = false,
+        toolExecutor: AgentToolExecutor? = nil
     ) async throws {
         let apiKey = Secrets.openCodeGoApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !apiKey.isEmpty else {
@@ -766,7 +883,9 @@ actor OllamaService {
             apiKey: apiKey,
             label: "OpenCode Go",
             onPartialResponse: onPartialResponse,
-            onPartialThinking: onPartialThinking
+            onPartialThinking: onPartialThinking,
+            enableNativeTools: enableNativeTools,
+            toolExecutor: toolExecutor
         )
     }
 
@@ -776,8 +895,142 @@ actor OllamaService {
         model: String,
         baseURL: URL,
         apiKey: String,
-        label: String
+        label: String,
+        reasoningEffort: String? = nil,
+        enableNativeTools: Bool = false,
+        toolExecutor: AgentToolExecutor? = nil
     ) async throws -> String {
+        let effort = reasoningEffort ?? Self.selectedReasoningEffort(for: AIModelNames.currentProvider(), model: model)
+
+        if enableNativeTools, let toolExecutor {
+            do {
+                return try await generateWithNativeToolLoop(
+                    model: model,
+                    messages: messages,
+                    reasoningEffort: effort,
+                    thinking: nil,
+                    executor: toolExecutor,
+                    send: { payload in
+                        try await self.sendOpenAICompatibleRound(
+                            baseURL: baseURL,
+                            apiKey: apiKey,
+                            label: label,
+                            payload: payload
+                        )
+                    }
+                )
+            } catch OllamaError.serverError(let message) {
+                logger.warning("\(label) native tool loop failed; falling back to single-shot: \(message, privacy: .public)")
+            }
+        }
+
+        let payload = OpenAIChatCompletionRequest(
+            model: model,
+            messages: messages.map(Self.toOpenAIMessage),
+            stream: false,
+            reasoning_effort: effort
+        )
+        let result = try await sendOpenAICompatibleRound(baseURL: baseURL, apiKey: apiKey, label: label, payload: payload)
+        guard let content = result.choices.first?.message.content, !content.isEmpty else {
+            throw OllamaError.noData
+        }
+        return content
+    }
+
+    private func generateStreamingOpenAICompatible(
+        messages: [ChatMessage],
+        model: String,
+        baseURL: URL,
+        apiKey: String,
+        label: String,
+        onPartialResponse: @escaping (String) -> Void,
+        onPartialThinking: ((String) -> Void)? = nil,
+        enableNativeTools: Bool = false,
+        toolExecutor: AgentToolExecutor? = nil
+    ) async throws {
+        let effort = Self.selectedReasoningEffort(for: AIModelNames.currentProvider(), model: model)
+
+        if enableNativeTools, let toolExecutor {
+            do {
+                try await generateStreamingWithNativeToolLoop(
+                    model: model,
+                    messages: messages,
+                    reasoningEffort: effort,
+                    thinking: nil,
+                    executor: toolExecutor,
+                    onPartialThinking: onPartialThinking,
+                    stream: { payload in
+                        try await self.streamOpenAICompatibleRound(
+                            baseURL: baseURL,
+                            apiKey: apiKey,
+                            label: label,
+                            payload: payload,
+                            onPartialResponse: onPartialResponse,
+                            onPartialThinking: onPartialThinking
+                        )
+                    }
+                )
+                return
+            } catch OllamaError.serverError(let message) {
+                logger.warning("\(label) native tool streaming failed; falling back to legacy: \(message, privacy: .public)")
+            }
+        }
+
+        _ = try await streamOpenAICompatibleRound(
+            baseURL: baseURL,
+            apiKey: apiKey,
+            label: label,
+            payload: OpenAIChatCompletionRequest(
+                model: model,
+                messages: messages.map(Self.toOpenAIMessage),
+                stream: true,
+                reasoning_effort: effort
+            ),
+            onPartialResponse: onPartialResponse,
+            onPartialThinking: onPartialThinking
+        )
+    }
+
+    nonisolated static func decodeNativeToolCalls(from data: Data) -> [AgentToolCall] {
+        guard let response = try? JSONDecoder().decode(OpenAIChatCompletionResponse.self, from: data),
+              let calls = response.choices.first?.message.tool_calls else { return [] }
+        return calls.map {
+            AgentToolCall(
+                id: $0.id ?? UUID().uuidString,
+                name: $0.function.name,
+                argumentsJSON: $0.function.arguments
+            )
+        }
+    }
+
+    nonisolated private static func mergeNativeToolCallDelta(
+        _ delta: OpenAIStreamChunk.Delta.ToolCallDelta,
+        into calls: inout [AgentToolCall]
+    ) {
+        let index = delta.index ?? calls.count
+        while calls.count <= index {
+            calls.append(AgentToolCall(name: "", argumentsJSON: ""))
+        }
+        let current = calls[index]
+        let name = current.name.isEmpty ? (delta.function?.name ?? "") : current.name
+        let arguments = current.argumentsJSON + (delta.function?.arguments ?? "")
+        calls[index] = AgentToolCall(id: delta.id ?? current.id, name: name, argumentsJSON: arguments)
+    }
+
+    // MARK: - Native structured tool calling
+
+    /// Maximum number of model↔tool rounds before giving up. Prevents runaway
+    /// agent loops while still allowing multi-step tool chains.
+    private static let maxNativeToolRounds = 4
+
+    /// One non-streaming OpenAI-compatible round. Used both by the native tool
+    /// loop and by the legacy single-shot path.
+    private func sendOpenAICompatibleRound(
+        baseURL: URL,
+        apiKey: String,
+        label: String,
+        payload: OpenAIChatCompletionRequest
+    ) async throws -> OpenAIChatCompletionResponse {
         let url = baseURL.appendingPathComponent("chat/completions")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -789,12 +1042,6 @@ actor OllamaService {
         )
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.timeoutInterval = 120
-
-        let payload = OpenAIChatCompletionRequest(
-            model: model,
-            messages: messages.map(Self.toOpenAIMessage),
-            stream: false
-        )
         request.httpBody = try JSONEncoder().encode(payload)
 
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -806,28 +1053,19 @@ actor OllamaService {
             logger.error("\(label) Error: \(httpResponse.statusCode, privacy: .public) | Body: \(errorBody, privacy: .public)")
             throw OllamaError.serverError("\(label) API Error (\(httpResponse.statusCode)): \(errorBody)")
         }
-
-        do {
-            let result = try JSONDecoder().decode(OpenAIChatCompletionResponse.self, from: data)
-            guard let content = result.choices.first?.message.content, !content.isEmpty else {
-                throw OllamaError.noData
-            }
-            return content
-        } catch {
-            logger.error("\(label) decode error: \(error.localizedDescription, privacy: .public)")
-            throw OllamaError.decodingError
-        }
+        return try JSONDecoder().decode(OpenAIChatCompletionResponse.self, from: data)
     }
 
-    private func generateStreamingOpenAICompatible(
-        messages: [ChatMessage],
-        model: String,
+    /// One streaming OpenAI-compatible round trip. Streams answer deltas to
+    /// `onPartialResponse` and accumulates any native tool-call deltas.
+    private func streamOpenAICompatibleRound(
         baseURL: URL,
         apiKey: String,
         label: String,
+        payload: OpenAIChatCompletionRequest,
         onPartialResponse: @escaping (String) -> Void,
-        onPartialThinking: ((String) -> Void)? = nil
-    ) async throws {
+        onPartialThinking: ((String) -> Void)?
+    ) async throws -> (text: String, toolCalls: [AgentToolCall]) {
         let url = baseURL.appendingPathComponent("chat/completions")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -839,12 +1077,6 @@ actor OllamaService {
         )
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         request.timeoutInterval = 120
-
-        let payload = OpenAIChatCompletionRequest(
-            model: model,
-            messages: messages.map(Self.toOpenAIMessage),
-            stream: true
-        )
         request.httpBody = try JSONEncoder().encode(payload)
 
         let (asyncBytes, response) = try await URLSession.shared.bytes(for: request)
@@ -857,6 +1089,7 @@ actor OllamaService {
         }
 
         var buffer = ""
+        var toolCalls: [AgentToolCall] = []
         for try await rawLine in asyncBytes.lines {
             try Task.checkCancellation()
             guard rawLine.hasPrefix("data: ") else { continue }
@@ -872,10 +1105,115 @@ actor OllamaService {
                     buffer += content
                     onPartialResponse(buffer)
                 }
+                for delta in chunk.choices.first?.delta.tool_calls ?? [] {
+                    Self.mergeNativeToolCallDelta(delta, into: &toolCalls)
+                }
             } catch {
                 logger.error("\(label) stream decode error: \(error.localizedDescription, privacy: .public)")
             }
         }
+        let complete = toolCalls.filter { !$0.name.isEmpty && !$0.argumentsJSON.isEmpty }
+        return (buffer, complete)
+    }
+
+    /// Bounded multi-round native tool loop (non-streaming). Executes tool
+    /// calls through the executor, feeds results back as `tool` messages, and
+    /// returns the final model answer.
+    private func generateWithNativeToolLoop(
+        model: String,
+        messages: [ChatMessage],
+        reasoningEffort: String?,
+        thinking: ThinkingParam?,
+        executor: AgentToolExecutor,
+        send: (OpenAIChatCompletionRequest) async throws -> OpenAIChatCompletionResponse
+    ) async throws -> String {
+        var openAIMessages = messages.map(Self.toOpenAIMessage)
+        for _ in 0..<Self.maxNativeToolRounds {
+            let payload = OpenAIChatCompletionRequest(
+                model: model,
+                messages: openAIMessages,
+                stream: false,
+                tools: AgentCapabilityRegistry.structuredTools(),
+                thinking: thinking,
+                reasoning_effort: reasoningEffort
+            )
+            let result = try await send(payload)
+            if let rawCalls = result.choices.first?.message.tool_calls, !rawCalls.isEmpty {
+                let toolCalls = rawCalls.map {
+                    AgentToolCall(id: $0.id ?? UUID().uuidString, name: $0.function.name, argumentsJSON: $0.function.arguments)
+                }
+                var toolOutputs: [(id: String, output: String)] = []
+                for call in toolCalls {
+                    let output = await executor(call)
+                    toolOutputs.append((call.id, output))
+                }
+                openAIMessages.append(Self.assistantToolCallMessage(from: toolCalls))
+                for (id, output) in toolOutputs {
+                    openAIMessages.append(Self.toolResultMessage(callID: id, content: output))
+                }
+                continue
+            }
+            guard let content = result.choices.first?.message.content, !content.isEmpty else {
+                throw OllamaError.noData
+            }
+            return content
+        }
+        throw OllamaError.serverError("Native tool loop exceeded \(Self.maxNativeToolRounds) rounds")
+    }
+
+    /// Bounded multi-round native tool loop (streaming). Each round streams
+    /// deltas live; tool rounds execute through the executor and the final
+    /// round streams the answer.
+    private func generateStreamingWithNativeToolLoop(
+        model: String,
+        messages: [ChatMessage],
+        reasoningEffort: String?,
+        thinking: ThinkingParam?,
+        executor: AgentToolExecutor,
+        onPartialThinking: ((String) -> Void)?,
+        stream: (OpenAIChatCompletionRequest) async throws -> (text: String, toolCalls: [AgentToolCall])
+    ) async throws {
+        var openAIMessages = messages.map(Self.toOpenAIMessage)
+        for _ in 0..<Self.maxNativeToolRounds {
+            let payload = OpenAIChatCompletionRequest(
+                model: model,
+                messages: openAIMessages,
+                stream: true,
+                tools: AgentCapabilityRegistry.structuredTools(),
+                thinking: thinking,
+                reasoning_effort: reasoningEffort
+            )
+            let (_, calls) = try await stream(payload)
+            if calls.isEmpty { return }
+
+            var toolOutputs: [(id: String, output: String)] = []
+            for call in calls {
+                let output = await executor(call)
+                toolOutputs.append((call.id, output))
+            }
+            openAIMessages.append(Self.assistantToolCallMessage(from: calls))
+            for (id, output) in toolOutputs {
+                openAIMessages.append(Self.toolResultMessage(callID: id, content: output))
+            }
+        }
+        throw OllamaError.serverError("Native tool loop exceeded \(Self.maxNativeToolRounds) rounds")
+    }
+
+    /// Assistant message carrying the tool_calls so the API can correlate them
+    /// with the following `tool` result messages.
+    private static func assistantToolCallMessage(from calls: [AgentToolCall]) -> OpenAIChatMessage {
+        OpenAIChatMessage(
+            role: "assistant",
+            content: nil,
+            toolCalls: calls.map {
+                ToolCallPayload(id: $0.id, type: "function", function: .init(name: $0.name, arguments: $0.argumentsJSON))
+            }
+        )
+    }
+
+    /// `tool` role result message paired to a specific tool call id.
+    private static func toolResultMessage(callID: String, content: String) -> OpenAIChatMessage {
+        OpenAIChatMessage(role: "tool", content: [.text(content)], toolCallID: callID)
     }
 
     private static func toOpenAIMessage(_ message: ChatMessage) -> OpenAIChatMessage {
@@ -949,7 +1287,8 @@ actor OllamaService {
         let payload = OpenAIChatCompletionRequest(
             model: model,
             messages: messages.map(Self.toOpenAIMessage),
-            stream: false
+            stream: false,
+            reasoning_effort: Self.selectedReasoningEffort(for: AIModelNames.currentProvider(), model: model)
         )
         request.httpBody = try JSONEncoder().encode(payload)
 
@@ -966,6 +1305,17 @@ actor OllamaService {
 
         do {
             let result = try JSONDecoder().decode(OpenAIChatCompletionResponse.self, from: data)
+            if let toolCalls = result.choices.first?.message.tool_calls, !toolCalls.isEmpty {
+                let encoded = toolCalls.compactMap { call -> String? in
+                    guard let data = try? JSONSerialization.data(withJSONObject: [
+                        "id": call.id ?? UUID().uuidString,
+                        "name": call.function.name,
+                        "arguments": call.function.arguments
+                    ]) else { return nil }
+                    return "[NATIVE_TOOL_CALL: \(String(data: data, encoding: .utf8) ?? "")]"
+                }.joined(separator: "\n")
+                return encoded
+            }
             guard let content = result.choices.first?.message.content, !content.isEmpty else {
                 throw OllamaError.noData
             }
@@ -997,7 +1347,8 @@ actor OllamaService {
         let payload = OpenAIChatCompletionRequest(
             model: model,
             messages: messages.map(Self.toOpenAIMessage),
-            stream: true
+            stream: true,
+            reasoning_effort: Self.selectedReasoningEffort(for: AIModelNames.currentProvider(), model: model)
         )
         request.httpBody = try JSONEncoder().encode(payload)
 

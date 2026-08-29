@@ -59,22 +59,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        // Gizli mod tercihini kontrol et
-        let isStealth = UserDefaults.standard.bool(forKey: "stealthModeEnabled")
+        // ZeroLose is a menu-bar utility. Keep it out of the Dock and App Switcher
+        // on every normal launch; the explicit UI-test path remains regular.
+        NSApp.setActivationPolicy(.accessory)
 
         // Bu makinedeki mevcut OpenCode Go / Zen üyeliğini yeniden kullan, böylece
         // OpenCode sağlayıcısı anahtarı yeniden yapıştırmadan hemen çalışır.
         Secrets.importOpenCodeKeysIfNeeded()
         
-        if isStealth {
-            NSApp.setActivationPolicy(.accessory)
-        } else {
-            NSApp.setActivationPolicy(.regular)
-            // Gizli modda değilse uygulamanın ön plana gelmesini sağla
-            DispatchQueue.main.async {
-                NSApp.activate(ignoringOtherApps: true)
-            }
-        }
+        // Keep the utility available through its status-item/window hotkey without
+        // activating it on launch; this also avoids an unexpected foreground jump.
         
         // 1. Durum Çubuğu Öğesini Kur
         requestScreenCapturePermissionIfNeeded()
@@ -116,7 +110,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "About Keyboard", action: #selector(toggleOverlay), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
-        let quitTitle = UserDefaults.standard.bool(forKey: "stealthModeEnabled") ? "Quit Keyboard" : "Quit ZeroLose"
+        let quitTitle = "Quit ZeroLose"
         menu.addItem(NSMenuItem(title: quitTitle, action: #selector(quitApp), keyEquivalent: "q"))
         
         statusItem?.menu = menu

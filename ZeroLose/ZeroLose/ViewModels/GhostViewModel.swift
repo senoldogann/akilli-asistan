@@ -18,14 +18,18 @@ class GhostViewModel {
         let model = AIModelNames.reasoning(forProvider: provider)
         return "\(provider.displayName) · \(model)"
     }
-    /// Approximate context-window fullness derived from the visible messages.
-    /// Used by the input-area meter so the user can see how much room remains
-    /// before a long conversation starts losing earlier context.
+    /// Approximate context-window fullness. Pencere model bazlıdır (seçilen
+    /// modelin gerçek konteks boyutu); kullanım ise modele gerçekte gönderilen
+    /// sohbet geçmişinden hesaplanır — UI'nin görünür mesaj listesinden değil.
+    /// Böylece farklı modellerde farklı doluluk gösterir ve konuşma büyüdükçe
+    /// doğru şekilde artar.
     var contextUsage: ContextUsage {
-        let windowTokens = AIModelNames.contextWindow(forProvider: AIModelNames.currentProvider())
-        let usedTokens = messages.reduce(0) { partial, message in
-            partial + Self.estimateTokens(message.text) + Self.estimateTokens(message.thinking ?? "")
-        }
+        let provider = AIModelNames.currentProvider()
+        // Sohbet varsayılanı olarak reasoning modeli kullanılır; UserDefaults
+        // üzerinden kullanıcının seçtiği özel modeli de yansıtır.
+        let model = AIModelNames.reasoning
+        let windowTokens = AIModelNames.contextWindow(forProvider: provider, model: model)
+        let usedTokens = intelligenceService.contextTokenEstimate
         return ContextUsage(usedTokens: usedTokens, windowTokens: windowTokens)
     }
     var isClipboardActive: Bool = false
@@ -88,8 +92,6 @@ class GhostViewModel {
     private var revealChunkBuffer: String = ""
     private var revealCursor: Int = 0
     private var lastPaintedText: String = ""
-    private let streamingRenderInterval: Duration = .milliseconds(22)
-    private let revealTargetTicks: Int = 28
     private var slashFileContextPath: String? = nil
     private var slashFileContextPreview: String = ""
     private var activeQuerySource: String? = nil
@@ -412,6 +414,38 @@ class GhostViewModel {
         streamingTargetIndex = messageIndex
     }
     
+    // MARK: - Streaming display settings
+
+    /// Ayarlardan okunan gösterim modu: `direct` ise cevap animasyonsuz,
+    /// gelen son metin anında tam olarak basılır. `streaming` ise karakter
+    /// karakter yazma animasyonu kullanılır.
+    private func streamingDisplayMode() -> StreamingDisplayMode {
+        UserDefaults.standard.string(forKey: "streamingMode") == "direct" ? .direct : .streaming
+    }
+
+    private enum StreamingDisplayMode {
+        case streaming
+        case direct
+    }
+
+    /// Ayarlardaki `streamingSpeed` değerine göre her tick arası bekleme.
+    private var streamingRenderInterval: Duration {
+        switch UserDefaults.standard.string(forKey: "streamingSpeed") {
+        case "slow": return .milliseconds(30)
+        case "fast": return .milliseconds(8)
+        default: return .milliseconds(22)
+        }
+    }
+
+    /// Kalan metni kaç tick'e yayacağız; hız ayarına göre değişir.
+    private var revealTargetTicks: Int {
+        switch UserDefaults.standard.string(forKey: "streamingSpeed") {
+        case "slow": return 60
+        case "fast": return 10
+        default: return 28
+        }
+    }
+
     private func scheduleStreamingRender(_ partial: String, at messageIndex: Int) {
         streamingTargetIndex = messageIndex
         pendingStreamingText = partial
@@ -478,9 +512,15 @@ class GhostViewModel {
 
         // Adaptive chunk size: spread the remaining buffered characters across a
         // small fixed number of ticks so long answers animate at a steady pace
-        // and short bursts still feel smooth rather than jumping.
+        // and short bursts still feel smooth rather than jumping. Direct mode
+        // tek tick'te tüm kalanı basar (animasyon yok).
         let remaining = revealChunkBuffer.count - revealCursor
-        let chunkSize = max(1, Int(ceil(Double(remaining) / Double(revealTargetTicks))))
+        let chunkSize: Int
+        if streamingDisplayMode() == .direct {
+            chunkSize = remaining
+        } else {
+            chunkSize = max(1, Int(ceil(Double(remaining) / Double(revealTargetTicks))))
+        }
         let endIndex = min(revealCursor + chunkSize, revealChunkBuffer.count)
         revealCursor = endIndex
 
@@ -855,6 +895,12 @@ class GhostViewModel {
             index = messages.count - 1
         }
         beginStreamingRender(at: index)
+
+        // Native structured tool calls (DeepSeek/OpenAI/OpenCode) run through
+        // the same approval-aware executor as the legacy [ACTION] protocol.
+        // Tool results are fed back to the model as `tool` messages so the
+        // final answer is grounded in real tool output.
+        let nativeToolExecutor: AgentToolExecutor? = resolvedAllowActions ? makeNativeToolExecutor(allowMutations: true) : nil
         
         activeTask = Task { @MainActor in
             do {
@@ -865,6 +911,7 @@ class GhostViewModel {
                     allowAgentActions: resolvedAllowActions,
                     processingMode: processingMode,
                     detectedLanguage: language,
+                    nativeToolExecutor: nativeToolExecutor,
                     onStatusUpdate: { [weak self] status in
                         Task { @MainActor in
                             self?.statusMessage = status
@@ -2576,6 +2623,7 @@ class GhostViewModel {
     private func handleActions(in text: String, allowMutations: Bool) async -> String {
         // Use a non-greedy regex to find all [ACTION: {...}] blocks
         let pattern = #"(?s)\[ACTION:\s*(\{.*?\})\]"#
+        let nativePattern = #"(?s)\[NATIVE_TOOL_CALL:\s*(\{.*?\})\]"#
         
         let regex: NSRegularExpression
         do {
@@ -2586,13 +2634,15 @@ class GhostViewModel {
         
         let nsString = text as NSString
         let matches = regex.matches(in: text, options: [], range: NSRange(location: 0, length: nsString.length))
+        let nativeMatches = (try? NSRegularExpression(pattern: nativePattern, options: []))?.matches(in: text, options: [], range: NSRange(location: 0, length: nsString.length)) ?? []
         
-        if matches.isEmpty {
+        if matches.isEmpty && nativeMatches.isEmpty {
             return text
         }
         
         // Clean text by removing all matches
-        let cleanedText = text.replacingOccurrences(of: pattern, with: "", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
+        var cleanedText = text.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
+        cleanedText = cleanedText.replacingOccurrences(of: nativePattern, with: "", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
         
         for match in matches {
             guard let jsonRange = Range(match.range(at: 1), in: text) else { continue }
@@ -2621,7 +2671,14 @@ class GhostViewModel {
                             }
                             return await runToolCard(kind: "web_search", command: "Web ara: \(query.prefix(40))") {
                                 do {
-                                    let searchOutput = try await self.intelligenceService.performWebSearch(query: query)
+                                    let searchOutput = try await self.intelligenceService.performWebSearch(
+                                        query: query,
+                                        onProgress: { [weak self] progress in
+                                            Task { @MainActor in
+                                                self?.statusMessage = "Web: \(progress)"
+                                            }
+                                        }
+                                    )
                                     return "WEB ARAMA SONUCU:\n\(searchOutput)"
                                 } catch {
                                     return "Arama hatası: \(error.localizedDescription)"
@@ -2706,9 +2763,9 @@ class GhostViewModel {
                                 await self.computerUseClickOnText(pid: target.pid, text: text)
                             }
                         case "computer_ocr":
-                            let pid = Int(action["pid"] as? String ?? "") ?? 0
-                            return await runToolCard(kind: "computer", command: "OCR oku (pid \(pid))") {
-                                await self.computerUseOCR(pid: pid_t(pid))
+                            let pid = pid_t(Int(action["pid"] as? String ?? "") ?? 0)
+                            return await runToolCard(kind: "computer", command: "OCR oku (pid \(Int(pid)))") {
+                                await self.computerUseOCR(pid: pid)
                             }
                         case "computer_launch":
                             return await runToolCard(kind: "computer", command: "Başlat: \((action["name"] as? String ?? ""))") {
@@ -2909,6 +2966,30 @@ class GhostViewModel {
         }
         
         return cleanedText.isEmpty ? "Yapıldı" : cleanedText
+    }
+
+    /// Eylem onayı verilmiş sorgular için native tool executor'ı üretir.
+    /// `allowMutations` false ise mutasyon araçları engellenir (bilgi araçları serbesttir).
+    private func makeNativeToolExecutor(allowMutations: Bool) -> AgentToolExecutor {
+        { [weak self] toolCall in
+            guard let self else { return "Araç çalıştırıcı kullanılamıyor." }
+            return await self.executeNativeTool(toolCall, allowMutations: allowMutations)
+        }
+    }
+
+    /// Native structured tool çağrısını mevcut onay-kurallı executor'a çevirir
+    /// ve sonucu modele geri beslenecek metin olarak döndürür. `allowMutations`
+    /// false ise mutasyon araçları engellenir (bilgi araçları serbesttir).
+    private func executeNativeTool(_ call: AgentToolCall, allowMutations: Bool) async -> String {
+        guard var action = call.arguments else {
+            return "Araç argümanları JSON olarak çözümlenemedi: \(call.name)"
+        }
+        action["type"] = call.name
+        guard let data = try? JSONSerialization.data(withJSONObject: action),
+              let json = String(data: data, encoding: .utf8) else {
+            return "Araç argümanları serialize edilemedi: \(call.name)"
+        }
+        return await handleActions(in: "[ACTION: \(json)]", allowMutations: allowMutations)
     }
 
     /// `FileSystemOperation` öğesini sohbette gösterilecek kısa bir komut satırına çevirir.

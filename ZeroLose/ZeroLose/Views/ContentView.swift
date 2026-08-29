@@ -59,6 +59,11 @@ struct ContentView: View {
     @AppStorage("fontDesign") private var fontDesignStr: String = "monospaced"
     @AppStorage("selectedThemeName") private var selectedTheme: String = "Red"
     @AppStorage("forceWebSearch") private var forceWebSearch: Bool = false
+    @AppStorage("reasoning_effort_openai") private var openAIReasoningEffort: String = "high"
+    @AppStorage("reasoning_effort_deepseek") private var deepSeekReasoningEffort: String = "high"
+    @AppStorage("reasoning_effort_opencode_zen") private var openCodeZenReasoningEffort: String = "high"
+    @AppStorage("reasoning_effort_opencode_go") private var openCodeGoReasoningEffort: String = "high"
+    @AppStorage("reasoning_effort_ollama") private var ollamaReasoningEffort: String = ""
     @AppStorage("windowOpacity") private var windowOpacity: Double = 1.0
     @AppStorage("commandApprovalMode") private var commandApprovalMode: String = "ask"
     @AppStorage("llm_provider") private var llmProviderRaw: String = LLMProvider.ollama.rawValue
@@ -97,6 +102,30 @@ struct ContentView: View {
             return customOpenCodeGoReasoningModel.isEmpty ? AIModelNames.reasoning(forProvider: .openCodeGo) : customOpenCodeGoReasoningModel
         case .ollama:
             return customOllamaReasoningModel.isEmpty ? AIModelNames.reasoning(forProvider: .ollama) : customOllamaReasoningModel
+        }
+    }
+
+    private var selectedReasoningEffort: String {
+        switch activeProvider {
+        case .openAI: return openAIReasoningEffort
+        case .deepSeek: return deepSeekReasoningEffort
+        case .openCodeZen: return openCodeZenReasoningEffort
+        case .openCodeGo: return openCodeGoReasoningEffort
+        case .ollama: return ollamaReasoningEffort
+        }
+    }
+
+    private var supportedReasoningEfforts: [String] {
+        AIModelNames.reasoningEffortOptions(for: activeProvider, model: activeReasoningModel)
+    }
+
+    private func setReasoningEffort(_ effort: String) {
+        switch activeProvider {
+        case .openAI: openAIReasoningEffort = effort
+        case .deepSeek: deepSeekReasoningEffort = effort
+        case .openCodeZen: openCodeZenReasoningEffort = effort
+        case .openCodeGo: openCodeGoReasoningEffort = effort
+        case .ollama: ollamaReasoningEffort = effort
         }
     }
 
@@ -937,6 +966,31 @@ struct ContentView: View {
             }
             .menuStyle(.borderlessButton)
             .layoutPriority(1)
+
+            if !supportedReasoningEfforts.isEmpty {
+                Menu {
+                    ForEach(supportedReasoningEfforts, id: \.self) { effort in
+                        Button {
+                            setReasoningEffort(effort)
+                        } label: {
+                            if selectedReasoningEffort == effort {
+                                Label("effort: \(effort)", systemImage: "checkmark")
+                            } else {
+                                Text("effort: \(effort)")
+                            }
+                        }
+                    }
+                } label: {
+                    Text("effort: \(selectedReasoningEffort)")
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(themeColor)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(Color.primary.opacity(0.05))
+                        .clipShape(Capsule())
+                }
+                .menuStyle(.borderlessButton)
+            }
 
             Menu {
                 ForEach([("ask", "Onay İste", "Her mutasyon için onay sor"), ("auto", "Oto Onay", "Güvenli işlemleri otomatik çalıştır"), ("full", "Tam Erişim", "Tüm işlemleri onaysız çalıştır")], id: \.0) { value, label, desc in

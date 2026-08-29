@@ -48,7 +48,12 @@ actor TavilyService {
     }
     
     /// Bir web araması yapar ve yapılandırılmış bir kanıt bağlamı döndürür.
-    func search(query: String, detailLevel: DetailLevel = .brief) async throws -> String {
+    /// `onProgress` arama aşamalarını ve her kaynağı UI'a canlı aktarır.
+    func search(
+        query: String,
+        detailLevel: DetailLevel = .brief,
+        onProgress: (@Sendable (String) -> Void)? = nil
+    ) async throws -> String {
         let preparedQuery = Self.preferredQuery(from: query, maxLength: maxProviderQueryLength)
         let normalizedQuery = preparedQuery
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -81,6 +86,8 @@ actor TavilyService {
         request.httpBody = try JSONEncoder().encode(payload)
         
         logger.info("Performing Tavily search (query_length: \(preparedQuery.count, privacy: .public))")
+        onProgress?("Arama sorgusu hazırlandı: \(preparedQuery)")
+        onProgress?("Tavily kaynakları aranıyor…")
         
         return try await withRetry {
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -98,6 +105,14 @@ actor TavilyService {
             do {
                 let searchResponse = try JSONDecoder().decode(SearchResponse.self, from: data)
                 
+                if let answer = searchResponse.answer?.trimmingCharacters(in: .whitespacesAndNewlines), !answer.isEmpty {
+                    onProgress?("Özet bulundu: \(self.compact(answer, limit: 240))")
+                }
+                for (index, result) in searchResponse.results.prefix(detailLevel == .detailed ? 8 : 5).enumerated() {
+                    onProgress?("Kaynak \(index + 1): \(result.title)")
+                }
+                onProgress?("Kaynaklar alındı, cevap hazırlanıyor…")
+
                 let context = self.buildContext(
                     query: preparedQuery,
                     response: searchResponse,

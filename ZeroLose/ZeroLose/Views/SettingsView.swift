@@ -18,7 +18,9 @@ struct SettingsView: View {
     @AppStorage("autoAnalyze") private var autoAnalyze: Bool = true
     @AppStorage("useExternalAudio") private var useExternalAudio: Bool = true
     @AppStorage("stealthModeEnabled") private var stealthMode: Bool = false
-    @AppStorage("audioLanguage") private var audioLanguage: String = "en"
+    @AppStorage("audioLanguage") private var audioLanguage: String = "auto"
+    @AppStorage("streamingMode") private var streamingMode: String = "streaming"
+    @AppStorage("streamingSpeed") private var streamingSpeed: String = "normal"
     @AppStorage("userPersonaContext") private var userPersonaContext: String = ""
     @AppStorage("activeJobDescription") private var activeJobDescription: String = ""
     @AppStorage("teleprompterText") private var teleprompterText: String = ""
@@ -618,6 +620,55 @@ struct SettingsView: View {
                 Divider()
                     .overlay(Color.glassStroke)
 
+                // Yanıt Gösterim Modu (Streaming vs Direkt)
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Response Display")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(.white)
+                        Text("Direct: cevabı anında tam göster • Streaming: karakter karakter yaz")
+                            .font(.system(size: 12))
+                            .foregroundColor(Color.textSecondary)
+                    }
+                    Spacer()
+                    Picker("", selection: $streamingMode) {
+                        Text("Streaming").tag("streaming")
+                        Text("Direct").tag("direct")
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .frame(width: 110)
+                    .tint(.brandPrimary)
+                }
+
+                Divider()
+                    .overlay(Color.glassStroke)
+
+                // Streaming Hızı
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Streaming Speed")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(.white)
+                        Text("Yanıt yazma animasyonunun hızı")
+                            .font(.system(size: 12))
+                            .foregroundColor(Color.textSecondary)
+                    }
+                    Spacer()
+                    Picker("", selection: $streamingSpeed) {
+                        Text("Yavaş").tag("slow")
+                        Text("Normal").tag("normal")
+                        Text("Hızlı").tag("fast")
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .frame(width: 110)
+                    .tint(.brandPrimary)
+                }
+
+                Divider()
+                    .overlay(Color.glassStroke)
+
                 // Command Approval Mode
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
@@ -1021,7 +1072,7 @@ struct SettingsView: View {
                         }
                         .pickerStyle(.menu)
                         .frame(width: 140)
-                        .onChange(of: llmProvider) { _ in fetchModels() }
+                        .onChange(of: llmProvider) { _, _ in fetchModels() }
                     }
                     .padding(.top, 2)
                     
