@@ -308,6 +308,11 @@ public final class ExamLoop {
                 if detector.hasMeaningfulChange(before: before.image, after: after.image) {
                     nonProgressCount = 0
 
+                    let changedStructurally = structuralDetector.hasMeaningfulChange(
+                        before: before.image,
+                        after: after.image
+                    )
+
                     if batch.containsProtectedBoundary {
                         runtimeState.beginBoundaryTransition()
                         recordEvent(
@@ -315,6 +320,19 @@ public final class ExamLoop {
                             cycle: cycles,
                             state: runtimeState,
                             detail: "protected_boundary_changed_ui"
+                        )
+                        pendingTransitionFrame = after
+                    } else if batch.hasPotentialAnswerMutation && changedStructurally {
+                        // A large structural shift after an action that was *not* declared as a
+                        // boundary cannot safely be treated as answer verification. The model's
+                        // boundary flag is advisory, so fail closed and re-establish lifecycle
+                        // state from a stable observation before allowing any navigation.
+                        runtimeState.beginBoundaryTransition()
+                        recordEvent(
+                            .boundaryTransitionStarted,
+                            cycle: cycles,
+                            state: runtimeState,
+                            detail: "unexpected_post_action_structural_change"
                         )
                         pendingTransitionFrame = after
                     } else if batch.hasPotentialAnswerMutation {
