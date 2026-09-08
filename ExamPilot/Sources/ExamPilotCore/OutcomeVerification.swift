@@ -1,10 +1,18 @@
 import CoreGraphics
 
-public enum ExpectedOutcomeKind: String, Codable, Equatable {
+public enum ExpectedOutcomeKind: Codable, Equatable {
     case none
     case answerMutation
+    case answerMutationAt(normalizedX: Double, normalizedY: Double)
     case viewportChange
     case navigation
+
+    fileprivate var normalizedInteractionPoint: CGPoint? {
+        guard case .answerMutationAt(let normalizedX, let normalizedY) = self else {
+            return nil
+        }
+        return CGPoint(x: normalizedX, y: normalizedY)
+    }
 }
 
 public enum OutcomeEvidence: Equatable {
@@ -105,9 +113,10 @@ public struct OutcomeVerifier: OutcomeVerifying, ContextualOutcomeVerifying {
         case .none:
             return .success(.none)
 
-        case .answerMutation:
+        case .answerMutation, .answerMutationAt:
             let globalChanged = progressDetector.hasMeaningfulChange(before: before, after: after)
-            let localizedScore = context.normalizedInteractionPoint.flatMap { point in
+            let interactionPoint = context.normalizedInteractionPoint ?? expected.normalizedInteractionPoint
+            let localizedScore = interactionPoint.flatMap { point in
                 scoreLocalizedChange(before: before, after: after, around: point)
             }
             let localizedChanged = localizedScore.map { $0 >= localizedDetector.threshold } ?? false
