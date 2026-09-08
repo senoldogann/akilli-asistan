@@ -30,6 +30,8 @@ public struct ScreenCaptureService: ScreenCapturing {
     public init() {}
 
     public func capture() async throws -> ScreenFrame {
+        _ = await CoreGraphicsServicesBootstrap.initialize()
+
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         guard let window = chromeWindow(in: content.windows) else {
             throw ScreenCaptureError.chromeWindowNotFound
