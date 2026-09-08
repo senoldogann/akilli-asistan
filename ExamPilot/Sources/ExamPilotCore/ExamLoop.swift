@@ -2,7 +2,7 @@ import Foundation
 
 public enum ExamRunResult: Equatable {
     case finished(cycles: Int)
-    case nonProgress(cycles: Int)
+    case nonProgress(cycles: Int, reason: AgentFailureReason = .unknown)
     case dryRunPlanned(summary: String, actionCount: Int)
     case stopped(cycles: Int)
     case maxCycles(cycles: Int)
@@ -35,6 +35,7 @@ public final class ExamLoop {
     private let postActionSettler: () async throws -> Void
     private let stabilitySettler: () async throws -> Void
     private let shouldStop: () -> Bool
+    private var lastNonProgressReason: AgentFailureReason = .unknown
 
     public init(
         capture: ScreenCapturing,
@@ -98,6 +99,7 @@ public final class ExamLoop {
         var nonProgressCount = 0
         var pendingTransitionFrame: ScreenFrame?
         var pendingTransitionVerification: PendingTransitionVerification?
+        lastNonProgressReason = .unknown
 
         while cycles < maxCycles {
             if shouldStop() {
@@ -137,6 +139,7 @@ public final class ExamLoop {
                     guard let stableFrame else {
                         pendingTransitionFrame = previous
                         nonProgressCount += 1
+                        lastNonProgressReason = .transitionStillRunning
                         recordEvent(
                             .stabilityWaiting,
                             cycle: cycles,
@@ -150,12 +153,12 @@ public final class ExamLoop {
                                 cycle: cycles
                             )
                             if case .exhausted = recovery {
-                                return .nonProgress(cycles: cycles)
+                                return nonProgress(cycles: cycles)
                             }
                         }
 
                         if nonProgressCount >= maxNonProgress {
-                            return .nonProgress(cycles: cycles)
+                            return nonProgress(cycles: cycles)
                         }
                         continue
                     }
@@ -205,10 +208,10 @@ public final class ExamLoop {
                             pendingTransitionVerification = nil
                             nonProgressCount += 1
                             if case .exhausted = recovery {
-                                return .nonProgress(cycles: cycles)
+                                return nonProgress(cycles: cycles)
                             }
                             if nonProgressCount >= maxNonProgress {
-                                return .nonProgress(cycles: cycles)
+                                return nonProgress(cycles: cycles)
                             }
                             before = stableFrame
 
@@ -226,10 +229,10 @@ public final class ExamLoop {
                                 cycle: cycles
                             )
                             if case .exhausted = recovery {
-                                return .nonProgress(cycles: cycles)
+                                return nonProgress(cycles: cycles)
                             }
                             if nonProgressCount >= maxNonProgress {
-                                return .nonProgress(cycles: cycles)
+                                return nonProgress(cycles: cycles)
                             }
                             continue
 
@@ -249,10 +252,10 @@ public final class ExamLoop {
                             pendingTransitionVerification = nil
                             nonProgressCount += 1
                             if case .exhausted = recovery {
-                                return .nonProgress(cycles: cycles)
+                                return nonProgress(cycles: cycles)
                             }
                             if nonProgressCount >= maxNonProgress {
-                                return .nonProgress(cycles: cycles)
+                                return nonProgress(cycles: cycles)
                             }
                             before = stableFrame
 
@@ -272,10 +275,10 @@ public final class ExamLoop {
                             pendingTransitionVerification = nil
                             nonProgressCount += 1
                             if case .exhausted = recovery {
-                                return .nonProgress(cycles: cycles)
+                                return nonProgress(cycles: cycles)
                             }
                             if nonProgressCount >= maxNonProgress {
-                                return .nonProgress(cycles: cycles)
+                                return nonProgress(cycles: cycles)
                             }
                             before = stableFrame
                         }
@@ -353,7 +356,7 @@ public final class ExamLoop {
                         cycle: cycles
                     )
                     if case .exhausted = recovery {
-                        return .nonProgress(cycles: cycles)
+                        return nonProgress(cycles: cycles)
                     }
                     continue
                 }
@@ -380,7 +383,7 @@ public final class ExamLoop {
                         cycle: cycles
                     )
                     if case .exhausted = recovery {
-                        return .nonProgress(cycles: cycles)
+                        return nonProgress(cycles: cycles)
                     }
                     continue
                 }
@@ -402,7 +405,7 @@ public final class ExamLoop {
                         cycle: cycles
                     )
                     if case .exhausted = recovery {
-                        return .nonProgress(cycles: cycles)
+                        return nonProgress(cycles: cycles)
                     }
                     continue
                 }
@@ -596,10 +599,10 @@ public final class ExamLoop {
                         cycle: cycles
                     )
                     if case .exhausted = recovery {
-                        return .nonProgress(cycles: cycles)
+                        return nonProgress(cycles: cycles)
                     }
                     if nonProgressCount >= maxNonProgress {
-                        return .nonProgress(cycles: cycles)
+                        return nonProgress(cycles: cycles)
                     }
 
                 case .failure(.navigationIdentityUnchanged):
@@ -615,10 +618,10 @@ public final class ExamLoop {
                         cycle: cycles
                     )
                     if case .exhausted = recovery {
-                        return .nonProgress(cycles: cycles)
+                        return nonProgress(cycles: cycles)
                     }
                     if nonProgressCount >= maxNonProgress {
-                        return .nonProgress(cycles: cycles)
+                        return nonProgress(cycles: cycles)
                     }
 
                 case .pending(.unexpectedStructuralChange), .pending(.uiTransitioning):
@@ -653,6 +656,7 @@ public final class ExamLoop {
         intent: AgentIntentFingerprint,
         cycle: Int
     ) -> RecoveryDecision {
+        lastNonProgressReason = failure
         let decision = recoveryEngine.handle(failure: failure, intent: intent)
         switch decision {
         case .recover(let strategy, _):
@@ -665,7 +669,8 @@ public final class ExamLoop {
                     ? "wait_for_stability"
                     : "reobserve_and_replan"
             )
-        case .exhausted:
+        case .exhausted(let reason):
+            lastNonProgressReason = reason
             session.recordFailure(failure, recoveryStrategy: nil)
             session.setCurrentRecoveryStrategy(nil)
             recordEvent(
@@ -675,6 +680,10 @@ public final class ExamLoop {
             )
         }
         return decision
+    }
+
+    private func nonProgress(cycles: Int) -> ExamRunResult {
+        .nonProgress(cycles: cycles, reason: lastNonProgressReason)
     }
 
     private func recordEvent(
