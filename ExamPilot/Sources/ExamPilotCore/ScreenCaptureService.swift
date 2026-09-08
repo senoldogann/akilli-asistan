@@ -47,7 +47,12 @@ public struct ScreenCaptureService: ScreenCapturing {
             configuration: configuration
         )
         let jpeg = try encodeJPEG(image)
-        return ScreenFrame(image: image, jpegData: jpeg, screenBounds: window.frame)
+        return ScreenFrame(
+            image: image,
+            jpegData: jpeg,
+            screenBounds: window.frame,
+            targetProcessID: window.owningApplication?.processID
+        )
     }
 
     private func chromeWindow(in windows: [SCWindow]) -> SCWindow? {
@@ -85,7 +90,6 @@ public struct ScreenCaptureService: ScreenCapturing {
     ) -> (processID: pid_t, frame: CGRect)? {
         guard AXIsProcessTrusted() else { return nil }
 
-        // Prefer the actual frontmost Chrome app when it is available.
         if let frontmost = NSWorkspace.shared.frontmostApplication,
            isChrome(
                 bundleIdentifier: frontmost.bundleIdentifier ?? "",
@@ -95,9 +99,6 @@ public struct ScreenCaptureService: ScreenCapturing {
             return (frontmost.processIdentifier, frame)
         }
 
-        // ExamPilot is commonly launched from Terminal, which may still be frontmost
-        // for the first observation. Chrome's AXFocusedWindow still identifies the
-        // browser window that was last focused, so use it before falling back to size.
         let processIDs = Set(candidates.map(\.processID)).sorted()
         for processID in processIDs {
             if let frame = focusedWindowFrame(processID: processID) {
