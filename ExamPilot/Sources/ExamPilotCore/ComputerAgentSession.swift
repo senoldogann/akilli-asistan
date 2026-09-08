@@ -31,6 +31,7 @@ public final class ComputerAgentSession {
     public private(set) var runtimeState: ExamRuntimeState
     public private(set) var providerConversationState: ProviderConversationState
     public private(set) var stopState: AgentStopState
+    public private(set) var lastPlannerSummary: String?
 
     private var memorySequence: UInt64
 
@@ -41,7 +42,8 @@ public final class ComputerAgentSession {
         initialRuntimeState: ExamRuntimeState = ExamRuntimeState(),
         workingMemory: AgentWorkingMemory = AgentWorkingMemory(),
         providerConversationState: ProviderConversationState = ProviderConversationState(),
-        stopState: AgentStopState = .running
+        stopState: AgentStopState = .running,
+        lastPlannerSummary: String? = nil
     ) {
         self.id = id
         self.goal = goal
@@ -50,6 +52,7 @@ public final class ComputerAgentSession {
         self.workingMemory = workingMemory
         self.providerConversationState = providerConversationState
         self.stopState = stopState
+        self.lastPlannerSummary = lastPlannerSummary
         self.memorySequence = 0
     }
 
@@ -77,6 +80,10 @@ public final class ComputerAgentSession {
         runtimeState.cancelBoundaryTransition()
     }
 
+    public func recordPlannerSummary(_ summary: String?) {
+        lastPlannerSummary = summary
+    }
+
     public func updatePreviousResponseID(_ value: String?) {
         providerConversationState.updatePreviousResponseID(value)
     }
@@ -88,6 +95,15 @@ public final class ComputerAgentSession {
 
     public func markStopped() {
         stopState = .stopped
+    }
+
+    public func recordAction(_ intent: AgentIntentFingerprint) {
+        workingMemory.recordAction(
+            intent,
+            sequence: nextMemorySequence(),
+            stateVersion: runtimeState.stateVersion,
+            questionGeneration: runtimeState.questionGeneration
+        )
     }
 
     public func recordFailure(
@@ -110,6 +126,10 @@ public final class ComputerAgentSession {
             stateVersion: runtimeState.stateVersion,
             questionGeneration: runtimeState.questionGeneration
         )
+    }
+
+    public func setCurrentRecoveryStrategy(_ strategy: RecoveryStrategy?) {
+        workingMemory.setCurrentRecoveryStrategy(strategy)
     }
 
     private func nextMemorySequence() -> UInt64 {
