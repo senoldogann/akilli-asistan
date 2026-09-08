@@ -65,12 +65,16 @@ struct ExamPilotMain {
         let input = NativeInputDriver()
         let executor = ActionBatchExecutor(driver: input)
         let vision = OpenAIResponsesVisionAgent(apiKey: apiKey, model: model)
+        let focusService = ChromeInputFocusService()
         let loop = ExamLoop(
             capture: capture,
             visionAgent: vision,
             executor: executor,
             dryRun: options.dryRun,
             maxCycles: options.maxCycles,
+            prepareForInput: { frame in
+                try await focusService.focus(frame: frame)
+            },
             shouldStop: { stopController.isStopped }
         )
 
