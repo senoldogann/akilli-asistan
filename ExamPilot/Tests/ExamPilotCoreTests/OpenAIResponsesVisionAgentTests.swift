@@ -53,6 +53,30 @@ final class OpenAIResponsesVisionAgentTests: XCTestCase {
         XCTAssertEqual(format["type"] as? String, "json_schema")
     }
 
+    func testStructuredSchemaRestrictsKeyActionsToDriverSupportedNames() async throws {
+        let transport = RecordingTransport(responseData: Data(fixtureResponse(decisionJSON: #"{"summary":"done","expectsVisualChange":false,"actions":[{"kind":"finish","boundary":true}]}"#).utf8))
+        let agent = OpenAIResponsesVisionAgent(apiKey: "test-key", model: "gpt-test", transport: transport)
+
+        _ = try await agent.decide(frame: makeFrame(), state: ExamObservationState(cycle: 1, nonProgressCount: 0, lastSummary: nil))
+
+        let bodyData = try XCTUnwrap(transport.lastRequest?.httpBody)
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: bodyData) as? [String: Any])
+        let text = try XCTUnwrap(body["text"] as? [String: Any])
+        let format = try XCTUnwrap(text["format"] as? [String: Any])
+        let schema = try XCTUnwrap(format["schema"] as? [String: Any])
+        let properties = try XCTUnwrap(schema["properties"] as? [String: Any])
+        let actions = try XCTUnwrap(properties["actions"] as? [String: Any])
+        let items = try XCTUnwrap(actions["items"] as? [String: Any])
+        let actionProperties = try XCTUnwrap(items["properties"] as? [String: Any])
+        let keySchema = try XCTUnwrap(actionProperties["key"] as? [String: Any])
+        let allowed = try XCTUnwrap(keySchema["enum"] as? [Any])
+        let allowedStrings = allowed.compactMap { $0 as? String }
+
+        XCTAssertTrue(allowedStrings.contains("return"))
+        XCTAssertTrue(allowedStrings.contains("arrow_left"))
+        XCTAssertFalse(allowedStrings.contains("cmd+enter"))
+    }
+
     private func fixtureResponse(decisionJSON: String) -> String {
         let escaped = decisionJSON
             .replacingOccurrences(of: "\\", with: "\\\\")
