@@ -49,6 +49,7 @@ final class ExamLoopTests: XCTestCase {
             capture: capture,
             visionAgent: agent,
             executor: ActionBatchExecutor(driver: driver),
+            initialRuntimeState: ExamRuntimeState(answerState: .verified),
             dryRun: false,
             postActionSettler: {}
         )
@@ -86,7 +87,7 @@ final class ExamLoopTests: XCTestCase {
 
         let result = await loop.run()
 
-        XCTAssertEqual(result, .dryRunPlanned(summary: "would select B", actionCount: 2))
+        XCTAssertEqual(result, .dryRunPlanned(summary: "would select B", actionCount: 1))
         XCTAssertTrue(driver.calls.isEmpty)
     }
 
@@ -117,6 +118,7 @@ final class ExamLoopTests: XCTestCase {
             capture: capture,
             visionAgent: agent,
             executor: ActionBatchExecutor(driver: driver),
+            initialRuntimeState: ExamRuntimeState(answerState: .verified),
             dryRun: false,
             postActionSettler: {
                 log.events.append("settle")
