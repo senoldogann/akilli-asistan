@@ -132,7 +132,9 @@ public final class OpenAIResponsesVisionAgent: VisionAgent {
         5. If an answer or navigation target is not visible, scroll by a moderate amount and make that the batch; re-observation will follow.
         6. If a code/text editor is visible, click/focus it first and then type the complete answer when it is safe to do so. Never request paste.
         7. Set expectsVisualChange=true whenever the executed batch should visibly alter selection, text, scroll position, test output, or navigation.
-        8. Do not invent coordinates outside the captured Chrome window.
+        8. Never click Next/Continue/Seuraava (or an equivalent navigation control) merely because it is visible. Before a boundary click, confirm that the current question visibly has a selected answer or entered response. If it does not, select/type the answer first and let the next observation handle navigation.
+        9. If consecutive_non_progress is greater than zero, this is a fresh observation after an unverified action. Re-evaluate the current question and target; do not blindly reuse an earlier navigation coordinate or chain another navigation attempt.
+        10. Do not invent coordinates outside the captured Chrome window.
 
         Coordinate mapping:
         - Screenshot pixels: width=\(frame.pixelWidth), height=\(frame.pixelHeight).

@@ -162,6 +162,11 @@ public final class ExamLoop {
                 if detector.hasMeaningfulChange(before: before.image, after: after.image) {
                     nonProgressCount = 0
                 } else {
+                    // Do not replay guessed nearby coordinates from this stale observation.
+                    // A successful navigation can produce a visually similar next question;
+                    // another blind click could immediately skip that question. The next loop
+                    // iteration captures a fresh frame and asks the vision agent to reassess
+                    // the current question and coordinates.
                     nonProgressCount += 1
                     if nonProgressCount >= maxNonProgress {
                         return .nonProgress(cycles: cycles)

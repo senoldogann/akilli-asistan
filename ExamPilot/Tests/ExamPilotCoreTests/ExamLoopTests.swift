@@ -36,6 +36,29 @@ final class ExamLoopTests: XCTestCase {
         XCTAssertEqual(driver.calls.count, 3)
     }
 
+    func testNoProgressReobservesWithoutReplayingStaleBoundaryClick() async throws {
+        let before = try makeFrame(gray: 0.1)
+        let unchanged = try makeFrame(gray: 0.1)
+        let capture = QueueCapture(frames: [before, unchanged, unchanged])
+        let agent = QueueVisionAgent(decisions: [
+            ExamDecision(summary: "go next", expectsVisualChange: true, actions: [.moveClick(x: 50, y: 50, boundary: true)]),
+            ExamDecision(summary: "done", expectsVisualChange: false, actions: [.finish()]),
+        ])
+        let driver = LoopRecordingDriver()
+        let loop = ExamLoop(
+            capture: capture,
+            visionAgent: agent,
+            executor: ActionBatchExecutor(driver: driver),
+            dryRun: false,
+            postActionSettler: {}
+        )
+
+        let result = await loop.run()
+
+        XCTAssertEqual(result, .finished(cycles: 2))
+        XCTAssertEqual(driver.calls, ["click"])
+    }
+
     func testInvalidBatchReobservesWithoutInput() async throws {
         let frame = try makeFrame(gray: 0.3)
         let capture = QueueCapture(frames: [frame, frame])

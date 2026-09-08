@@ -141,7 +141,8 @@ The core runtime rejects or bounds model output before it reaches physical input
 - emergency stop is checked inside long mouse/type/wait operations rather than only between action objects;
 - actions after the first boundary are discarded;
 - a boundary action forces post-action visual verification even if model output incorrectly claims no visual change is expected;
-- three consecutive expected-change batches with no meaningful visual change terminate the run;
+- a boundary click with no detected visual change is never replayed blindly from stale coordinates; the loop captures a fresh frame and asks the vision agent to reassess the current question and target;
+- three consecutive expected-change batches with no meaningful visual change after fresh re-observations terminate the run;
 - 200 observation cycles by default, configurable with `--max-cycles`;
 - no shell tool, arbitrary filesystem action, clipboard access, browser injection, or DOM tool is exposed to the model.
 
