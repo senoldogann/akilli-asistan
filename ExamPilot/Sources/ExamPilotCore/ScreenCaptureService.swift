@@ -109,9 +109,9 @@ public struct ScreenCaptureService: ScreenCapturing {
 
     private func focusedWindowFrame(processID: pid_t) -> CGRect? {
         let app = AXUIElementCreateApplication(processID)
-        guard let window = attribute(app, kAXFocusedWindowAttribute as CFString) as? AXUIElement,
-              let positionValue = attribute(window, kAXPositionAttribute as CFString) as? AXValue,
-              let sizeValue = attribute(window, kAXSizeAttribute as CFString) as? AXValue,
+        guard let window = attribute(app, kAXFocusedWindowAttribute as CFString) as! AXUIElement?,
+              let positionValue = attribute(window, kAXPositionAttribute as CFString) as! AXValue?,
+              let sizeValue = attribute(window, kAXSizeAttribute as CFString) as! AXValue?,
               AXValueGetType(positionValue) == .cgPoint,
               AXValueGetType(sizeValue) == .cgSize else {
             return nil
