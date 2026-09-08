@@ -22,7 +22,7 @@ The first production slice must:
 - use bounded randomized key timing so typing is not an unrealistic zero-delay injection;
 - scroll with native wheel events;
 - allow expected UI changes a short bounded settling interval, then recapture and verify progress;
-- stop safely on repeated non-progress, permission failure, malformed model output, focus mismatch, or an explicit stop request;
+- stop safely on repeated non-progress, permission failure, malformed model output, focus mismatch, or an explicit stop request, including a stop request that arrives during long mouse/type/wait operations;
 - keep ZeroLose behavior unchanged.
 
 This feature is intended only for environments the user owns or is authorized to automate/test.
@@ -40,7 +40,7 @@ The package uses native Apple frameworks directly: AppKit/CoreGraphics for curso
 3. `VisionAgent` receives the screenshot plus a compact state summary and returns a strict `ExamDecision`.
 4. `ActionBatchPolicy` validates and truncates the proposed action list at a navigation/UI-changing boundary.
 5. In live mode, `ChromeInputFocusService` re-activates the captured Chrome process and verifies that Chrome's current `AXFocusedWindow` still overlaps the captured window geometry strongly enough to be the same window. A mismatch aborts before physical input.
-6. `ActionBatchExecutor` executes the actions sequentially using the native mouse, keyboard, scroll, and wait controllers.
+6. `ActionBatchExecutor` executes the actions sequentially using the native mouse, keyboard, scroll, and wait controllers. `NativeInputDriver` also checks the emergency-stop signal inside long-running native input operations.
 7. Expected-change batches receive a bounded UI-settle interval.
 8. `ScreenCaptureService` captures the post-action screen.
 9. `VisualChangeDetector` compares before/after perceptual fingerprints.
@@ -67,11 +67,11 @@ All model-proposed coordinates are absolute macOS global screen points, not raw 
 
 ## Mouse Input
 
-`NativeInputDriver` reads the current CoreGraphics cursor location, generates a bounded cubic Bezier path to the target, and posts `mouseMoved`, `leftMouseDown`, and `leftMouseUp` events globally with `CGEvent.post(tap: .cghidEventTap)`. The path duration and number of samples are bounded. There is no deliberate random misclick behavior.
+`NativeInputDriver` reads the current CoreGraphics cursor location, generates a bounded cubic Bezier path to the target, and posts `mouseMoved`, `leftMouseDown`, and `leftMouseUp` events globally with `CGEvent.post(tap: .cghidEventTap)`. The path duration and number of samples are bounded. The emergency-stop flag is checked before each movement sample and again before mouse-down. Once mouse-down is posted, mouse-up is always paired before cancellation is surfaced so macOS is not left with a stuck button. There is no deliberate random misclick behavior.
 
 ## Keyboard Input
 
-`NativeInputDriver` never touches `NSPasteboard`. For ordinary Unicode text it posts key-down/key-up events using `CGEventKeyboardSetUnicodeString`, one grapheme cluster at a time, with a bounded delay profile. Newlines and tabs are emitted as physical key presses. Named special keys map to macOS virtual key codes. Delay generation is bounded and unit-tested without posting real events.
+`NativeInputDriver` never touches `NSPasteboard`. For ordinary Unicode text it posts key-down/key-up events using `CGEventKeyboardSetUnicodeString`, one grapheme cluster at a time, with a bounded delay profile. Newlines and tabs are emitted as physical key presses. Named special keys map to macOS virtual key codes. The emergency-stop flag is checked before every grapheme/key event. Once key-down is posted, key-up is always paired before cancellation is surfaced. Delay generation is bounded and unit-tested without posting real events.
 
 ## Screen Capture
 
@@ -108,7 +108,8 @@ The runtime enforces:
 - hard stop at the first UI-changing boundary;
 - visual verification forced after non-finish boundary actions;
 - maximum consecutive non-progress batches: 3;
-- `SIGINT`/Ctrl-C stops before the next physical action;
+- `SIGINT`/Ctrl-C is checked between action objects and inside mouse movement, per-character typing, key/scroll dispatch, and short slices of waits;
+- down/up input pairs are completed before cancellation is surfaced so a stop cannot leave a key or mouse button logically held;
 - `--dry-run` disables all mutations, including application focus changes.
 
 ## Verification
@@ -139,6 +140,8 @@ Unit tests cover:
 - live input preparation occurring after capture and before physical input;
 - dry-run skipping focus preparation entirely;
 - captured/focused Chrome window geometry matching and same-process wrong-window rejection;
+- executor translation of driver cancellation into a stopped batch;
+- native driver stop checks before typing physical input;
 - visual fingerprint/change scoring using generated `CGImage` fixtures;
 - keyboard delay profile bounds without posting real events;
 - OpenAI response decoding and request construction from fixture data;
