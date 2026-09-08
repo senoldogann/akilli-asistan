@@ -26,7 +26,7 @@ That separation prevents common failure modes such as stale-coordinate replay, r
 - Session-owned, privacy-bounded working memory and structured telemetry.
 - OpenAI Responses structured-vision provider.
 - Native OpenAI Computer Use provider contract with `previous_response_id` continuation and `computer_call_output` screenshots.
-- Emergency stop and dry-run modes.
+- Emergency stop, dry-run, and bounded verbose diagnostics modes.
 
 ## Architecture
 
@@ -95,6 +95,21 @@ Optional overrides:
 ```bash
 swift run exampilot --model gpt-5.6-sol
 swift run exampilot --max-cycles 80
+swift run exampilot --verbose
+```
+
+`--verbose` prints bounded cycle-level diagnostics such as state version, question generation, event kind, verification failure ID, and recovery strategy. It deliberately excludes session identifiers, screenshots, provider payloads, raw typed answers, and secrets.
+
+For a reproducible diagnostic run:
+
+```bash
+swift run exampilot --verbose --max-cycles 30 2>&1 | tee ~/Desktop/exampilot.log
+```
+
+A classified non-progress stop is reported with its stable failure identifier even without verbose mode, for example:
+
+```text
+ExamPilot stopped after 13 cycles. reason=repeated_intent_loop. Run with --verbose for cycle-level diagnostics.
 ```
 
 Press **Ctrl-C** to request an emergency stop.
@@ -166,7 +181,7 @@ Run the repository gate from the root:
 python3 scripts/verify_all.py
 ```
 
-The gate checks the cleaned repository layout, runs the ExamPilot test suite, builds ExamPilot in release mode, and builds ZeroLose with code signing disabled when Xcode is available.
+The gate checks the cleaned repository layout, runs the ExamPilot test suite, builds ExamPilot in release mode, verifies that the release CLI exposes `--verbose`, and builds ZeroLose with code signing disabled when Xcode is available.
 
 ## Development rules
 
