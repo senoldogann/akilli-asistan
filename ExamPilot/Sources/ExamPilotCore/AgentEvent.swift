@@ -5,7 +5,10 @@ public enum AgentEventKind: String, Codable, Equatable {
     case proposalReceived
     case policyDenied
     case batchValidated
+    case actionExecuted
     case answerVerified
+    case outcomeVerified
+    case outcomePending
     case boundaryTransitionStarted
     case boundaryTransitionCompleted
     case verificationFailed
