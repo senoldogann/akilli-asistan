@@ -2,11 +2,18 @@ public struct ActionExecutionResult: Equatable {
     public let executedCount: Int
     public let finished: Bool
     public let cancelled: Bool
+    public let interruptedForUIChange: Bool
 
-    public init(executedCount: Int, finished: Bool, cancelled: Bool) {
+    public init(
+        executedCount: Int,
+        finished: Bool,
+        cancelled: Bool,
+        interruptedForUIChange: Bool = false
+    ) {
         self.executedCount = executedCount
         self.finished = finished
         self.cancelled = cancelled
+        self.interruptedForUIChange = interruptedForUIChange
     }
 }
 
@@ -20,14 +27,15 @@ public final class ActionBatchExecutor {
     public func execute(
         _ batch: ValidatedBatch,
         dryRun: Bool,
-        shouldStop: () -> Bool = { false }
+        shouldStop: () -> Bool = { false },
+        afterAction: (_ action: ExamAction, _ hasRemainingActions: Bool) async throws -> Bool = { _, _ in true }
     ) async throws -> ActionExecutionResult {
         if dryRun {
             return ActionExecutionResult(executedCount: 0, finished: false, cancelled: false)
         }
 
         var executed = 0
-        for action in batch.actions {
+        for (index, action) in batch.actions.enumerated() {
             if shouldStop() {
                 return ActionExecutionResult(executedCount: executed, finished: false, cancelled: true)
             }
@@ -55,6 +63,19 @@ public final class ActionBatchExecutor {
                 return ActionExecutionResult(executedCount: executed, finished: false, cancelled: true)
             }
             executed += 1
+
+            let hasRemainingActions = index < batch.actions.count - 1
+            if hasRemainingActions {
+                let shouldContinue = try await afterAction(action, true)
+                if !shouldContinue {
+                    return ActionExecutionResult(
+                        executedCount: executed,
+                        finished: false,
+                        cancelled: false,
+                        interruptedForUIChange: true
+                    )
+                }
+            }
         }
 
         return ActionExecutionResult(executedCount: executed, finished: false, cancelled: false)
