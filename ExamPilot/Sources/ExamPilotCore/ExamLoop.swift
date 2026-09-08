@@ -18,6 +18,7 @@ public final class ExamLoop {
     private let dryRun: Bool
     private let maxCycles: Int
     private let maxNonProgress: Int
+    private let prepareForInput: (ScreenFrame) async throws -> Void
     private let postActionSettler: () async throws -> Void
     private let shouldStop: () -> Bool
 
@@ -30,6 +31,7 @@ public final class ExamLoop {
         dryRun: Bool,
         maxCycles: Int = 200,
         maxNonProgress: Int = 3,
+        prepareForInput: @escaping (ScreenFrame) async throws -> Void = { _ in },
         postActionSettler: @escaping () async throws -> Void = {
             try await Task.sleep(nanoseconds: 450_000_000)
         },
@@ -43,6 +45,7 @@ public final class ExamLoop {
         self.dryRun = dryRun
         self.maxCycles = maxCycles
         self.maxNonProgress = maxNonProgress
+        self.prepareForInput = prepareForInput
         self.postActionSettler = postActionSettler
         self.shouldStop = shouldStop
     }
@@ -80,6 +83,13 @@ public final class ExamLoop {
 
                 if dryRun {
                     return .dryRunPlanned(summary: batch.summary, actionCount: batch.actions.count)
+                }
+
+                // Re-activate the exact Chrome process that produced this observation before
+                // posting any global HID events. Dry-run exits above and never changes focus.
+                try await prepareForInput(before)
+                if shouldStop() {
+                    return .stopped(cycles: cycles)
                 }
 
                 let execution = try await executor.execute(batch, dryRun: false, shouldStop: shouldStop)
