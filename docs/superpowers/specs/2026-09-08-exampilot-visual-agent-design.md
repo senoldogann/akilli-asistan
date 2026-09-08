@@ -10,6 +10,9 @@ The first production slice must:
 
 - capture the visible authorized Chrome window with ScreenCaptureKit;
 - prefer the focused/active Chrome window and use the largest visible Chrome window only as a fallback;
+- carry the captured Chrome process identity into the execution loop;
+- before live physical input, re-activate the captured Chrome process and verify that the focused Chrome window still geometrically matches the screenshot;
+- fail closed if focus moved to another Chrome window while the model was reasoning;
 - reason about the current visible quiz/exam state from the screenshot;
 - support single-choice, multi-choice, text, code-entry, scrolling, and navigation states;
 - plan multiple safe actions from one observation;
@@ -19,7 +22,7 @@ The first production slice must:
 - use bounded randomized key timing so typing is not an unrealistic zero-delay injection;
 - scroll with native wheel events;
 - allow expected UI changes a short bounded settling interval, then recapture and verify progress;
-- stop safely on repeated non-progress, permission failure, malformed model output, or an explicit stop request;
+- stop safely on repeated non-progress, permission failure, malformed model output, focus mismatch, or an explicit stop request;
 - keep ZeroLose behavior unchanged.
 
 This feature is intended only for environments the user owns or is authorized to automate/test.
@@ -28,19 +31,22 @@ This feature is intended only for environments the user owns or is authorized to
 
 Implement ExamPilot as a standalone Swift Package inside the existing `akilli-asistan` repository rather than adding code to the ZeroLose Xcode target. This keeps the existing interview assistant stable and makes the computer-use core independently buildable and testable. The package is macOS-only and exposes a command-line executable named `exampilot` plus an `ExamPilotCore` library target.
 
-The package uses native Apple frameworks directly: AppKit/CoreGraphics for cursor and keyboard events, Accessibility APIs for focused-window resolution, ScreenCaptureKit for screenshots, ImageIO/UniformTypeIdentifiers for JPEG encoding, and Foundation/URLSession for model calls. No browser-specific automation dependency is required.
+The package uses native Apple frameworks directly: AppKit/CoreGraphics for cursor and keyboard events, Accessibility APIs for focused-window resolution and pre-input focus verification, ScreenCaptureKit for screenshots, ImageIO/UniformTypeIdentifiers for JPEG encoding, and Foundation/URLSession for model calls. No browser-specific automation dependency is required.
 
 ## Runtime Data Flow
 
 1. `ExamLoop` requests a screenshot from `ScreenCaptureService`.
-2. `ScreenCaptureService` resolves the focused Chrome window when Accessibility is available, otherwise it falls back to the largest visible Chrome window.
+2. `ScreenCaptureService` resolves the focused Chrome window when Accessibility is available, otherwise it falls back to the largest visible Chrome window, and stores the owning Chrome process ID in `ScreenFrame`.
 3. `VisionAgent` receives the screenshot plus a compact state summary and returns a strict `ExamDecision`.
 4. `ActionBatchPolicy` validates and truncates the proposed action list at a navigation/UI-changing boundary.
-5. `ActionBatchExecutor` executes the actions sequentially using the native mouse, keyboard, scroll, and wait controllers.
-6. Expected-change batches receive a bounded UI-settle interval.
-7. `ScreenCaptureService` captures the post-action screen.
-8. `VisualChangeDetector` compares before/after perceptual fingerprints.
-9. `ExamLoop` records progress and continues, retries with a fresh observation, or aborts after bounded non-progress.
+5. In live mode, `ChromeInputFocusService` re-activates the captured Chrome process and verifies that Chrome's current `AXFocusedWindow` still overlaps the captured window geometry strongly enough to be the same window. A mismatch aborts before physical input.
+6. `ActionBatchExecutor` executes the actions sequentially using the native mouse, keyboard, scroll, and wait controllers.
+7. Expected-change batches receive a bounded UI-settle interval.
+8. `ScreenCaptureService` captures the post-action screen.
+9. `VisualChangeDetector` compares before/after perceptual fingerprints.
+10. `ExamLoop` records progress and continues, retries with a fresh observation, or aborts after bounded non-progress.
+
+Dry-run exits after validated planning and never invokes the focus-preparation hook or physical input.
 
 ## Action Model
 
@@ -57,7 +63,7 @@ The model may return several actions in one decision. `ActionBatchPolicy` treats
 
 ## Coordinate Contract
 
-All model-proposed coordinates are absolute macOS global screen points, not raw screenshot pixels. `ScreenFrame` carries both the captured image pixel dimensions and the corresponding Chrome-window global point rectangle. The model prompt receives both and explicitly maps screenshot positions into global points. The executor rejects coordinates outside the captured Chrome rectangle.
+All model-proposed coordinates are absolute macOS global screen points, not raw screenshot pixels. `ScreenFrame` carries the captured image pixel dimensions, the corresponding Chrome-window global point rectangle, and the captured Chrome process ID. The model prompt receives the image/global dimensions and explicitly maps screenshot positions into global points. The executor rejects coordinates outside the captured Chrome rectangle.
 
 ## Mouse Input
 
@@ -69,7 +75,13 @@ All model-proposed coordinates are absolute macOS global screen points, not raw 
 
 ## Screen Capture
 
-`ScreenCaptureService` enumerates on-screen windows with ScreenCaptureKit, filters normal Google Chrome windows, and captures the chosen window using `SCScreenshotManager.captureImage(contentFilter:configuration:)`. When Accessibility is available it matches Chrome's `AXFocusedWindow` global frame to the ScreenCaptureKit window list. If focused-window information is unavailable, such as dry-run without Accessibility, it safely falls back to the largest visible Chrome window. The resulting `CGImage` is JPEG encoded for model input.
+`ScreenCaptureService` enumerates on-screen windows with ScreenCaptureKit, filters normal Google Chrome windows, and captures the chosen window using `SCScreenshotManager.captureImage(contentFilter:configuration:)`. When Accessibility is available it matches Chrome's `AXFocusedWindow` global frame to the ScreenCaptureKit window list. If focused-window information is unavailable, such as dry-run without Accessibility, it safely falls back to the largest visible Chrome window. The resulting `CGImage` is JPEG encoded for model input and the owning Chrome process ID is retained for live input preparation.
+
+## Pre-Input Focus Verification
+
+`ChromeInputFocusService` is invoked only after planning/validation and only in live mode. It activates the captured Chrome process, resolves its current `AXFocusedWindow`, raises it, waits for a short bounded activation interval, then compares the focused AX window frame with the captured `ScreenFrame.screenBounds` using intersection-over-union. The default match threshold is 0.65.
+
+If the Chrome process exited, Accessibility became unavailable, the focused window cannot be resolved, or the focused window no longer matches the captured geometry, the batch terminates without posting mouse or keyboard events. This specifically prevents stale screenshot coordinates from being applied to another Chrome window in the same browser process.
 
 ## Vision / Reasoning Provider
 
@@ -78,14 +90,16 @@ All model-proposed coordinates are absolute macOS global screen points, not raw 
 - `OPENAI_API_KEY` (required)
 - `EXAMPILOT_MODEL` (default `gpt-5.6-sol`)
 
-It sends the screenshot as a base64 data URL using an `input_image` item and requests strict JSON Schema structured output. The returned schema maps exactly to `ExamDecision`. The executable provides `--dry-run`, which performs observation/planning but never executes physical input.
+It sends the screenshot as a base64 data URL using an `input_image` item and requests strict JSON Schema structured output. The returned schema maps exactly to `ExamDecision`. The executable provides `--dry-run`, which performs observation/planning but never executes physical input or changes application focus.
 
 ## Safety and Control
 
 The runtime enforces:
 
-- Accessibility permission preflight for physical input;
+- Accessibility permission preflight for physical input and exact-window focus verification;
 - Screen Recording permission preflight/request for capture;
+- captured Chrome PID continuity before live input;
+- captured-window versus focused-window geometry verification before live input;
 - maximum actions per batch: 12;
 - maximum wait action: 5 seconds;
 - maximum absolute scroll amount per action: 1400 pixels;
@@ -95,7 +109,7 @@ The runtime enforces:
 - visual verification forced after non-finish boundary actions;
 - maximum consecutive non-progress batches: 3;
 - `SIGINT`/Ctrl-C stops before the next physical action;
-- `--dry-run` disables all mutations.
+- `--dry-run` disables all mutations, including application focus changes.
 
 ## Verification
 
@@ -122,6 +136,9 @@ Unit tests cover:
 - boundary-forced visual verification;
 - action validation limits and coordinate bounds;
 - focused Chrome-window selection and fallback behavior;
+- live input preparation occurring after capture and before physical input;
+- dry-run skipping focus preparation entirely;
+- captured/focused Chrome window geometry matching and same-process wrong-window rejection;
 - visual fingerprint/change scoring using generated `CGImage` fixtures;
 - keyboard delay profile bounds without posting real events;
 - OpenAI response decoding and request construction from fixture data;
