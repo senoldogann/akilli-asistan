@@ -28,6 +28,57 @@ final class ExamLoopOutcomeVerificationTests: XCTestCase {
         XCTAssertEqual(driver.clicks, [CGPoint(x: 10, y: 10)])
     }
 
+    func testLocalizedAnswerMutationUnlocksProtectedNavigation() async throws {
+        let answerPoint = CGPoint(x: 256, y: 384)
+        let nextPoint = CGPoint(x: 900, y: 700)
+        let unselected = try makeLargeFrame(gray: 0.94, selected: false, marker: 1)
+        let selected = try makeLargeFrame(gray: 0.94, selected: true, marker: 2)
+        let loading = try makeLargeFrame(gray: 0.90, selected: false, marker: 3)
+        let nextQuestion = try makeLargeFrame(gray: 0.50, selected: false, marker: 4)
+        let capture = OutcomeQueueCapture(frames: [
+            unselected,
+            selected,
+            selected,
+            loading,
+            nextQuestion,
+            nextQuestion,
+        ])
+        let agent = OutcomeRecordingAgent(decisions: [
+            ExamDecision(
+                summary: "answer then navigate",
+                expectsVisualChange: true,
+                actions: [
+                    .moveClick(x: answerPoint.x, y: answerPoint.y),
+                    .moveClick(x: nextPoint.x, y: nextPoint.y, boundary: true),
+                ]
+            ),
+            ExamDecision(
+                summary: "navigate",
+                expectsVisualChange: true,
+                actions: [.moveClick(x: nextPoint.x, y: nextPoint.y, boundary: true)]
+            ),
+            ExamDecision(summary: "finish", expectsVisualChange: false, actions: [.finish()]),
+        ])
+        let driver = OutcomeRecordingDriver()
+        let loop = ExamLoop(
+            capture: capture,
+            visionAgent: agent,
+            executor: ActionBatchExecutor(driver: driver),
+            dryRun: false,
+            postActionSettler: {},
+            stabilitySettler: {}
+        )
+
+        let result = await loop.run()
+
+        XCTAssertEqual(result, .finished(cycles: 3))
+        XCTAssertEqual(agent.states.count, 3)
+        XCTAssertTrue(agent.states[1].answerVerified)
+        XCTAssertEqual(agent.states[2].questionGeneration, 2)
+        XCTAssertFalse(agent.states[2].answerVerified)
+        XCTAssertEqual(driver.clicks, [answerPoint, nextPoint])
+    }
+
     func testStableNavigationIdentityUnchangedDoesNotAdvanceGeneration() async throws {
         let question = try makeFrame(gray: 0.40, marker: 1)
         let loading = try makeFrame(gray: 0.90, marker: 2)
@@ -120,6 +171,38 @@ final class ExamLoopOutcomeVerificationTests: XCTestCase {
             image: image,
             jpegData: Data([marker]),
             screenBounds: CGRect(x: 0, y: 0, width: 100, height: 100)
+        )
+    }
+
+    private func makeLargeFrame(gray: CGFloat, selected: Bool, marker: UInt8) throws -> ScreenFrame {
+        let width = 1_024
+        let height = 768
+        guard let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            throw NSError(domain: "ExamLoopOutcomeVerificationTests", code: 5)
+        }
+
+        context.setFillColor(red: gray, green: gray, blue: gray, alpha: 1)
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        if selected {
+            context.setFillColor(red: 0.0, green: 0.40, blue: 1.0, alpha: 1)
+            context.fill(CGRect(x: 247, y: 375, width: 18, height: 18))
+        }
+
+        guard let image = context.makeImage() else {
+            throw NSError(domain: "ExamLoopOutcomeVerificationTests", code: 6)
+        }
+        return ScreenFrame(
+            image: image,
+            jpegData: Data([marker]),
+            screenBounds: CGRect(x: 0, y: 0, width: width, height: height)
         )
     }
 }

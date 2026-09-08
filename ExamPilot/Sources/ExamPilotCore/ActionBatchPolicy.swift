@@ -71,14 +71,16 @@ public struct ActionBatchPolicy {
             deferredProtectedBoundary: deferredProtectedBoundary,
             expectedOutcome: expectedOutcome(
                 actions: accepted,
-                containsProtectedBoundary: boundaryRequiresVerification
+                containsProtectedBoundary: boundaryRequiresVerification,
+                screenBounds: screenBounds
             )
         )
     }
 
     private func expectedOutcome(
         actions: [ExamAction],
-        containsProtectedBoundary: Bool
+        containsProtectedBoundary: Bool,
+        screenBounds: CGRect
     ) -> ExpectedOutcomeKind {
         if containsProtectedBoundary {
             return .navigation
@@ -86,17 +88,45 @@ public struct ActionBatchPolicy {
         if actions.contains(where: { $0.kind == .scroll }) {
             return .viewportChange
         }
-        if actions.contains(where: { action in
+
+        let answerActions = actions.filter { action in
             switch action.kind {
             case .moveClick, .typeText, .key:
                 return !action.boundary
             case .scroll, .wait, .finish:
                 return false
             }
-        }) {
-            return .answerMutation
         }
-        return .none
+        guard !answerActions.isEmpty else {
+            return .none
+        }
+
+        // Text/key mutations can alter a region far from the initial focus click, so they
+        // keep whole-frame verification. Pure click answer batches can be verified against
+        // the final clicked target, which is essential for small radio/checkbox mutations.
+        let containsTextOrKeyMutation = answerActions.contains {
+            $0.kind == .typeText || $0.kind == .key
+        }
+        if !containsTextOrKeyMutation,
+           let click = answerActions.last(where: { $0.kind == .moveClick }),
+           let x = click.x,
+           let y = click.y,
+           screenBounds.width > 0,
+           screenBounds.height > 0 {
+            let normalizedX = (x - screenBounds.minX) / screenBounds.width
+            let normalizedY = (y - screenBounds.minY) / screenBounds.height
+            if normalizedX.isFinite,
+               normalizedY.isFinite,
+               (0...1).contains(normalizedX),
+               (0...1).contains(normalizedY) {
+                return .answerMutationAt(
+                    normalizedX: normalizedX,
+                    normalizedY: normalizedY
+                )
+            }
+        }
+
+        return .answerMutation
     }
 
     private func validate(_ action: ExamAction, screenBounds: CGRect) throws {

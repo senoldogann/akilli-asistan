@@ -95,7 +95,7 @@ final class ExamLoopSessionTests: XCTestCase {
             visionAgent: agent,
             executor: ActionBatchExecutor(driver: driver),
             outcomeVerifier: SessionTestOutcomeVerifier { expected in
-                expected == .answerMutation
+                expected.rawValue == "answerMutation"
                     ? .success(.answerMutation(score: 0.2))
                     : .success(.none)
             },

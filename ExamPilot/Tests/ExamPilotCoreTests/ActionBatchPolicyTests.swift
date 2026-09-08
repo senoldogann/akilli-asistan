@@ -98,7 +98,7 @@ final class ActionBatchPolicyTests: XCTestCase {
         XCTAssertEqual(batch.expectedOutcome, .navigation)
     }
 
-    func testDeferredBoundaryProducesAnswerMutationExpectation() throws {
+    func testDeferredBoundaryProducesTargetedAnswerMutationExpectation() throws {
         let batch = try ActionBatchPolicy().validate(
             ExamDecision(
                 summary: "answer then next",
@@ -113,6 +113,27 @@ final class ActionBatchPolicyTests: XCTestCase {
         )
 
         XCTAssertTrue(batch.deferredProtectedBoundary)
+        guard case .answerMutationAt(let normalizedX, let normalizedY) = batch.expectedOutcome else {
+            return XCTFail("Expected targeted answer mutation, got \(batch.expectedOutcome)")
+        }
+        XCTAssertEqual(normalizedX, 20.0 / 1440.0, accuracy: 0.000_001)
+        XCTAssertEqual(normalizedY, 20.0 / 900.0, accuracy: 0.000_001)
+    }
+
+    func testTextMutationKeepsWholeFrameAnswerExpectation() throws {
+        let batch = try ActionBatchPolicy().validate(
+            ExamDecision(
+                summary: "type answer",
+                expectsVisualChange: true,
+                actions: [
+                    .moveClick(x: 400, y: 400),
+                    .typeText("answer"),
+                ]
+            ),
+            screenBounds: bounds,
+            context: ActionPolicyContext(stateVersion: 4, navigationAllowed: false)
+        )
+
         XCTAssertEqual(batch.expectedOutcome, .answerMutation)
     }
 
