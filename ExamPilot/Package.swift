@@ -9,7 +9,12 @@ let package = Package(
         .executable(name: "exampilot", targets: ["ExamPilotCLI"]),
     ],
     targets: [
-        .target(name: "ExamPilotCore"),
+        .target(
+            name: "ExamPilotCore",
+            linkerSettings: [
+                .linkedLibrary("sqlite3"),
+            ]
+        ),
         .executableTarget(name: "ExamPilotCLI", dependencies: ["ExamPilotCore"]),
         .testTarget(name: "ExamPilotCoreTests", dependencies: ["ExamPilotCore"]),
     ]
