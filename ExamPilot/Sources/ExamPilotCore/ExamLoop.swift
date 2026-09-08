@@ -15,10 +15,12 @@ public final class ExamLoop {
     private let policy: ActionBatchPolicy
     private let executor: ActionBatchExecutor
     private let detector: VisualChangeDetector
+    private let structuralDetector: VisualChangeDetector
     private let dryRun: Bool
     private let maxCycles: Int
     private let maxNonProgress: Int
     private let prepareForInput: (ScreenFrame) async throws -> Void
+    private let intermediateClickSettler: () async throws -> Void
     private let postActionSettler: () async throws -> Void
     private let shouldStop: () -> Bool
 
@@ -28,10 +30,14 @@ public final class ExamLoop {
         policy: ActionBatchPolicy = ActionBatchPolicy(),
         executor: ActionBatchExecutor,
         detector: VisualChangeDetector = VisualChangeDetector(),
+        structuralDetector: VisualChangeDetector = VisualChangeDetector(threshold: 0.08),
         dryRun: Bool,
         maxCycles: Int = 200,
         maxNonProgress: Int = 3,
         prepareForInput: @escaping (ScreenFrame) async throws -> Void = { _ in },
+        intermediateClickSettler: @escaping () async throws -> Void = {
+            try await Task.sleep(nanoseconds: 220_000_000)
+        },
         postActionSettler: @escaping () async throws -> Void = {
             try await Task.sleep(nanoseconds: 450_000_000)
         },
@@ -42,10 +48,12 @@ public final class ExamLoop {
         self.policy = policy
         self.executor = executor
         self.detector = detector
+        self.structuralDetector = structuralDetector
         self.dryRun = dryRun
         self.maxCycles = maxCycles
         self.maxNonProgress = maxNonProgress
         self.prepareForInput = prepareForInput
+        self.intermediateClickSettler = intermediateClickSettler
         self.postActionSettler = postActionSettler
         self.shouldStop = shouldStop
     }
@@ -92,12 +100,49 @@ public final class ExamLoop {
                     return .stopped(cycles: cycles)
                 }
 
-                let execution = try await executor.execute(batch, dryRun: false, shouldStop: shouldStop)
-                if execution.cancelled {
+                // The model's boundary flag is advisory, not a security boundary. After any
+                // non-boundary click that still has actions behind it, take a cheap local
+                // screenshot and stop the batch if the page changed structurally. This keeps
+                // small checkbox/radio updates batchable while preventing stale actions from
+                // running after a misclassified Next/Submit/navigation click.
+                var structuralBaseline = before.image
+                let execution = try await executor.execute(
+                    batch,
+                    dryRun: false,
+                    shouldStop: shouldStop,
+                    afterAction: { action, hasRemainingActions in
+                        guard hasRemainingActions,
+                              action.kind == .moveClick,
+                              !action.boundary else {
+                            return true
+                        }
+
+                        try await self.intermediateClickSettler()
+                        if self.shouldStop() {
+                            return false
+                        }
+
+                        let interim = try await self.capture.capture()
+                        let changedStructurally = self.structuralDetector.hasMeaningfulChange(
+                            before: structuralBaseline,
+                            after: interim.image
+                        )
+                        structuralBaseline = interim.image
+                        return !changedStructurally
+                    }
+                )
+                if execution.cancelled || shouldStop() {
                     return .stopped(cycles: cycles)
                 }
                 if execution.finished {
                     return .finished(cycles: cycles)
+                }
+                if execution.interruptedForUIChange {
+                    // The intermediate guard already observed a materially different UI.
+                    // Discard every stale action after the click and reason again from a
+                    // fresh screenshot on the next cycle rather than counting non-progress.
+                    nonProgressCount = 0
+                    continue
                 }
 
                 guard batch.expectsVisualChange else {
