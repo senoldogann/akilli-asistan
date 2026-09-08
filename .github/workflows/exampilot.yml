@@ -1,26 +1,16 @@
-name: ExamPilot
+name: Repository
 
 on:
   push:
     branches:
       - main
-      - feat/exampilot-visual-agent
-    paths:
-      - 'ExamPilot/**'
-      - '.github/workflows/exampilot.yml'
   pull_request:
-    paths:
-      - 'ExamPilot/**'
-      - '.github/workflows/exampilot.yml'
 
 jobs:
-  test:
-    runs-on: macos-15
+  verify:
+    runs-on: macos-26
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - name: Swift test
-        working-directory: ExamPilot
-        run: swift test
-      - name: Release build
-        working-directory: ExamPilot
-        run: swift build -c release
+      - uses: actions/checkout@v7
+      - name: Verify repository
+        run: python3 scripts/verify_all.py
