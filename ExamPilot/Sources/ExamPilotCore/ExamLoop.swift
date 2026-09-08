@@ -11,6 +11,7 @@ public enum ExamRunResult: Equatable {
 
 private struct PendingTransitionVerification {
     let beforeFrame: ScreenFrame
+    let intent: AgentIntentFingerprint
 }
 
 public final class ExamLoop {
@@ -22,6 +23,7 @@ public final class ExamLoop {
     private let structuralDetector: VisualChangeDetector
     private let outcomeVerifier: OutcomeVerifying
     private let stabilityDetector: UIStabilityDetector
+    private let recoveryEngine: RecoveryEngine
     private let maxStabilitySamples: Int
     private let initialRuntimeState: ExamRuntimeState
     private let eventSink: AgentEventSinking
@@ -43,6 +45,7 @@ public final class ExamLoop {
         structuralDetector: VisualChangeDetector = VisualChangeDetector(threshold: 0.08),
         outcomeVerifier: OutcomeVerifying? = nil,
         stabilityDetector: UIStabilityDetector = UIStabilityDetector(),
+        recoveryEngine: RecoveryEngine = RecoveryEngine(),
         maxStabilitySamples: Int = 4,
         initialRuntimeState: ExamRuntimeState = ExamRuntimeState(),
         eventSink: AgentEventSinking = NullAgentEventSink(),
@@ -72,6 +75,7 @@ public final class ExamLoop {
             structuralDetector: structuralDetector
         )
         self.stabilityDetector = stabilityDetector
+        self.recoveryEngine = recoveryEngine
         self.maxStabilitySamples = max(1, maxStabilitySamples)
         self.initialRuntimeState = initialRuntimeState
         self.eventSink = eventSink
@@ -138,6 +142,19 @@ public final class ExamLoop {
                             state: runtimeState,
                             detail: "stability_sample_budget_exhausted"
                         )
+
+                        if let verification = pendingTransitionVerification {
+                            let recovery = applyRecovery(
+                                failure: .transitionStillRunning,
+                                intent: verification.intent,
+                                cycle: cycles,
+                                state: runtimeState
+                            )
+                            if case .exhausted = recovery {
+                                return .nonProgress(cycles: cycles)
+                            }
+                        }
+
                         if nonProgressCount >= maxNonProgress {
                             return .nonProgress(cycles: cycles)
                         }
@@ -155,6 +172,7 @@ public final class ExamLoop {
                         switch outcome {
                         case .success(.navigation):
                             runtimeState.completeBoundaryTransition()
+                            recoveryEngine.recordSuccess(intent: verification.intent)
                             recordEvent(
                                 .outcomeVerified,
                                 cycle: cycles,
@@ -180,9 +198,18 @@ public final class ExamLoop {
                                 state: runtimeState,
                                 detail: "navigation_identity_unchanged"
                             )
+                            let recovery = applyRecovery(
+                                failure: .stateMismatch,
+                                intent: verification.intent,
+                                cycle: cycles,
+                                state: runtimeState
+                            )
                             pendingTransitionFrame = nil
                             pendingTransitionVerification = nil
                             nonProgressCount += 1
+                            if case .exhausted = recovery {
+                                return .nonProgress(cycles: cycles)
+                            }
                             if nonProgressCount >= maxNonProgress {
                                 return .nonProgress(cycles: cycles)
                             }
@@ -197,6 +224,15 @@ public final class ExamLoop {
                                 state: runtimeState,
                                 detail: "ui_transitioning"
                             )
+                            let recovery = applyRecovery(
+                                failure: .transitionStillRunning,
+                                intent: verification.intent,
+                                cycle: cycles,
+                                state: runtimeState
+                            )
+                            if case .exhausted = recovery {
+                                return .nonProgress(cycles: cycles)
+                            }
                             if nonProgressCount >= maxNonProgress {
                                 return .nonProgress(cycles: cycles)
                             }
@@ -210,9 +246,18 @@ public final class ExamLoop {
                                 state: runtimeState,
                                 detail: "no_visible_effect"
                             )
+                            let recovery = applyRecovery(
+                                failure: .noVisibleEffect,
+                                intent: verification.intent,
+                                cycle: cycles,
+                                state: runtimeState
+                            )
                             pendingTransitionFrame = nil
                             pendingTransitionVerification = nil
                             nonProgressCount += 1
+                            if case .exhausted = recovery {
+                                return .nonProgress(cycles: cycles)
+                            }
                             if nonProgressCount >= maxNonProgress {
                                 return .nonProgress(cycles: cycles)
                             }
@@ -226,9 +271,18 @@ public final class ExamLoop {
                                 state: runtimeState,
                                 detail: "navigation_verification_mismatch"
                             )
+                            let recovery = applyRecovery(
+                                failure: .stateMismatch,
+                                intent: verification.intent,
+                                cycle: cycles,
+                                state: runtimeState
+                            )
                             pendingTransitionFrame = nil
                             pendingTransitionVerification = nil
                             nonProgressCount += 1
+                            if case .exhausted = recovery {
+                                return .nonProgress(cycles: cycles)
+                            }
                             if nonProgressCount >= maxNonProgress {
                                 return .nonProgress(cycles: cycles)
                             }
@@ -269,6 +323,10 @@ public final class ExamLoop {
                     uiPhase: runtimeState.uiPhase
                 )
                 let decision = try await visionAgent.decide(frame: before, state: state)
+                let intent = AgentIntentFingerprint(
+                    decision: decision,
+                    questionGeneration: runtimeState.questionGeneration
+                )
                 lastSummary = decision.summary
                 recordEvent(
                     .proposalReceived,
@@ -288,19 +346,24 @@ public final class ExamLoop {
                         )
                     )
                 } catch let error as ActionValidationError {
-                    let detail: String
-                    if error == .protectedBoundaryBeforeAnswer {
-                        nonProgressCount = 0
-                        detail = "protected_boundary_before_answer"
-                    } else {
-                        detail = "action_validation_failed"
-                    }
+                    let detail = error == .protectedBoundaryBeforeAnswer
+                        ? "protected_boundary_before_answer"
+                        : "action_validation_failed"
                     recordEvent(
                         .policyDenied,
                         cycle: cycles,
                         state: runtimeState,
                         detail: detail
                     )
+                    let recovery = applyRecovery(
+                        failure: .invalidModelPlan,
+                        intent: intent,
+                        cycle: cycles,
+                        state: runtimeState
+                    )
+                    if case .exhausted = recovery {
+                        return .nonProgress(cycles: cycles)
+                    }
                     continue
                 }
 
@@ -322,6 +385,15 @@ public final class ExamLoop {
                         state: runtimeState,
                         detail: "stale_state_version"
                     )
+                    let recovery = applyRecovery(
+                        failure: .staleObservation,
+                        intent: intent,
+                        cycle: cycles,
+                        state: runtimeState
+                    )
+                    if case .exhausted = recovery {
+                        return .nonProgress(cycles: cycles)
+                    }
                     continue
                 }
 
@@ -337,6 +409,15 @@ public final class ExamLoop {
                         state: runtimeState,
                         detail: "stale_state_after_focus_preparation"
                     )
+                    let recovery = applyRecovery(
+                        failure: .staleObservation,
+                        intent: intent,
+                        cycle: cycles,
+                        state: runtimeState
+                    )
+                    if case .exhausted = recovery {
+                        return .nonProgress(cycles: cycles)
+                    }
                     continue
                 }
 
@@ -384,6 +465,7 @@ public final class ExamLoop {
                     return .stopped(cycles: cycles)
                 }
                 if execution.finished {
+                    recoveryEngine.recordSuccess(intent: intent)
                     return .finished(cycles: cycles)
                 }
                 if execution.interruptedForUIChange {
@@ -409,12 +491,16 @@ public final class ExamLoop {
                             detail: "unexpected_structural_change"
                         )
                         pendingTransitionFrame = interruptedTransitionFrame
-                        pendingTransitionVerification = PendingTransitionVerification(beforeFrame: before)
+                        pendingTransitionVerification = PendingTransitionVerification(
+                            beforeFrame: before,
+                            intent: intent
+                        )
                     }
                     continue
                 }
 
                 guard batch.expectsVisualChange else {
+                    recoveryEngine.recordSuccess(intent: intent)
                     nonProgressCount = 0
                     continue
                 }
@@ -441,7 +527,10 @@ public final class ExamLoop {
                         detail: "protected_boundary_changed_ui"
                     )
                     pendingTransitionFrame = after
-                    pendingTransitionVerification = PendingTransitionVerification(beforeFrame: before)
+                    pendingTransitionVerification = PendingTransitionVerification(
+                        beforeFrame: before,
+                        intent: intent
+                    )
                     nonProgressCount = 0
                     continue
                 }
@@ -455,6 +544,7 @@ public final class ExamLoop {
 
                 switch outcome {
                 case .success(.answerMutation):
+                    recoveryEngine.recordSuccess(intent: intent)
                     nonProgressCount = 0
                     runtimeState.recordAnswerVerified()
                     recordEvent(
@@ -471,6 +561,7 @@ public final class ExamLoop {
                     )
 
                 case .success(.viewportChange):
+                    recoveryEngine.recordSuccess(intent: intent)
                     nonProgressCount = 0
                     recordEvent(
                         .outcomeVerified,
@@ -480,6 +571,7 @@ public final class ExamLoop {
                     )
 
                 case .success(.none):
+                    recoveryEngine.recordSuccess(intent: intent)
                     nonProgressCount = 0
                     recordEvent(
                         .outcomeVerified,
@@ -503,7 +595,10 @@ public final class ExamLoop {
                         detail: "unexpected_post_action_structural_change"
                     )
                     pendingTransitionFrame = after
-                    pendingTransitionVerification = PendingTransitionVerification(beforeFrame: before)
+                    pendingTransitionVerification = PendingTransitionVerification(
+                        beforeFrame: before,
+                        intent: intent
+                    )
                     nonProgressCount = 0
 
                 case .failure(.noVisibleEffect):
@@ -514,6 +609,15 @@ public final class ExamLoop {
                         state: runtimeState,
                         detail: "no_visible_effect"
                     )
+                    let recovery = applyRecovery(
+                        failure: .noVisibleEffect,
+                        intent: intent,
+                        cycle: cycles,
+                        state: runtimeState
+                    )
+                    if case .exhausted = recovery {
+                        return .nonProgress(cycles: cycles)
+                    }
                     if nonProgressCount >= maxNonProgress {
                         return .nonProgress(cycles: cycles)
                     }
@@ -526,6 +630,15 @@ public final class ExamLoop {
                         state: runtimeState,
                         detail: "navigation_identity_unchanged"
                     )
+                    let recovery = applyRecovery(
+                        failure: .stateMismatch,
+                        intent: intent,
+                        cycle: cycles,
+                        state: runtimeState
+                    )
+                    if case .exhausted = recovery {
+                        return .nonProgress(cycles: cycles)
+                    }
                     if nonProgressCount >= maxNonProgress {
                         return .nonProgress(cycles: cycles)
                     }
@@ -545,7 +658,10 @@ public final class ExamLoop {
                         detail: "unexpected_post_action_structural_change"
                     )
                     pendingTransitionFrame = after
-                    pendingTransitionVerification = PendingTransitionVerification(beforeFrame: before)
+                    pendingTransitionVerification = PendingTransitionVerification(
+                        beforeFrame: before,
+                        intent: intent
+                    )
                     nonProgressCount = 0
                 }
             } catch {
@@ -554,6 +670,34 @@ public final class ExamLoop {
         }
 
         return .maxCycles(cycles: cycles)
+    }
+
+    private func applyRecovery(
+        failure: AgentFailureReason,
+        intent: AgentIntentFingerprint,
+        cycle: Int,
+        state: ExamRuntimeState
+    ) -> RecoveryDecision {
+        let decision = recoveryEngine.handle(failure: failure, intent: intent)
+        switch decision {
+        case .recover(let strategy, _):
+            recordEvent(
+                .recoveryPlanned,
+                cycle: cycle,
+                state: state,
+                detail: strategy == .waitForStability
+                    ? "wait_for_stability"
+                    : "reobserve_and_replan"
+            )
+        case .exhausted:
+            recordEvent(
+                .recoveryExhausted,
+                cycle: cycle,
+                state: state,
+                detail: "repeated_intent_loop"
+            )
+        }
+        return decision
     }
 
     private func recordEvent(

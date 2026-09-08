@@ -13,6 +13,8 @@ public enum AgentEventKind: String, Codable, Equatable {
     case boundaryTransitionCompleted
     case verificationFailed
     case stabilityWaiting
+    case recoveryPlanned
+    case recoveryExhausted
 }
 
 public struct AgentEvent: Codable, Equatable {
