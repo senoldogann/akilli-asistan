@@ -60,6 +60,13 @@ final class ActionBatchPolicyTests: XCTestCase {
         }
     }
 
+    func testRejectsIntMinScrollWithoutOverflow() {
+        let decision = ExamDecision(summary: "malformed scroll", expectsVisualChange: true, actions: [.scroll(amount: Int.min)])
+        XCTAssertThrowsError(try ActionBatchPolicy().validate(decision, screenBounds: bounds)) { error in
+            XCTAssertEqual(error as? ActionValidationError, .scrollOutOfRange)
+        }
+    }
+
     func testRejectsClickOutsideScreenBounds() {
         let decision = ExamDecision(summary: "click", expectsVisualChange: true, actions: [.moveClick(x: 1500, y: 300)])
         XCTAssertThrowsError(try ActionBatchPolicy().validate(decision, screenBounds: bounds)) { error in
