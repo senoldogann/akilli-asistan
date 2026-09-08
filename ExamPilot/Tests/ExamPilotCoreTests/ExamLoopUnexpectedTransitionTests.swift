@@ -47,6 +47,46 @@ final class ExamLoopUnexpectedTransitionTests: XCTestCase {
         XCTAssertEqual(agent.states[1].uiPhase, .stable)
     }
 
+    func testSingleMisclassifiedNavigationCannotCarryVerifiedStateIntoNextQuestion() async throws {
+        let questionA = try makeFrame(gray: 0.1)
+        let questionB = try makeFrame(gray: 0.9)
+        let capture = UnexpectedTransitionCapture(
+            frames: [questionA, questionB, questionB, questionB]
+        )
+        let agent = UnexpectedTransitionAgent(decisions: [
+            ExamDecision(
+                summary: "single misclassified next from verified q1",
+                expectsVisualChange: true,
+                actions: [.moveClick(x: 10, y: 10, boundary: false)]
+            ),
+            ExamDecision(
+                summary: "premature next on fresh q2",
+                expectsVisualChange: true,
+                actions: [.moveClick(x: 90, y: 90, boundary: true)]
+            ),
+            ExamDecision(summary: "complete", expectsVisualChange: false, actions: [.finish()]),
+        ])
+        let driver = UnexpectedTransitionDriver()
+        let loop = ExamLoop(
+            capture: capture,
+            visionAgent: agent,
+            executor: ActionBatchExecutor(driver: driver),
+            initialRuntimeState: ExamRuntimeState(answerState: .verified),
+            dryRun: false,
+            postActionSettler: {},
+            stabilitySettler: {}
+        )
+
+        let result = await loop.run()
+
+        XCTAssertEqual(result, .finished(cycles: 3))
+        XCTAssertEqual(driver.clicks, [CGPoint(x: 10, y: 10)])
+        XCTAssertEqual(agent.states.count, 3)
+        XCTAssertEqual(agent.states[1].questionGeneration, 2)
+        XCTAssertFalse(agent.states[1].answerVerified)
+        XCTAssertEqual(agent.states[1].uiPhase, .stable)
+    }
+
     private func makeFrame(gray: CGFloat) throws -> ScreenFrame {
         guard let context = CGContext(
             data: nil,
