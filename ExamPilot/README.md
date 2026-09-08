@@ -6,7 +6,7 @@ It intentionally does **not** use Chrome extensions, DOM/CDP automation, JavaScr
 
 ## What it does
 
-- captures the largest visible Google Chrome window with ScreenCaptureKit;
+- captures the focused/active Google Chrome window with ScreenCaptureKit when Accessibility can resolve it, with the largest visible Chrome window as a fallback;
 - understands single-choice, multi-choice, text, code-entry, scrolling, and navigation states through a vision-capable model;
 - plans several safe actions from one screenshot instead of forcing one model round-trip per click;
 - stops an action batch at the first UI-changing boundary such as Next, Continue, Run/Test, Submit, or equivalent controls in any language;
@@ -14,7 +14,7 @@ It intentionally does **not** use Chrome extensions, DOM/CDP automation, JavaScr
 - types text/code character by character using keyboard events only;
 - never reads or writes `NSPasteboard`;
 - scrolls using native pixel wheel events;
-- captures the UI again after expected-change batches and stops after repeated non-progress;
+- gives expected UI changes a short settling interval, captures the UI again, and stops after repeated non-progress;
 - supports `--dry-run` to inspect the first planned batch without physical input;
 - supports Ctrl-C as an emergency stop before the next physical action.
 
@@ -88,14 +88,14 @@ Live input requires Accessibility permission for the executable/terminal that la
 
 `System Settings > Privacy & Security > Accessibility`
 
-`--dry-run` does not require Accessibility because it never posts physical input.
+`--dry-run` does not require Accessibility because it never posts physical input. Without Accessibility, window selection falls back to the largest visible Chrome window because AX focused-window information is unavailable.
 
 ## Execution model
 
 ExamPilot uses this loop:
 
 ```text
-capture visible Chrome window
+capture focused visible Chrome window
         ↓
 vision model returns structured ExamDecision
         ↓
@@ -104,6 +104,8 @@ validate coordinates + action limits
 truncate at first UI-changing boundary
         ↓
 execute safe batch with real input
+        ↓
+short bounded UI settle
         ↓
 capture again
         ↓
@@ -146,6 +148,7 @@ ExamPilot/
 │   ├── ExamPilotCore/
 │   │   ├── Models.swift
 │   │   ├── ActionBatchPolicy.swift
+│   │   ├── ChromeWindowSelection.swift
 │   │   ├── ScreenCaptureService.swift
 │   │   ├── VisualChangeDetector.swift
 │   │   ├── InputDriver.swift
