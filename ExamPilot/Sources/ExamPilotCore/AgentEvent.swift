@@ -18,6 +18,7 @@ public enum AgentEventKind: String, Codable, Equatable {
 }
 
 public struct AgentEvent: Codable, Equatable {
+    public let sessionID: String
     public let kind: AgentEventKind
     public let cycle: Int
     public let stateVersion: UInt64
@@ -25,12 +26,14 @@ public struct AgentEvent: Codable, Equatable {
     public let detail: String
 
     public init(
+        sessionID: String = "unscoped",
         kind: AgentEventKind,
         cycle: Int,
         stateVersion: UInt64,
         questionGeneration: UInt64,
         detail: String
     ) {
+        self.sessionID = sessionID
         self.kind = kind
         self.cycle = cycle
         self.stateVersion = stateVersion

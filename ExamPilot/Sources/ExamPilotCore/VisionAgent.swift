@@ -8,6 +8,9 @@ public struct ExamObservationState: Codable, Equatable {
     public var questionGeneration: UInt64
     public var answerVerified: Bool
     public var uiPhase: ExamUIPhase
+    public var sessionID: String
+    public var workingMemory: AgentWorkingMemorySnapshot
+    public var providerContinuationAvailable: Bool
 
     public init(
         cycle: Int,
@@ -16,7 +19,10 @@ public struct ExamObservationState: Codable, Equatable {
         stateVersion: UInt64 = 0,
         questionGeneration: UInt64 = 1,
         answerVerified: Bool = false,
-        uiPhase: ExamUIPhase = .stable
+        uiPhase: ExamUIPhase = .stable,
+        sessionID: String = "unscoped",
+        workingMemory: AgentWorkingMemorySnapshot = AgentWorkingMemorySnapshot(),
+        providerContinuationAvailable: Bool = false
     ) {
         self.cycle = cycle
         self.nonProgressCount = nonProgressCount
@@ -25,6 +31,9 @@ public struct ExamObservationState: Codable, Equatable {
         self.questionGeneration = questionGeneration
         self.answerVerified = answerVerified
         self.uiPhase = uiPhase
+        self.sessionID = sessionID
+        self.workingMemory = workingMemory
+        self.providerContinuationAvailable = providerContinuationAvailable
     }
 }
 
