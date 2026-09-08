@@ -16,12 +16,17 @@ public final class ExamLoop {
     private let executor: ActionBatchExecutor
     private let detector: VisualChangeDetector
     private let structuralDetector: VisualChangeDetector
+    private let stabilityDetector: UIStabilityDetector
+    private let maxStabilitySamples: Int
+    private let initialRuntimeState: ExamRuntimeState
+    private let eventSink: AgentEventSinking
     private let dryRun: Bool
     private let maxCycles: Int
     private let maxNonProgress: Int
     private let prepareForInput: (ScreenFrame) async throws -> Void
     private let intermediateClickSettler: () async throws -> Void
     private let postActionSettler: () async throws -> Void
+    private let stabilitySettler: () async throws -> Void
     private let shouldStop: () -> Bool
 
     public init(
@@ -31,6 +36,10 @@ public final class ExamLoop {
         executor: ActionBatchExecutor,
         detector: VisualChangeDetector = VisualChangeDetector(),
         structuralDetector: VisualChangeDetector = VisualChangeDetector(threshold: 0.08),
+        stabilityDetector: UIStabilityDetector = UIStabilityDetector(),
+        maxStabilitySamples: Int = 4,
+        initialRuntimeState: ExamRuntimeState = ExamRuntimeState(),
+        eventSink: AgentEventSinking = NullAgentEventSink(),
         dryRun: Bool,
         maxCycles: Int = 200,
         maxNonProgress: Int = 3,
@@ -41,6 +50,9 @@ public final class ExamLoop {
         postActionSettler: @escaping () async throws -> Void = {
             try await Task.sleep(nanoseconds: 450_000_000)
         },
+        stabilitySettler: @escaping () async throws -> Void = {
+            try await Task.sleep(nanoseconds: 150_000_000)
+        },
         shouldStop: @escaping () -> Bool = { false }
     ) {
         self.capture = capture
@@ -49,12 +61,17 @@ public final class ExamLoop {
         self.executor = executor
         self.detector = detector
         self.structuralDetector = structuralDetector
+        self.stabilityDetector = stabilityDetector
+        self.maxStabilitySamples = max(1, maxStabilitySamples)
+        self.initialRuntimeState = initialRuntimeState
+        self.eventSink = eventSink
         self.dryRun = dryRun
         self.maxCycles = maxCycles
         self.maxNonProgress = maxNonProgress
         self.prepareForInput = prepareForInput
         self.intermediateClickSettler = intermediateClickSettler
         self.postActionSettler = postActionSettler
+        self.stabilitySettler = stabilitySettler
         self.shouldStop = shouldStop
     }
 
@@ -62,6 +79,8 @@ public final class ExamLoop {
         var cycles = 0
         var nonProgressCount = 0
         var lastSummary: String?
+        var runtimeState = initialRuntimeState
+        var pendingTransitionFrame: ScreenFrame?
 
         while cycles < maxCycles {
             if shouldStop() {
@@ -69,43 +88,157 @@ public final class ExamLoop {
             }
 
             do {
-                let before = try await capture.capture()
+                let before: ScreenFrame
+                if let pending = pendingTransitionFrame {
+                    var previous = pending
+                    var stableFrame: ScreenFrame?
+
+                    for _ in 0..<maxStabilitySamples {
+                        if shouldStop() {
+                            return .stopped(cycles: cycles)
+                        }
+
+                        try await stabilitySettler()
+                        if shouldStop() {
+                            return .stopped(cycles: cycles)
+                        }
+
+                        let current = try await capture.capture()
+                        if stabilityDetector.isStable(previous: previous.image, current: current.image) {
+                            stableFrame = current
+                            break
+                        }
+
+                        recordEvent(
+                            .stabilityWaiting,
+                            cycle: cycles,
+                            state: runtimeState,
+                            detail: "ui_still_transitioning"
+                        )
+                        previous = current
+                    }
+
+                    guard let stableFrame else {
+                        pendingTransitionFrame = previous
+                        nonProgressCount += 1
+                        recordEvent(
+                            .stabilityWaiting,
+                            cycle: cycles,
+                            state: runtimeState,
+                            detail: "stability_sample_budget_exhausted"
+                        )
+                        if nonProgressCount >= maxNonProgress {
+                            return .nonProgress(cycles: cycles)
+                        }
+                        continue
+                    }
+
+                    runtimeState.completeBoundaryTransition()
+                    recordEvent(
+                        .boundaryTransitionCompleted,
+                        cycle: cycles,
+                        state: runtimeState,
+                        detail: "ui_stable"
+                    )
+                    pendingTransitionFrame = nil
+                    nonProgressCount = 0
+                    before = stableFrame
+                } else {
+                    before = try await capture.capture()
+                }
+
                 cycles += 1
+                runtimeState.acceptObservation()
+                recordEvent(
+                    .observationAccepted,
+                    cycle: cycles,
+                    state: runtimeState,
+                    detail: "observation_accepted"
+                )
 
                 let state = ExamObservationState(
                     cycle: cycles,
                     nonProgressCount: nonProgressCount,
-                    lastSummary: lastSummary
+                    lastSummary: lastSummary,
+                    stateVersion: runtimeState.stateVersion,
+                    questionGeneration: runtimeState.questionGeneration,
+                    answerVerified: runtimeState.answerState == .verified,
+                    uiPhase: runtimeState.uiPhase
                 )
                 let decision = try await visionAgent.decide(frame: before, state: state)
                 lastSummary = decision.summary
+                recordEvent(
+                    .proposalReceived,
+                    cycle: cycles,
+                    state: runtimeState,
+                    detail: "proposal_received"
+                )
 
                 let batch: ValidatedBatch
                 do {
-                    batch = try policy.validate(decision, screenBounds: before.screenBounds)
-                } catch is ActionValidationError {
-                    // A bad coordinate or unsafe-sized batch must never reach physical input.
-                    // Re-observe the fresh UI instead of trying to repair guessed coordinates locally.
+                    batch = try policy.validate(
+                        decision,
+                        screenBounds: before.screenBounds,
+                        context: ActionPolicyContext(
+                            stateVersion: runtimeState.stateVersion,
+                            navigationAllowed: runtimeState.navigationAllowed
+                        )
+                    )
+                } catch let error as ActionValidationError {
+                    let detail: String
+                    if error == .protectedBoundaryBeforeAnswer {
+                        nonProgressCount = 0
+                        detail = "protected_boundary_before_answer"
+                    } else {
+                        detail = "action_validation_failed"
+                    }
+                    recordEvent(
+                        .policyDenied,
+                        cycle: cycles,
+                        state: runtimeState,
+                        detail: detail
+                    )
                     continue
                 }
+
+                recordEvent(
+                    .batchValidated,
+                    cycle: cycles,
+                    state: runtimeState,
+                    detail: batch.deferredProtectedBoundary ? "protected_boundary_deferred" : "batch_validated"
+                )
 
                 if dryRun {
                     return .dryRunPlanned(summary: batch.summary, actionCount: batch.actions.count)
                 }
 
-                // Re-activate the exact Chrome process that produced this observation before
-                // posting any global HID events. Dry-run exits above and never changes focus.
+                guard batch.stateVersion == runtimeState.stateVersion else {
+                    recordEvent(
+                        .policyDenied,
+                        cycle: cycles,
+                        state: runtimeState,
+                        detail: "stale_state_version"
+                    )
+                    continue
+                }
+
                 try await prepareForInput(before)
                 if shouldStop() {
                     return .stopped(cycles: cycles)
                 }
 
-                // The model's boundary flag is advisory, not a security boundary. After any
-                // non-boundary click that still has actions behind it, take a cheap local
-                // screenshot and stop the batch if the page changed structurally. This keeps
-                // small checkbox/radio updates batchable while preventing stale actions from
-                // running after a misclassified Next/Submit/navigation click.
+                guard batch.stateVersion == runtimeState.stateVersion else {
+                    recordEvent(
+                        .policyDenied,
+                        cycle: cycles,
+                        state: runtimeState,
+                        detail: "stale_state_after_focus_preparation"
+                    )
+                    continue
+                }
+
                 var structuralBaseline = before.image
+                var interruptedTransitionFrame: ScreenFrame?
                 let execution = try await executor.execute(
                     batch,
                     dryRun: false,
@@ -128,6 +261,9 @@ public final class ExamLoop {
                             after: interim.image
                         )
                         structuralBaseline = interim.image
+                        if changedStructurally {
+                            interruptedTransitionFrame = interim
+                        }
                         return !changedStructurally
                     }
                 )
@@ -138,10 +274,23 @@ public final class ExamLoop {
                     return .finished(cycles: cycles)
                 }
                 if execution.interruptedForUIChange {
-                    // The intermediate guard already observed a materially different UI.
-                    // Discard every stale action after the click and reason again from a
-                    // fresh screenshot on the next cycle rather than counting non-progress.
                     nonProgressCount = 0
+                    recordEvent(
+                        .verificationFailed,
+                        cycle: cycles,
+                        state: runtimeState,
+                        detail: "batch_interrupted_for_ui_change"
+                    )
+                    if let interruptedTransitionFrame {
+                        runtimeState.beginBoundaryTransition()
+                        recordEvent(
+                            .boundaryTransitionStarted,
+                            cycle: cycles,
+                            state: runtimeState,
+                            detail: "unexpected_structural_change"
+                        )
+                        pendingTransitionFrame = interruptedTransitionFrame
+                    }
                     continue
                 }
 
@@ -150,9 +299,6 @@ public final class ExamLoop {
                     continue
                 }
 
-                // Give browser selection state, editor rendering, navigation and test output
-                // a short bounded chance to settle before deciding whether the action worked.
-                // The closure is injectable so tests stay fast and deterministic.
                 try await postActionSettler()
                 if shouldStop() {
                     return .stopped(cycles: cycles)
@@ -161,13 +307,51 @@ public final class ExamLoop {
                 let after = try await capture.capture()
                 if detector.hasMeaningfulChange(before: before.image, after: after.image) {
                     nonProgressCount = 0
+
+                    let changedStructurally = structuralDetector.hasMeaningfulChange(
+                        before: before.image,
+                        after: after.image
+                    )
+
+                    if batch.containsProtectedBoundary {
+                        runtimeState.beginBoundaryTransition()
+                        recordEvent(
+                            .boundaryTransitionStarted,
+                            cycle: cycles,
+                            state: runtimeState,
+                            detail: "protected_boundary_changed_ui"
+                        )
+                        pendingTransitionFrame = after
+                    } else if batch.hasPotentialAnswerMutation && changedStructurally {
+                        // A large structural shift after an action that was *not* declared as a
+                        // boundary cannot safely be treated as answer verification. The model's
+                        // boundary flag is advisory, so fail closed and re-establish lifecycle
+                        // state from a stable observation before allowing any navigation.
+                        runtimeState.beginBoundaryTransition()
+                        recordEvent(
+                            .boundaryTransitionStarted,
+                            cycle: cycles,
+                            state: runtimeState,
+                            detail: "unexpected_post_action_structural_change"
+                        )
+                        pendingTransitionFrame = after
+                    } else if batch.hasPotentialAnswerMutation {
+                        runtimeState.recordAnswerVerified()
+                        recordEvent(
+                            .answerVerified,
+                            cycle: cycles,
+                            state: runtimeState,
+                            detail: "answer_mutation_verified"
+                        )
+                    }
                 } else {
-                    // Do not replay guessed nearby coordinates from this stale observation.
-                    // A successful navigation can produce a visually similar next question;
-                    // another blind click could immediately skip that question. The next loop
-                    // iteration captures a fresh frame and asks the vision agent to reassess
-                    // the current question and coordinates.
                     nonProgressCount += 1
+                    recordEvent(
+                        .verificationFailed,
+                        cycle: cycles,
+                        state: runtimeState,
+                        detail: "expected_visual_change_missing"
+                    )
                     if nonProgressCount >= maxNonProgress {
                         return .nonProgress(cycles: cycles)
                     }
@@ -178,5 +362,22 @@ public final class ExamLoop {
         }
 
         return .maxCycles(cycles: cycles)
+    }
+
+    private func recordEvent(
+        _ kind: AgentEventKind,
+        cycle: Int,
+        state: ExamRuntimeState,
+        detail: String
+    ) {
+        eventSink.record(
+            AgentEvent(
+                kind: kind,
+                cycle: cycle,
+                stateVersion: state.stateVersion,
+                questionGeneration: state.questionGeneration,
+                detail: detail
+            )
+        )
     }
 }

@@ -1,5 +1,15 @@
 import CoreGraphics
 
+public struct ActionPolicyContext: Equatable {
+    public let stateVersion: UInt64
+    public let navigationAllowed: Bool
+
+    public init(stateVersion: UInt64, navigationAllowed: Bool) {
+        self.stateVersion = stateVersion
+        self.navigationAllowed = navigationAllowed
+    }
+}
+
 public struct ActionBatchPolicy {
     public let maxActions: Int
     public let maxWaitMilliseconds: Int
@@ -12,14 +22,35 @@ public struct ActionBatchPolicy {
     }
 
     public func validate(_ decision: ExamDecision, screenBounds: CGRect) throws -> ValidatedBatch {
+        try validate(
+            decision,
+            screenBounds: screenBounds,
+            context: ActionPolicyContext(stateVersion: 0, navigationAllowed: true)
+        )
+    }
+
+    public func validate(
+        _ decision: ExamDecision,
+        screenBounds: CGRect,
+        context: ActionPolicyContext
+    ) throws -> ValidatedBatch {
         guard decision.actions.count <= maxActions else {
             throw ActionValidationError.tooManyActions
         }
 
         var accepted: [ExamAction] = []
         accepted.reserveCapacity(decision.actions.count)
+        var deferredProtectedBoundary = false
 
         for action in decision.actions {
+            if action.boundary, action.kind != .finish, !context.navigationAllowed {
+                guard !accepted.isEmpty else {
+                    throw ActionValidationError.protectedBoundaryBeforeAnswer
+                }
+                deferredProtectedBoundary = true
+                break
+            }
+
             try validate(action, screenBounds: screenBounds)
             accepted.append(action)
 
@@ -28,17 +59,16 @@ public struct ActionBatchPolicy {
             }
         }
 
-        // A navigation/UI boundary is, by definition, expected to produce a new
-        // observable state. Do not let a mistaken model flag skip the settle +
-        // verification gate after Next/Continue/Run/Submit-style actions.
         let boundaryRequiresVerification = accepted.contains {
             $0.boundary && $0.kind != .finish
         }
 
         return ValidatedBatch(
             summary: decision.summary,
-            expectsVisualChange: decision.expectsVisualChange || boundaryRequiresVerification,
-            actions: accepted
+            expectsVisualChange: decision.expectsVisualChange || boundaryRequiresVerification || deferredProtectedBoundary,
+            actions: accepted,
+            stateVersion: context.stateVersion,
+            deferredProtectedBoundary: deferredProtectedBoundary
         )
     }
 

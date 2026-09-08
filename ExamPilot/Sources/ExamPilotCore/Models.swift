@@ -132,11 +132,36 @@ public struct ValidatedBatch: Equatable {
     public let summary: String
     public let expectsVisualChange: Bool
     public let actions: [ExamAction]
+    public let stateVersion: UInt64
+    public let deferredProtectedBoundary: Bool
 
-    public init(summary: String, expectsVisualChange: Bool, actions: [ExamAction]) {
+    public init(
+        summary: String,
+        expectsVisualChange: Bool,
+        actions: [ExamAction],
+        stateVersion: UInt64 = 0,
+        deferredProtectedBoundary: Bool = false
+    ) {
         self.summary = summary
         self.expectsVisualChange = expectsVisualChange
         self.actions = actions
+        self.stateVersion = stateVersion
+        self.deferredProtectedBoundary = deferredProtectedBoundary
+    }
+
+    public var containsProtectedBoundary: Bool {
+        actions.contains { $0.boundary && $0.kind != .finish }
+    }
+
+    public var hasPotentialAnswerMutation: Bool {
+        actions.contains { action in
+            switch action.kind {
+            case .moveClick, .typeText, .key:
+                return !action.boundary
+            case .scroll, .wait, .finish:
+                return false
+            }
+        }
     }
 }
 
@@ -147,6 +172,7 @@ public enum ActionValidationError: Error, Equatable, LocalizedError {
     case scrollOutOfRange
     case unsupportedKey(String)
     case missingRequiredField(ExamActionKind)
+    case protectedBoundaryBeforeAnswer
 
     public var errorDescription: String? {
         switch self {
@@ -162,6 +188,8 @@ public enum ActionValidationError: Error, Equatable, LocalizedError {
             return "Unsupported key action: \(key)."
         case .missingRequiredField(let kind):
             return "Action \(kind.rawValue) is missing a required field."
+        case .protectedBoundaryBeforeAnswer:
+            return "A protected boundary cannot execute before the current question has a verified answer."
         }
     }
 }

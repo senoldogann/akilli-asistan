@@ -49,6 +49,7 @@ final class ExamLoopTests: XCTestCase {
             capture: capture,
             visionAgent: agent,
             executor: ActionBatchExecutor(driver: driver),
+            initialRuntimeState: ExamRuntimeState(answerState: .verified),
             dryRun: false,
             postActionSettler: {}
         )
@@ -86,7 +87,7 @@ final class ExamLoopTests: XCTestCase {
 
         let result = await loop.run()
 
-        XCTAssertEqual(result, .dryRunPlanned(summary: "would select B", actionCount: 2))
+        XCTAssertEqual(result, .dryRunPlanned(summary: "would select B", actionCount: 1))
         XCTAssertTrue(driver.calls.isEmpty)
     }
 
@@ -117,6 +118,7 @@ final class ExamLoopTests: XCTestCase {
             capture: capture,
             visionAgent: agent,
             executor: ActionBatchExecutor(driver: driver),
+            initialRuntimeState: ExamRuntimeState(answerState: .verified),
             dryRun: false,
             postActionSettler: {
                 log.events.append("settle")
@@ -157,6 +159,42 @@ final class ExamLoopTests: XCTestCase {
 
         XCTAssertEqual(result, .finished(cycles: 2))
         XCTAssertEqual(driver.calls, ["click"])
+    }
+
+    func testUnansweredSecondQuestionCannotPhysicallyNavigate() async throws {
+        let frame = try makeFrame(gray: 0.4)
+        let capture = QueueCapture(frames: Array(repeating: frame, count: 16))
+        let agent = QueueVisionAgent(decisions: [
+            ExamDecision(summary: "answer q1", expectsVisualChange: true, actions: [.moveClick(x: 10, y: 10)]),
+            ExamDecision(summary: "next from q1", expectsVisualChange: true, actions: [.moveClick(x: 20, y: 20, boundary: true)]),
+            ExamDecision(summary: "premature next on q2", expectsVisualChange: true, actions: [.moveClick(x: 30, y: 30, boundary: true)]),
+            ExamDecision(summary: "answer q2", expectsVisualChange: true, actions: [.moveClick(x: 40, y: 40)]),
+            ExamDecision(summary: "next from q2", expectsVisualChange: true, actions: [.moveClick(x: 50, y: 50, boundary: true)]),
+            ExamDecision(summary: "complete", expectsVisualChange: false, actions: [.finish()]),
+        ])
+        let driver = CoordinateRecordingDriver()
+        let loop = ExamLoop(
+            capture: capture,
+            visionAgent: agent,
+            executor: ActionBatchExecutor(driver: driver),
+            detector: VisualChangeDetector(threshold: 0),
+            dryRun: false,
+            postActionSettler: {}
+        )
+
+        let result = await loop.run()
+
+        XCTAssertEqual(result, .finished(cycles: 6))
+        XCTAssertEqual(
+            driver.clicks,
+            [
+                CGPoint(x: 10, y: 10),
+                CGPoint(x: 20, y: 20),
+                CGPoint(x: 40, y: 40),
+                CGPoint(x: 50, y: 50),
+            ]
+        )
+        XCTAssertFalse(driver.clicks.contains(CGPoint(x: 30, y: 30)))
     }
 
     private func makeFrame(gray: CGFloat) throws -> ScreenFrame {
@@ -200,6 +238,19 @@ private final class LoopRecordingDriver: InputDriving {
     func pressKey(_ key: String) async throws { calls.append("key") }
     func scroll(amount: Int) async throws { calls.append("scroll") }
     func wait(milliseconds: Int) async throws { calls.append("wait") }
+}
+
+private final class CoordinateRecordingDriver: InputDriving {
+    var clicks: [CGPoint] = []
+
+    func moveAndClick(x: Double, y: Double) async throws {
+        clicks.append(CGPoint(x: x, y: y))
+    }
+
+    func typeText(_ text: String) async throws {}
+    func pressKey(_ key: String) async throws {}
+    func scroll(amount: Int) async throws {}
+    func wait(milliseconds: Int) async throws {}
 }
 
 private final class LoopEventLog {

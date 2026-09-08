@@ -34,6 +34,56 @@ final class ActionBatchPolicyTests: XCTestCase {
         XCTAssertTrue(batch.expectsVisualChange)
     }
 
+    func testRejectsProtectedBoundaryAsFirstActionWhenQuestionIsUnanswered() {
+        let decision = ExamDecision(
+            summary: "skip current question",
+            expectsVisualChange: true,
+            actions: [.moveClick(x: 1200, y: 820, boundary: true)]
+        )
+        let context = ActionPolicyContext(stateVersion: 9, navigationAllowed: false)
+
+        XCTAssertThrowsError(
+            try ActionBatchPolicy().validate(decision, screenBounds: bounds, context: context)
+        ) { error in
+            XCTAssertEqual(error as? ActionValidationError, .protectedBoundaryBeforeAnswer)
+        }
+    }
+
+    func testDefersBoundaryAfterAnswerActionsUntilAnswerVerification() throws {
+        let decision = ExamDecision(
+            summary: "answer then next",
+            expectsVisualChange: true,
+            actions: [
+                .moveClick(x: 400, y: 400),
+                .moveClick(x: 1200, y: 820, boundary: true),
+            ]
+        )
+        let context = ActionPolicyContext(stateVersion: 11, navigationAllowed: false)
+
+        let batch = try ActionBatchPolicy().validate(decision, screenBounds: bounds, context: context)
+
+        XCTAssertEqual(batch.actions, [.moveClick(x: 400, y: 400)])
+        XCTAssertTrue(batch.deferredProtectedBoundary)
+        XCTAssertTrue(batch.expectsVisualChange)
+        XCTAssertTrue(batch.hasPotentialAnswerMutation)
+        XCTAssertEqual(batch.stateVersion, 11)
+    }
+
+    func testAllowsProtectedBoundaryAfterVerifiedAnswer() throws {
+        let decision = ExamDecision(
+            summary: "go next",
+            expectsVisualChange: true,
+            actions: [.moveClick(x: 1200, y: 820, boundary: true)]
+        )
+        let context = ActionPolicyContext(stateVersion: 12, navigationAllowed: true)
+
+        let batch = try ActionBatchPolicy().validate(decision, screenBounds: bounds, context: context)
+
+        XCTAssertTrue(batch.containsProtectedBoundary)
+        XCTAssertFalse(batch.deferredProtectedBoundary)
+        XCTAssertEqual(batch.stateVersion, 12)
+    }
+
     func testRejectsMoreThanTwelveActions() {
         let decision = ExamDecision(
             summary: "too many",

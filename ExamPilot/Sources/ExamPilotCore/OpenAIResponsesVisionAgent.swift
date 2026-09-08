@@ -143,7 +143,7 @@ public final class OpenAIResponsesVisionAgent: VisionAgent {
           x = bounds.x + (px / screenshotWidth) * bounds.width
           y = bounds.y + (py / screenshotHeight) * bounds.height
 
-        Runtime state: cycle=\(state.cycle), consecutive_non_progress=\(state.nonProgressCount), previous_summary=\(last).
+        Runtime state: cycle=\(state.cycle), consecutive_non_progress=\(state.nonProgressCount), previous_summary=\(last), state_version=\(state.stateVersion), question_generation=\(state.questionGeneration), answer_verified=\(state.answerVerified), ui_phase=\(state.uiPhase.rawValue).
 
         Keep summary concise and action-oriented. Return JSON only through the structured output schema.
         """

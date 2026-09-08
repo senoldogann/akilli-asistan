@@ -4,11 +4,27 @@ public struct ExamObservationState: Codable, Equatable {
     public var cycle: Int
     public var nonProgressCount: Int
     public var lastSummary: String?
+    public var stateVersion: UInt64
+    public var questionGeneration: UInt64
+    public var answerVerified: Bool
+    public var uiPhase: ExamUIPhase
 
-    public init(cycle: Int, nonProgressCount: Int, lastSummary: String?) {
+    public init(
+        cycle: Int,
+        nonProgressCount: Int,
+        lastSummary: String?,
+        stateVersion: UInt64 = 0,
+        questionGeneration: UInt64 = 1,
+        answerVerified: Bool = false,
+        uiPhase: ExamUIPhase = .stable
+    ) {
         self.cycle = cycle
         self.nonProgressCount = nonProgressCount
         self.lastSummary = lastSummary
+        self.stateVersion = stateVersion
+        self.questionGeneration = questionGeneration
+        self.answerVerified = answerVerified
+        self.uiPhase = uiPhase
     }
 }
 
