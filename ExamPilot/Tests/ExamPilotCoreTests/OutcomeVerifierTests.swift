@@ -90,6 +90,21 @@ final class OutcomeVerifierTests: XCTestCase {
         )
     }
 
+    func testLocalizedMutationAloneCannotProveNavigationIdentityChange() throws {
+        let before = try makeLargeImage(localizedChange: false)
+        let after = try makeLargeImage(localizedChange: true)
+
+        XCTAssertEqual(
+            OutcomeVerifier().verify(
+                expected: .navigation,
+                before: before,
+                after: after,
+                uiStable: true
+            ),
+            .failure(.navigationIdentityUnchanged)
+        )
+    }
+
     private func makeImage(gray: CGFloat) throws -> CGImage {
         guard let context = CGContext(
             data: nil,
