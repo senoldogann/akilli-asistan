@@ -22,6 +22,18 @@ final class ActionBatchPolicyTests: XCTestCase {
         XCTAssertEqual(batch.actions.last?.boundary, true)
     }
 
+    func testBoundaryForcesVisualVerificationEvenIfModelSaysNoChange() throws {
+        let decision = ExamDecision(
+            summary: "navigate",
+            expectsVisualChange: false,
+            actions: [.moveClick(x: 1200, y: 820, boundary: true)]
+        )
+
+        let batch = try ActionBatchPolicy().validate(decision, screenBounds: bounds)
+
+        XCTAssertTrue(batch.expectsVisualChange)
+    }
+
     func testRejectsMoreThanTwelveActions() {
         let decision = ExamDecision(
             summary: "too many",
