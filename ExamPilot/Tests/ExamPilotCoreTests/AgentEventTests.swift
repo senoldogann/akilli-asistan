@@ -19,4 +19,31 @@ final class AgentEventTests: XCTestCase {
         XCTAssertFalse(text.lowercased().contains("authorization"))
         XCTAssertFalse(text.lowercased().contains("api_key"))
     }
+
+    func testRecoveryEventsUseBoundedIdentifiersOnly() throws {
+        let planned = AgentEvent(
+            kind: .recoveryPlanned,
+            cycle: 3,
+            stateVersion: 9,
+            questionGeneration: 2,
+            detail: "reobserve_and_replan"
+        )
+        let exhausted = AgentEvent(
+            kind: .recoveryExhausted,
+            cycle: 4,
+            stateVersion: 10,
+            questionGeneration: 2,
+            detail: "repeated_intent_loop"
+        )
+
+        let encoded = try JSONEncoder().encode([planned, exhausted])
+        let text = String(decoding: encoded, as: UTF8.self)
+
+        XCTAssertTrue(text.contains("recoveryPlanned"))
+        XCTAssertTrue(text.contains("recoveryExhausted"))
+        XCTAssertTrue(text.contains("reobserve_and_replan"))
+        XCTAssertTrue(text.contains("repeated_intent_loop"))
+        XCTAssertFalse(text.lowercased().contains("authorization"))
+        XCTAssertFalse(text.lowercased().contains("api_key"))
+    }
 }
