@@ -80,6 +80,32 @@ final class ExamLoopTests: XCTestCase {
         XCTAssertEqual(capture.captureCount, 0)
     }
 
+    func testExpectedVisualChangeSettlesBeforeVerificationCapture() async throws {
+        let dark = try makeFrame(gray: 0.1)
+        let bright = try makeFrame(gray: 0.9)
+        let log = LoopEventLog()
+        let capture = EventQueueCapture(frames: [dark, bright, bright], log: log)
+        let agent = QueueVisionAgent(decisions: [
+            ExamDecision(summary: "go next", expectsVisualChange: true, actions: [.moveClick(x: 50, y: 50, boundary: true)]),
+            ExamDecision(summary: "done", expectsVisualChange: false, actions: [.finish()]),
+        ])
+        let driver = EventRecordingDriver(log: log)
+        let loop = ExamLoop(
+            capture: capture,
+            visionAgent: agent,
+            executor: ActionBatchExecutor(driver: driver),
+            dryRun: false,
+            postActionSettler: {
+                log.events.append("settle")
+            }
+        )
+
+        let result = await loop.run()
+
+        XCTAssertEqual(result, .finished(cycles: 2))
+        XCTAssertEqual(Array(log.events.prefix(4)), ["capture", "click", "settle", "capture"])
+    }
+
     private func makeFrame(gray: CGFloat) throws -> ScreenFrame {
         guard let context = CGContext(data: nil, width: 16, height: 16, bitsPerComponent: 8, bytesPerRow: 64, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
             throw NSError(domain: "tests", code: 1)
@@ -121,4 +147,38 @@ private final class LoopRecordingDriver: InputDriving {
     func pressKey(_ key: String) async throws { calls.append("key") }
     func scroll(amount: Int) async throws { calls.append("scroll") }
     func wait(milliseconds: Int) async throws { calls.append("wait") }
+}
+
+private final class LoopEventLog {
+    var events: [String] = []
+}
+
+private final class EventQueueCapture: ScreenCapturing {
+    private var frames: [ScreenFrame]
+    private let log: LoopEventLog
+
+    init(frames: [ScreenFrame], log: LoopEventLog) {
+        self.frames = frames
+        self.log = log
+    }
+
+    func capture() async throws -> ScreenFrame {
+        log.events.append("capture")
+        guard !frames.isEmpty else { throw NSError(domain: "tests", code: 11) }
+        return frames.removeFirst()
+    }
+}
+
+private final class EventRecordingDriver: InputDriving {
+    private let log: LoopEventLog
+
+    init(log: LoopEventLog) {
+        self.log = log
+    }
+
+    func moveAndClick(x: Double, y: Double) async throws { log.events.append("click") }
+    func typeText(_ text: String) async throws { log.events.append("type") }
+    func pressKey(_ key: String) async throws { log.events.append("key") }
+    func scroll(amount: Int) async throws { log.events.append("scroll") }
+    func wait(milliseconds: Int) async throws { log.events.append("wait") }
 }
