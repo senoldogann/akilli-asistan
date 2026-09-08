@@ -3,6 +3,7 @@ name: ExamPilot
 on:
   push:
     branches:
+      - main
       - feat/exampilot-visual-agent
     paths:
       - 'ExamPilot/**'
