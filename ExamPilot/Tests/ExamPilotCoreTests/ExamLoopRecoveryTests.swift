@@ -28,7 +28,7 @@ final class ExamLoopRecoveryTests: XCTestCase {
 
         let result = await loop.run()
 
-        XCTAssertEqual(result, .nonProgress(cycles: 3))
+        XCTAssertEqual(result, .nonProgress(cycles: 3, reason: .recoveryExhausted))
         XCTAssertTrue(driver.clicks.isEmpty)
         XCTAssertEqual(events.events.filter { $0.kind == .recoveryPlanned }.count, 2)
         XCTAssertTrue(events.events.contains {
@@ -61,7 +61,7 @@ final class ExamLoopRecoveryTests: XCTestCase {
 
         let result = await loop.run()
 
-        XCTAssertEqual(result, .nonProgress(cycles: 3))
+        XCTAssertEqual(result, .nonProgress(cycles: 3, reason: .recoveryExhausted))
         XCTAssertEqual(driver.clicks, [
             CGPoint(x: 20, y: 20),
             CGPoint(x: 20, y: 20),
@@ -95,7 +95,7 @@ final class ExamLoopRecoveryTests: XCTestCase {
 
         let result = await loop.run()
 
-        XCTAssertEqual(result, .nonProgress(cycles: 3))
+        XCTAssertEqual(result, .nonProgress(cycles: 3, reason: .maxNonProgressExceeded))
         XCTAssertEqual(driver.clicks.count, 3)
         XCTAssertEqual(events.events.filter { $0.kind == .recoveryPlanned }.count, 3)
         XCTAssertFalse(events.events.contains { $0.kind == .recoveryExhausted })
