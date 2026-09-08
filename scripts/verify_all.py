@@ -56,6 +56,38 @@ def run(command: list[str], *, cwd: Path) -> bool:
     return True
 
 
+def run_expect_output(
+    command: list[str],
+    *,
+    cwd: Path,
+    expected: str,
+) -> bool:
+    printable = " ".join(command)
+    print(f"\n[RUN] ({cwd.relative_to(ROOT) if cwd != ROOT else '.'}) {printable}")
+    completed = subprocess.run(
+        command,
+        cwd=cwd,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    output = completed.stdout or ""
+    if output:
+        print(output, end="" if output.endswith("\n") else "\n")
+    if completed.returncode != 0:
+        print(f"[FAIL] exit={completed.returncode}: {printable}", file=sys.stderr)
+        return False
+    if expected not in output:
+        print(
+            f"[FAIL] expected output token not found: {expected!r}",
+            file=sys.stderr,
+        )
+        return False
+    print(f"[OK] {printable} contains {expected!r}")
+    return True
+
+
 def verify_layout() -> bool:
     ok = True
     for relative in FORBIDDEN_PATHS:
@@ -92,9 +124,15 @@ def verify_exampilot() -> bool:
         print("[FAIL] swift is required to verify ExamPilot", file=sys.stderr)
         return False
 
+    release_binary = EXAMPILOT / ".build" / "release" / "exampilot"
     return (
         run(["swift", "test"], cwd=EXAMPILOT)
         and run(["swift", "build", "-c", "release"], cwd=EXAMPILOT)
+        and run_expect_output(
+            [str(release_binary), "--help"],
+            cwd=EXAMPILOT,
+            expected="--verbose",
+        )
     )
 
 
