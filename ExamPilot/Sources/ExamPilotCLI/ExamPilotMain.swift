@@ -59,6 +59,7 @@ struct ExamPilotMain {
         print("  mode: \(options.dryRun ? "dry-run" : "live")")
         print("  model: \(model)")
         print("  target: focused Chrome window (largest visible Chrome fallback)")
+        print("  diagnostics: \(options.verbose ? "verbose" : "off")")
         print("  stop: Ctrl-C")
 
         let capture = ScreenCaptureService()
@@ -66,10 +67,19 @@ struct ExamPilotMain {
         let executor = ActionBatchExecutor(driver: input)
         let vision = OpenAIResponsesVisionAgent(apiKey: apiKey, model: model)
         let focusService = ChromeInputFocusService()
+        let eventSink: AgentEventSinking
+        if options.verbose {
+            eventSink = DiagnosticAgentEventSink(writeLine: { line in
+                fputs("\(line)\n", stderr)
+            })
+        } else {
+            eventSink = NullAgentEventSink()
+        }
         let loop = ExamLoop(
             capture: capture,
             visionAgent: vision,
             executor: executor,
+            eventSink: eventSink,
             dryRun: options.dryRun,
             maxCycles: options.maxCycles,
             prepareForInput: { frame in
@@ -88,8 +98,11 @@ struct ExamPilotMain {
             print("Dry-run plan: \(summary) [\(actionCount) action(s)]")
         case .stopped(let cycles):
             print("ExamPilot stopped after \(cycles) observation cycle(s).")
-        case .nonProgress(let cycles):
-            fputs("ExamPilot stopped after \(cycles) cycles because the UI did not change across three consecutive expected-change batches.\n", stderr)
+        case .nonProgress(let cycles, let reason):
+            fputs(
+                "ExamPilot stopped after \(cycles) cycles. reason=\(reason.diagnosticID). Run with --verbose for cycle-level diagnostics.\n",
+                stderr
+            )
             Darwin.exit(4)
         case .maxCycles(let cycles):
             fputs("ExamPilot stopped at the configured limit of \(cycles) cycles.\n", stderr)
@@ -120,6 +133,7 @@ private final class StopController {
 
 private struct CLIOptions {
     var dryRun = false
+    var verbose = false
     var model: String?
     var maxCycles = 200
     var showHelp = false
@@ -128,6 +142,7 @@ private struct CLIOptions {
     Usage: exampilot [options]
 
       --dry-run             Observe and plan one action batch without posting physical input.
+      --verbose             Print bounded cycle-level runtime diagnostics to stderr.
       --model MODEL         Override EXAMPILOT_MODEL (default: gpt-5.6-sol).
       --max-cycles N        Stop after N observation cycles (default: 200).
       -h, --help            Show this help.
@@ -143,6 +158,8 @@ private struct CLIOptions {
             switch arguments[index] {
             case "--dry-run":
                 dryRun = true
+            case "--verbose":
+                verbose = true
             case "--model":
                 index += 1
                 guard index < arguments.count, !arguments[index].isEmpty else {
