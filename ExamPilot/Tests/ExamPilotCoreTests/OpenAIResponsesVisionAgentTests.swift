@@ -1,4 +1,5 @@
 import XCTest
+import Foundation
 import CoreGraphics
 @testable import ExamPilotCore
 
@@ -36,11 +37,20 @@ final class OpenAIResponsesVisionAgentTests: XCTestCase {
         let request = try XCTUnwrap(transport.lastRequest)
         XCTAssertEqual(request.url?.absoluteString, "https://api.openai.com/v1/responses")
         XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer test-key")
-        let body = String(data: try XCTUnwrap(request.httpBody), encoding: .utf8) ?? ""
-        XCTAssertTrue(body.contains("gpt-test"))
-        XCTAssertTrue(body.contains("input_image"))
-        XCTAssertTrue(body.contains("data:image/jpeg;base64,"))
-        XCTAssertTrue(body.contains("json_schema"))
+
+        let bodyData = try XCTUnwrap(request.httpBody)
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: bodyData) as? [String: Any])
+        XCTAssertEqual(body["model"] as? String, "gpt-test")
+
+        let input = try XCTUnwrap(body["input"] as? [[String: Any]])
+        let content = try XCTUnwrap(input.first?["content"] as? [[String: Any]])
+        let imagePart = try XCTUnwrap(content.first { $0["type"] as? String == "input_image" })
+        let imageURL = try XCTUnwrap(imagePart["image_url"] as? String)
+        XCTAssertTrue(imageURL.hasPrefix("data:image/jpeg;base64,"))
+
+        let textConfig = try XCTUnwrap(body["text"] as? [String: Any])
+        let format = try XCTUnwrap(textConfig["format"] as? [String: Any])
+        XCTAssertEqual(format["type"] as? String, "json_schema")
     }
 
     private func fixtureResponse(decisionJSON: String) -> String {
