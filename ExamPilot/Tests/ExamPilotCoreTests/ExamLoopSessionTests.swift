@@ -64,7 +64,7 @@ final class ExamLoopSessionTests: XCTestCase {
 
         let result = await loop.run()
 
-        XCTAssertEqual(result, .nonProgress(cycles: 3))
+        XCTAssertEqual(result, .nonProgress(cycles: 3, reason: .repeatedIntentLoop))
         XCTAssertEqual(driver.clicks.count, 0)
         let failures = session.workingMemory.snapshot().failures
         XCTAssertEqual(failures.count, 3)

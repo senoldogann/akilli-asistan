@@ -32,7 +32,7 @@ final class ExamLoopTests: XCTestCase {
 
         let result = await loop.run()
 
-        XCTAssertEqual(result, .nonProgress(cycles: 3))
+        XCTAssertEqual(result, .nonProgress(cycles: 3, reason: .repeatedIntentLoop))
         XCTAssertEqual(driver.calls.count, 3)
     }
 
