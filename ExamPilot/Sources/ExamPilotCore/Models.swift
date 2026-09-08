@@ -5,11 +5,18 @@ public struct ScreenFrame {
     public let image: CGImage
     public let jpegData: Data
     public let screenBounds: CGRect
+    public let targetProcessID: Int32?
 
-    public init(image: CGImage, jpegData: Data, screenBounds: CGRect) {
+    public init(
+        image: CGImage,
+        jpegData: Data,
+        screenBounds: CGRect,
+        targetProcessID: Int32? = nil
+    ) {
         self.image = image
         self.jpegData = jpegData
         self.screenBounds = screenBounds
+        self.targetProcessID = targetProcessID
     }
 
     public var pixelWidth: Int { image.width }
