@@ -16,6 +16,8 @@ public final class ExamLoop {
     private let executor: ActionBatchExecutor
     private let detector: VisualChangeDetector
     private let structuralDetector: VisualChangeDetector
+    private let stabilityDetector: UIStabilityDetector
+    private let maxStabilitySamples: Int
     private let initialRuntimeState: ExamRuntimeState
     private let dryRun: Bool
     private let maxCycles: Int
@@ -23,6 +25,7 @@ public final class ExamLoop {
     private let prepareForInput: (ScreenFrame) async throws -> Void
     private let intermediateClickSettler: () async throws -> Void
     private let postActionSettler: () async throws -> Void
+    private let stabilitySettler: () async throws -> Void
     private let shouldStop: () -> Bool
 
     public init(
@@ -32,6 +35,8 @@ public final class ExamLoop {
         executor: ActionBatchExecutor,
         detector: VisualChangeDetector = VisualChangeDetector(),
         structuralDetector: VisualChangeDetector = VisualChangeDetector(threshold: 0.08),
+        stabilityDetector: UIStabilityDetector = UIStabilityDetector(),
+        maxStabilitySamples: Int = 4,
         initialRuntimeState: ExamRuntimeState = ExamRuntimeState(),
         dryRun: Bool,
         maxCycles: Int = 200,
@@ -43,6 +48,9 @@ public final class ExamLoop {
         postActionSettler: @escaping () async throws -> Void = {
             try await Task.sleep(nanoseconds: 450_000_000)
         },
+        stabilitySettler: @escaping () async throws -> Void = {
+            try await Task.sleep(nanoseconds: 150_000_000)
+        },
         shouldStop: @escaping () -> Bool = { false }
     ) {
         self.capture = capture
@@ -51,6 +59,8 @@ public final class ExamLoop {
         self.executor = executor
         self.detector = detector
         self.structuralDetector = structuralDetector
+        self.stabilityDetector = stabilityDetector
+        self.maxStabilitySamples = max(1, maxStabilitySamples)
         self.initialRuntimeState = initialRuntimeState
         self.dryRun = dryRun
         self.maxCycles = maxCycles
@@ -58,6 +68,7 @@ public final class ExamLoop {
         self.prepareForInput = prepareForInput
         self.intermediateClickSettler = intermediateClickSettler
         self.postActionSettler = postActionSettler
+        self.stabilitySettler = stabilitySettler
         self.shouldStop = shouldStop
     }
 
@@ -66,6 +77,7 @@ public final class ExamLoop {
         var nonProgressCount = 0
         var lastSummary: String?
         var runtimeState = initialRuntimeState
+        var pendingTransitionFrame: ScreenFrame?
 
         while cycles < maxCycles {
             if shouldStop() {
@@ -73,7 +85,48 @@ public final class ExamLoop {
             }
 
             do {
-                let before = try await capture.capture()
+                let before: ScreenFrame
+                if let pending = pendingTransitionFrame {
+                    var previous = pending
+                    var stableFrame: ScreenFrame?
+
+                    for _ in 0..<maxStabilitySamples {
+                        if shouldStop() {
+                            return .stopped(cycles: cycles)
+                        }
+
+                        try await stabilitySettler()
+                        if shouldStop() {
+                            return .stopped(cycles: cycles)
+                        }
+
+                        let current = try await capture.capture()
+                        if stabilityDetector.isStable(previous: previous.image, current: current.image) {
+                            stableFrame = current
+                            break
+                        }
+                        previous = current
+                    }
+
+                    guard let stableFrame else {
+                        // The transition is still moving. Keep the newest frame as the next
+                        // baseline and do not expose an unstable UI to the provider.
+                        pendingTransitionFrame = previous
+                        nonProgressCount += 1
+                        if nonProgressCount >= maxNonProgress {
+                            return .nonProgress(cycles: cycles)
+                        }
+                        continue
+                    }
+
+                    runtimeState.completeBoundaryTransition()
+                    pendingTransitionFrame = nil
+                    nonProgressCount = 0
+                    before = stableFrame
+                } else {
+                    before = try await capture.capture()
+                }
+
                 cycles += 1
                 runtimeState.acceptObservation()
 
@@ -182,11 +235,11 @@ public final class ExamLoop {
                     nonProgressCount = 0
 
                     if batch.containsProtectedBoundary {
-                        // Slice 1 records the semantic lifecycle reset immediately after a
-                        // verified boundary change. Task 4 replaces this immediate completion
-                        // with bounded consecutive-frame UI-stability gating.
+                        // A changed screen proves that the boundary had an effect, not that the
+                        // destination is ready. Keep the runtime in transition until consecutive
+                        // captures are stable, and do not call the provider in between.
                         runtimeState.beginBoundaryTransition()
-                        runtimeState.completeBoundaryTransition()
+                        pendingTransitionFrame = after
                     } else if batch.hasPotentialAnswerMutation {
                         // A model assertion is not evidence. Only a physically executed
                         // answer-like mutation followed by an observed visual change can make
