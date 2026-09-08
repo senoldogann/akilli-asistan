@@ -83,17 +83,20 @@ public protocol ContextualOutcomeVerifying: OutcomeVerifying {
 public struct OutcomeVerifier: OutcomeVerifying, ContextualOutcomeVerifying {
     private let progressDetector: VisualChangeDetector
     private let structuralDetector: VisualChangeDetector
+    private let navigationIdentityDetector: VisualChangeDetector
     private let localizedDetector: VisualChangeDetector
     private let localizedRadiusFraction: CGFloat
 
     public init(
         progressDetector: VisualChangeDetector = VisualChangeDetector(threshold: 0.035),
         structuralDetector: VisualChangeDetector = VisualChangeDetector(threshold: 0.08),
+        navigationIdentityDetector: VisualChangeDetector = VisualChangeDetector(gridSize: 64, threshold: 0.006),
         localizedDetector: VisualChangeDetector = VisualChangeDetector(threshold: 0.012),
         localizedRadiusFraction: CGFloat = 0.045
     ) {
         self.progressDetector = progressDetector
         self.structuralDetector = structuralDetector
+        self.navigationIdentityDetector = navigationIdentityDetector
         self.localizedDetector = localizedDetector
         self.localizedRadiusFraction = max(0.01, min(0.25, localizedRadiusFraction))
     }
@@ -152,10 +155,11 @@ public struct OutcomeVerifier: OutcomeVerifying, ContextualOutcomeVerifying {
             guard uiStable else {
                 return .pending(.uiTransitioning)
             }
-            guard structuralDetector.hasMeaningfulChange(before: before, after: after) else {
+            let navigationScore = navigationIdentityDetector.score(before: before, after: after)
+            guard navigationScore >= navigationIdentityDetector.threshold else {
                 return .failure(.navigationIdentityUnchanged)
             }
-            return .success(.navigation(score: globalScore))
+            return .success(.navigation(score: navigationScore))
         }
     }
 
