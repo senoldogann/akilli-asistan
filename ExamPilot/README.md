@@ -18,7 +18,7 @@ It intentionally does **not** use Chrome extensions, DOM/CDP automation, JavaScr
 - scrolls using native pixel wheel events;
 - gives expected UI changes a short settling interval, captures the UI again, and stops after repeated non-progress;
 - supports `--dry-run` to inspect the first planned batch without physical input or changing application focus;
-- supports Ctrl-C as an emergency stop before the next physical action.
+- supports Ctrl-C as an emergency stop during long input as well as between planned actions.
 
 ## Requirements
 
@@ -74,7 +74,7 @@ Limit a session:
 swift run exampilot --max-cycles 80
 ```
 
-Press **Ctrl-C** to request an emergency stop. The executor checks the stop flag before each new physical action in a batch.
+Press **Ctrl-C** to request an emergency stop. The native driver checks the stop flag during mouse movement, before each typed character, before key/scroll events, in short slices during waits, and between high-level actions. If a mouse-down or key-down has already been posted, its matching up event is still sent so macOS is not left with a stuck button or key.
 
 ## macOS permissions
 
@@ -138,6 +138,7 @@ The core runtime rejects or bounds model output before it reaches physical input
 - scroll is limited to ±1400 pixels per action;
 - click coordinates must be inside the captured Chrome window;
 - live input requires the captured Chrome process to still exist and the focused window to geometrically match the captured window;
+- emergency stop is checked inside long mouse/type/wait operations rather than only between action objects;
 - actions after the first boundary are discarded;
 - a boundary action forces post-action visual verification even if model output incorrectly claims no visual change is expected;
 - three consecutive expected-change batches with no meaningful visual change terminate the run;
