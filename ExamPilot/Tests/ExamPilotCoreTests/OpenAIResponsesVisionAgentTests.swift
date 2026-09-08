@@ -31,8 +31,17 @@ final class OpenAIResponsesVisionAgentTests: XCTestCase {
         let transport = RecordingTransport(responseData: Data(fixtureResponse(decisionJSON: #"{"summary":"done","expectsVisualChange":false,"actions":[{"kind":"finish","boundary":true}]}"#).utf8))
         let agent = OpenAIResponsesVisionAgent(apiKey: "test-key", model: "gpt-test", transport: transport)
         let frame = try makeFrame()
+        let state = ExamObservationState(
+            cycle: 4,
+            nonProgressCount: 0,
+            lastSummary: "previous",
+            stateVersion: 7,
+            questionGeneration: 3,
+            answerVerified: false,
+            uiPhase: .stable
+        )
 
-        _ = try await agent.decide(frame: frame, state: ExamObservationState(cycle: 2, nonProgressCount: 1, lastSummary: "previous"))
+        _ = try await agent.decide(frame: frame, state: state)
 
         let request = try XCTUnwrap(transport.lastRequest)
         XCTAssertEqual(request.url?.absoluteString, "https://api.openai.com/v1/responses")
@@ -47,6 +56,13 @@ final class OpenAIResponsesVisionAgentTests: XCTestCase {
         let imagePart = try XCTUnwrap(content.first { $0["type"] as? String == "input_image" })
         let imageURL = try XCTUnwrap(imagePart["image_url"] as? String)
         XCTAssertTrue(imageURL.hasPrefix("data:image/jpeg;base64,"))
+
+        let textPart = try XCTUnwrap(content.first { $0["type"] as? String == "input_text" })
+        let promptText = try XCTUnwrap(textPart["text"] as? String)
+        XCTAssertTrue(promptText.contains("state_version=7"))
+        XCTAssertTrue(promptText.contains("question_generation=3"))
+        XCTAssertTrue(promptText.contains("answer_verified=false"))
+        XCTAssertTrue(promptText.contains("ui_phase=stable"))
 
         let textConfig = try XCTUnwrap(body["text"] as? [String: Any])
         let format = try XCTUnwrap(textConfig["format"] as? [String: Any])
