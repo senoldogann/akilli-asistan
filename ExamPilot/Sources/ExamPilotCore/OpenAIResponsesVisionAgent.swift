@@ -167,7 +167,10 @@ public final class OpenAIResponsesVisionAgent: VisionAgent {
                         "x": ["type": ["number", "null"]],
                         "y": ["type": ["number", "null"]],
                         "text": ["type": ["string", "null"]],
-                        "key": ["type": ["string", "null"]],
+                        "key": [
+                            "type": ["string", "null"],
+                            "enum": SupportedInputKey.allCases.map { $0.rawValue as Any } + [NSNull()],
+                        ],
                         "amount": ["type": ["integer", "null"]],
                         "milliseconds": ["type": ["integer", "null"]],
                         "boundary": ["type": "boolean"],
