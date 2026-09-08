@@ -106,6 +106,36 @@ final class ExamLoopTests: XCTestCase {
         XCTAssertEqual(Array(log.events.prefix(4)), ["capture", "click", "settle", "capture"])
     }
 
+    func testMisclassifiedNavigationClickInterruptsRemainingBatchForReobservation() async throws {
+        let before = try makeFrame(gray: 0.1)
+        let navigated = try makeFrame(gray: 0.9)
+        let capture = QueueCapture(frames: [before, navigated, navigated])
+        let agent = QueueVisionAgent(decisions: [
+            ExamDecision(
+                summary: "misclassified next",
+                expectsVisualChange: true,
+                actions: [
+                    .moveClick(x: 50, y: 50, boundary: false),
+                    .typeText("SHOULD_NOT_RUN"),
+                ]
+            ),
+            ExamDecision(summary: "done", expectsVisualChange: false, actions: [.finish()]),
+        ])
+        let driver = LoopRecordingDriver()
+        let loop = ExamLoop(
+            capture: capture,
+            visionAgent: agent,
+            executor: ActionBatchExecutor(driver: driver),
+            dryRun: false,
+            postActionSettler: {}
+        )
+
+        let result = await loop.run()
+
+        XCTAssertEqual(result, .finished(cycles: 2))
+        XCTAssertEqual(driver.calls, ["click"])
+    }
+
     private func makeFrame(gray: CGFloat) throws -> ScreenFrame {
         guard let context = CGContext(data: nil, width: 16, height: 16, bitsPerComponent: 8, bytesPerRow: 64, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
             throw NSError(domain: "tests", code: 1)
