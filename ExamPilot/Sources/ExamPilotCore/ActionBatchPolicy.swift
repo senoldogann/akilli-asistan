@@ -68,8 +68,35 @@ public struct ActionBatchPolicy {
             expectsVisualChange: decision.expectsVisualChange || boundaryRequiresVerification || deferredProtectedBoundary,
             actions: accepted,
             stateVersion: context.stateVersion,
-            deferredProtectedBoundary: deferredProtectedBoundary
+            deferredProtectedBoundary: deferredProtectedBoundary,
+            expectedOutcome: expectedOutcome(
+                actions: accepted,
+                containsProtectedBoundary: boundaryRequiresVerification
+            )
         )
+    }
+
+    private func expectedOutcome(
+        actions: [ExamAction],
+        containsProtectedBoundary: Bool
+    ) -> ExpectedOutcomeKind {
+        if containsProtectedBoundary {
+            return .navigation
+        }
+        if actions.contains(where: { $0.kind == .scroll }) {
+            return .viewportChange
+        }
+        if actions.contains(where: { action in
+            switch action.kind {
+            case .moveClick, .typeText, .key:
+                return !action.boundary
+            case .scroll, .wait, .finish:
+                return false
+            }
+        }) {
+            return .answerMutation
+        }
+        return .none
     }
 
     private func validate(_ action: ExamAction, screenBounds: CGRect) throws {
