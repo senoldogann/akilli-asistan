@@ -28,6 +28,20 @@ final class ExamRuntimeStateTests: XCTestCase {
         XCTAssertFalse(state.navigationAllowed)
     }
 
+    func testFailedNavigationReturnsToStableSameGenerationWithoutLosingVerifiedAnswer() {
+        var state = ExamRuntimeState(questionGeneration: 5, answerState: .verified)
+        state.beginBoundaryTransition()
+        let versionBeforeFailure = state.stateVersion
+
+        state.failBoundaryTransition()
+
+        XCTAssertEqual(state.questionGeneration, 5)
+        XCTAssertEqual(state.answerState, .verified)
+        XCTAssertEqual(state.uiPhase, .stable)
+        XCTAssertGreaterThan(state.stateVersion, versionBeforeFailure)
+        XCTAssertTrue(state.navigationAllowed)
+    }
+
     func testAcceptedObservationsAdvanceStateVersionMonotonically() {
         var state = ExamRuntimeState()
         let initial = state.stateVersion
