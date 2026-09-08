@@ -19,6 +19,7 @@ public final class ExamLoop {
     private let stabilityDetector: UIStabilityDetector
     private let maxStabilitySamples: Int
     private let initialRuntimeState: ExamRuntimeState
+    private let eventSink: AgentEventSinking
     private let dryRun: Bool
     private let maxCycles: Int
     private let maxNonProgress: Int
@@ -38,6 +39,7 @@ public final class ExamLoop {
         stabilityDetector: UIStabilityDetector = UIStabilityDetector(),
         maxStabilitySamples: Int = 4,
         initialRuntimeState: ExamRuntimeState = ExamRuntimeState(),
+        eventSink: AgentEventSinking = NullAgentEventSink(),
         dryRun: Bool,
         maxCycles: Int = 200,
         maxNonProgress: Int = 3,
@@ -62,6 +64,7 @@ public final class ExamLoop {
         self.stabilityDetector = stabilityDetector
         self.maxStabilitySamples = max(1, maxStabilitySamples)
         self.initialRuntimeState = initialRuntimeState
+        self.eventSink = eventSink
         self.dryRun = dryRun
         self.maxCycles = maxCycles
         self.maxNonProgress = maxNonProgress
@@ -105,14 +108,25 @@ public final class ExamLoop {
                             stableFrame = current
                             break
                         }
+
+                        recordEvent(
+                            .stabilityWaiting,
+                            cycle: cycles,
+                            state: runtimeState,
+                            detail: "ui_still_transitioning"
+                        )
                         previous = current
                     }
 
                     guard let stableFrame else {
-                        // The transition is still moving. Keep the newest frame as the next
-                        // baseline and do not expose an unstable UI to the provider.
                         pendingTransitionFrame = previous
                         nonProgressCount += 1
+                        recordEvent(
+                            .stabilityWaiting,
+                            cycle: cycles,
+                            state: runtimeState,
+                            detail: "stability_sample_budget_exhausted"
+                        )
                         if nonProgressCount >= maxNonProgress {
                             return .nonProgress(cycles: cycles)
                         }
@@ -120,6 +134,12 @@ public final class ExamLoop {
                     }
 
                     runtimeState.completeBoundaryTransition()
+                    recordEvent(
+                        .boundaryTransitionCompleted,
+                        cycle: cycles,
+                        state: runtimeState,
+                        detail: "ui_stable"
+                    )
                     pendingTransitionFrame = nil
                     nonProgressCount = 0
                     before = stableFrame
@@ -129,6 +149,12 @@ public final class ExamLoop {
 
                 cycles += 1
                 runtimeState.acceptObservation()
+                recordEvent(
+                    .observationAccepted,
+                    cycle: cycles,
+                    state: runtimeState,
+                    detail: "observation_accepted"
+                )
 
                 let state = ExamObservationState(
                     cycle: cycles,
@@ -141,6 +167,12 @@ public final class ExamLoop {
                 )
                 let decision = try await visionAgent.decide(frame: before, state: state)
                 lastSummary = decision.summary
+                recordEvent(
+                    .proposalReceived,
+                    cycle: cycles,
+                    state: runtimeState,
+                    detail: "proposal_received"
+                )
 
                 let batch: ValidatedBatch
                 do {
@@ -153,21 +185,40 @@ public final class ExamLoop {
                         )
                     )
                 } catch let error as ActionValidationError {
+                    let detail: String
                     if error == .protectedBoundaryBeforeAnswer {
                         nonProgressCount = 0
+                        detail = "protected_boundary_before_answer"
+                    } else {
+                        detail = "action_validation_failed"
                     }
-                    // Invalid or lifecycle-illegal proposals never reach physical input.
-                    // Re-observe rather than guessing a replacement coordinate locally.
+                    recordEvent(
+                        .policyDenied,
+                        cycle: cycles,
+                        state: runtimeState,
+                        detail: detail
+                    )
                     continue
                 }
+
+                recordEvent(
+                    .batchValidated,
+                    cycle: cycles,
+                    state: runtimeState,
+                    detail: batch.deferredProtectedBoundary ? "protected_boundary_deferred" : "batch_validated"
+                )
 
                 if dryRun {
                     return .dryRunPlanned(summary: batch.summary, actionCount: batch.actions.count)
                 }
 
-                // Every proposal is bound to the exact accepted observation that produced it.
-                // Any runtime state transition invalidates the stale batch before physical input.
                 guard batch.stateVersion == runtimeState.stateVersion else {
+                    recordEvent(
+                        .policyDenied,
+                        cycle: cycles,
+                        state: runtimeState,
+                        detail: "stale_state_version"
+                    )
                     continue
                 }
 
@@ -177,6 +228,12 @@ public final class ExamLoop {
                 }
 
                 guard batch.stateVersion == runtimeState.stateVersion else {
+                    recordEvent(
+                        .policyDenied,
+                        cycle: cycles,
+                        state: runtimeState,
+                        detail: "stale_state_after_focus_preparation"
+                    )
                     continue
                 }
 
@@ -213,10 +270,13 @@ public final class ExamLoop {
                     return .finished(cycles: cycles)
                 }
                 if execution.interruptedForUIChange {
-                    // The observed state changed during a multi-action proposal. Remaining
-                    // actions are stale. Do not infer answer verification from an interrupted
-                    // batch; the next observation must establish the new state.
                     nonProgressCount = 0
+                    recordEvent(
+                        .verificationFailed,
+                        cycle: cycles,
+                        state: runtimeState,
+                        detail: "batch_interrupted_for_ui_change"
+                    )
                     continue
                 }
 
@@ -235,19 +295,31 @@ public final class ExamLoop {
                     nonProgressCount = 0
 
                     if batch.containsProtectedBoundary {
-                        // A changed screen proves that the boundary had an effect, not that the
-                        // destination is ready. Keep the runtime in transition until consecutive
-                        // captures are stable, and do not call the provider in between.
                         runtimeState.beginBoundaryTransition()
+                        recordEvent(
+                            .boundaryTransitionStarted,
+                            cycle: cycles,
+                            state: runtimeState,
+                            detail: "protected_boundary_changed_ui"
+                        )
                         pendingTransitionFrame = after
                     } else if batch.hasPotentialAnswerMutation {
-                        // A model assertion is not evidence. Only a physically executed
-                        // answer-like mutation followed by an observed visual change can make
-                        // navigation legal for this question generation.
                         runtimeState.recordAnswerVerified()
+                        recordEvent(
+                            .answerVerified,
+                            cycle: cycles,
+                            state: runtimeState,
+                            detail: "answer_mutation_verified"
+                        )
                     }
                 } else {
                     nonProgressCount += 1
+                    recordEvent(
+                        .verificationFailed,
+                        cycle: cycles,
+                        state: runtimeState,
+                        detail: "expected_visual_change_missing"
+                    )
                     if nonProgressCount >= maxNonProgress {
                         return .nonProgress(cycles: cycles)
                     }
@@ -258,5 +330,22 @@ public final class ExamLoop {
         }
 
         return .maxCycles(cycles: cycles)
+    }
+
+    private func recordEvent(
+        _ kind: AgentEventKind,
+        cycle: Int,
+        state: ExamRuntimeState,
+        detail: String
+    ) {
+        eventSink.record(
+            AgentEvent(
+                kind: kind,
+                cycle: cycle,
+                stateVersion: state.stateVersion,
+                questionGeneration: state.questionGeneration,
+                detail: detail
+            )
+        )
     }
 }
