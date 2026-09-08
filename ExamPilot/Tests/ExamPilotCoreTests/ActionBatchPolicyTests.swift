@@ -67,6 +67,11 @@ final class ActionBatchPolicyTests: XCTestCase {
         }
     }
 
+    func testRejectsUnsupportedKeyDuringValidation() {
+        let decision = ExamDecision(summary: "bad key", expectsVisualChange: true, actions: [.pressKey("cmd+enter")])
+        XCTAssertThrowsError(try ActionBatchPolicy().validate(decision, screenBounds: bounds))
+    }
+
     func testRejectsClickOutsideScreenBounds() {
         let decision = ExamDecision(summary: "click", expectsVisualChange: true, actions: [.moveClick(x: 1500, y: 300)])
         XCTAssertThrowsError(try ActionBatchPolicy().validate(decision, screenBounds: bounds)) { error in
