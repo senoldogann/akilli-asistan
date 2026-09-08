@@ -47,7 +47,7 @@ struct ExamPilotMain {
         let signalSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global(qos: .userInitiated))
         signalSource.setEventHandler {
             stopController.requestStop()
-            fputs("\nExamPilot: stop requested; no new physical action will start.\n", stderr)
+            fputs("\nExamPilot: stop requested; physical input will stop at the next safe event boundary.\n", stderr)
         }
         signalSource.resume()
 
@@ -62,7 +62,7 @@ struct ExamPilotMain {
         print("  stop: Ctrl-C")
 
         let capture = ScreenCaptureService()
-        let input = NativeInputDriver()
+        let input = NativeInputDriver(shouldStop: { stopController.isStopped })
         let executor = ActionBatchExecutor(driver: input)
         let vision = OpenAIResponsesVisionAgent(apiKey: apiKey, model: model)
         let focusService = ChromeInputFocusService()
