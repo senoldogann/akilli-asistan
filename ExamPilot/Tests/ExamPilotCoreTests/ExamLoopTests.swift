@@ -162,8 +162,26 @@ final class ExamLoopTests: XCTestCase {
     }
 
     func testUnansweredSecondQuestionCannotPhysicallyNavigate() async throws {
-        let frame = try makeFrame(gray: 0.4)
-        let capture = QueueCapture(frames: Array(repeating: frame, count: 16))
+        let q1 = try makeFrame(gray: 0.40)
+        let q1Answered = try makeFrame(gray: 0.44)
+        let loading = try makeFrame(gray: 0.90)
+        let q2 = try makeFrame(gray: 0.20)
+        let q2Answered = try makeFrame(gray: 0.24)
+        let q3 = try makeFrame(gray: 0.60)
+        let capture = QueueCapture(frames: [
+            q1,
+            q1Answered,
+            q1Answered,
+            loading,
+            q2,
+            q2,
+            q2,
+            q2Answered,
+            q2Answered,
+            loading,
+            q3,
+            q3,
+        ])
         let agent = QueueVisionAgent(decisions: [
             ExamDecision(summary: "answer q1", expectsVisualChange: true, actions: [.moveClick(x: 10, y: 10)]),
             ExamDecision(summary: "next from q1", expectsVisualChange: true, actions: [.moveClick(x: 20, y: 20, boundary: true)]),
@@ -177,9 +195,9 @@ final class ExamLoopTests: XCTestCase {
             capture: capture,
             visionAgent: agent,
             executor: ActionBatchExecutor(driver: driver),
-            detector: VisualChangeDetector(threshold: 0),
             dryRun: false,
-            postActionSettler: {}
+            postActionSettler: {},
+            stabilitySettler: {}
         )
 
         let result = await loop.run()
