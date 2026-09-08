@@ -28,9 +28,16 @@ public struct ActionBatchPolicy {
             }
         }
 
+        // A navigation/UI boundary is, by definition, expected to produce a new
+        // observable state. Do not let a mistaken model flag skip the settle +
+        // verification gate after Next/Continue/Run/Submit-style actions.
+        let boundaryRequiresVerification = accepted.contains {
+            $0.boundary && $0.kind != .finish
+        }
+
         return ValidatedBatch(
             summary: decision.summary,
-            expectsVisualChange: decision.expectsVisualChange,
+            expectsVisualChange: decision.expectsVisualChange || boundaryRequiresVerification,
             actions: accepted
         )
     }
