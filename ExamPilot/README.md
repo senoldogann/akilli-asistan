@@ -169,6 +169,11 @@ ExamPilot/
 └── Tests/ExamPilotCoreTests/
 ```
 
+## Design documents
+
+- Design specification: `docs/superpowers/specs/2026-09-08-exampilot-visual-agent-design.md`
+- Implementation plan: `docs/superpowers/plans/2026-09-08-exampilot-visual-agent.md`
+
 ## Scope
 
 ExamPilot is built for pages the user owns or is explicitly authorized to automate and test. It does not include anti-proctoring, stealth/evasion, CAPTCHA bypass, or mechanisms intended to defeat monitoring controls.
