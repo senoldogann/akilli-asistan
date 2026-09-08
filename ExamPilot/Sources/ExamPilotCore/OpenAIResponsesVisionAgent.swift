@@ -109,6 +109,12 @@ public final class OpenAIResponsesVisionAgent: VisionAgent {
 
     private func prompt(frame: ScreenFrame, state: ExamObservationState) -> String {
         let last = state.lastSummary ?? "none"
+        let recentFailures = state.workingMemory.failures.suffix(3).map { $0.reason.rawValue }
+        let recentEvidence = state.workingMemory.evidence.suffix(3).map { $0.outcome.rawValue }
+        let recoveryStrategy = state.workingMemory.currentRecoveryStrategy?.rawValue ?? "none"
+        let failureList = recentFailures.isEmpty ? "none" : recentFailures.joined(separator: ",")
+        let evidenceList = recentEvidence.isEmpty ? "none" : recentEvidence.joined(separator: ",")
+
         return """
         You are the visual planner for ExamPilot, a macOS computer-use agent operating only in an authorized quiz or exam environment owned or permitted by the user.
 
@@ -144,6 +150,7 @@ public final class OpenAIResponsesVisionAgent: VisionAgent {
           y = bounds.y + (py / screenshotHeight) * bounds.height
 
         Runtime state: cycle=\(state.cycle), consecutive_non_progress=\(state.nonProgressCount), previous_summary=\(last), state_version=\(state.stateVersion), question_generation=\(state.questionGeneration), answer_verified=\(state.answerVerified), ui_phase=\(state.uiPhase.rawValue).
+        Session memory: session_id=\(state.sessionID), recent_failure_count=\(state.workingMemory.failures.count), recent_failures=\(failureList), recent_evidence=\(evidenceList), recovery_strategy=\(recoveryStrategy), provider_continuation=\(state.providerContinuationAvailable).
 
         Keep summary concise and action-oriented. Return JSON only through the structured output schema.
         """
