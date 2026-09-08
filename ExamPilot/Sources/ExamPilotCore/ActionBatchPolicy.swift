@@ -66,7 +66,7 @@ public struct ActionBatchPolicy {
             guard let amount = action.amount else {
                 throw ActionValidationError.missingRequiredField(.scroll)
             }
-            guard abs(amount) <= maxAbsoluteScroll else {
+            guard (-maxAbsoluteScroll...maxAbsoluteScroll).contains(amount) else {
                 throw ActionValidationError.scrollOutOfRange
             }
 
