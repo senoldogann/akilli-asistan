@@ -40,3 +40,71 @@ public struct AgentIntentFingerprint: Hashable, Codable {
         return Int((value / Double(size)).rounded(.down))
     }
 }
+
+public enum AgentFailureReason: String, Codable, Equatable {
+    case targetMiss
+    case noVisibleEffect
+    case staleObservation
+    case transitionStillRunning
+    case focusDrift
+    case stateMismatch
+    case invalidModelPlan
+    case repeatedIntentLoop
+    case targetNotVisible
+    case unknown
+}
+
+public enum RecoveryStrategy: String, Codable, Equatable {
+    case reobserveAndReplan
+    case waitForStability
+}
+
+public enum RecoveryDecision: Equatable {
+    case recover(strategy: RecoveryStrategy, attempt: Int)
+    case exhausted(reason: AgentFailureReason)
+}
+
+public final class RecoveryEngine {
+    private let maxRepeatedIntentAttempts: Int
+    private var attempts: [AgentIntentFingerprint: Int] = [:]
+
+    public init(maxRepeatedIntentAttempts: Int = 3) {
+        self.maxRepeatedIntentAttempts = max(1, maxRepeatedIntentAttempts)
+    }
+
+    public func handle(
+        failure: AgentFailureReason,
+        intent: AgentIntentFingerprint
+    ) -> RecoveryDecision {
+        let current = attempts[intent] ?? 0
+        let next = current == Int.max ? Int.max : current + 1
+        attempts[intent] = next
+
+        if next >= maxRepeatedIntentAttempts {
+            return .exhausted(reason: .repeatedIntentLoop)
+        }
+
+        return .recover(strategy: strategy(for: failure), attempt: next)
+    }
+
+    public func recordSuccess(intent: AgentIntentFingerprint) {
+        attempts.removeValue(forKey: intent)
+    }
+
+    private func strategy(for failure: AgentFailureReason) -> RecoveryStrategy {
+        switch failure {
+        case .transitionStillRunning:
+            return .waitForStability
+        case .targetMiss,
+             .noVisibleEffect,
+             .staleObservation,
+             .focusDrift,
+             .stateMismatch,
+             .invalidModelPlan,
+             .repeatedIntentLoop,
+             .targetNotVisible,
+             .unknown:
+            return .reobserveAndReplan
+        }
+    }
+}
