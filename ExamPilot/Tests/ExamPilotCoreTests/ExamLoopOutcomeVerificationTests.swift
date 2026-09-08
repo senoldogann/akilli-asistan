@@ -150,6 +150,48 @@ final class ExamLoopOutcomeVerificationTests: XCTestCase {
         XCTAssertEqual(driver.clicks, [CGPoint(x: 50, y: 50)])
     }
 
+    func testSameLayoutQuestionContentChangeAdvancesGeneration() async throws {
+        let questionA = try makeSparseQuestionFrame(variant: 1, marker: 1)
+        let loading = try makeLargeFrame(gray: 0.90, selected: false, marker: 2)
+        let questionB = try makeSparseQuestionFrame(variant: 2, marker: 3)
+
+        XCTAssertFalse(
+            VisualChangeDetector(threshold: 0.08).hasMeaningfulChange(
+                before: questionA.image,
+                after: questionB.image
+            ),
+            "Regression fixture must remain below the coarse structural threshold"
+        )
+
+        let capture = OutcomeQueueCapture(frames: [questionA, loading, questionB, questionB])
+        let agent = OutcomeRecordingAgent(decisions: [
+            ExamDecision(
+                summary: "navigate",
+                expectsVisualChange: true,
+                actions: [.moveClick(x: 900, y: 700, boundary: true)]
+            ),
+            ExamDecision(summary: "finish", expectsVisualChange: false, actions: [.finish()]),
+        ])
+        let driver = OutcomeRecordingDriver()
+        let loop = ExamLoop(
+            capture: capture,
+            visionAgent: agent,
+            executor: ActionBatchExecutor(driver: driver),
+            initialRuntimeState: ExamRuntimeState(answerState: .verified),
+            dryRun: false,
+            postActionSettler: {},
+            stabilitySettler: {}
+        )
+
+        let result = await loop.run()
+
+        XCTAssertEqual(result, .finished(cycles: 2))
+        XCTAssertEqual(agent.states.count, 2)
+        XCTAssertEqual(agent.states[1].questionGeneration, 2)
+        XCTAssertFalse(agent.states[1].answerVerified)
+        XCTAssertEqual(agent.states[1].uiPhase, .stable)
+    }
+
     private func makeFrame(gray: CGFloat, marker: UInt8) throws -> ScreenFrame {
         guard let context = CGContext(
             data: nil,
@@ -198,6 +240,60 @@ final class ExamLoopOutcomeVerificationTests: XCTestCase {
 
         guard let image = context.makeImage() else {
             throw NSError(domain: "ExamLoopOutcomeVerificationTests", code: 6)
+        }
+        return ScreenFrame(
+            image: image,
+            jpegData: Data([marker]),
+            screenBounds: CGRect(x: 0, y: 0, width: width, height: height)
+        )
+    }
+
+    private func makeSparseQuestionFrame(variant: Int, marker: UInt8) throws -> ScreenFrame {
+        let width = 1_024
+        let height = 768
+        guard let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            throw NSError(domain: "ExamLoopOutcomeVerificationTests", code: 7)
+        }
+
+        context.setFillColor(red: 0.95, green: 0.95, blue: 0.95, alpha: 1)
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        context.setFillColor(red: 0.90, green: 0.90, blue: 0.90, alpha: 1)
+        context.fill(CGRect(x: 80, y: 80, width: 864, height: 40))
+        context.setFillColor(red: 0.12, green: 0.12, blue: 0.12, alpha: 1)
+
+        let rects: [CGRect]
+        if variant == 1 {
+            rects = [
+                CGRect(x: 160, y: 220, width: 520, height: 14),
+                CGRect(x: 160, y: 248, width: 400, height: 14),
+                CGRect(x: 180, y: 330, width: 340, height: 14),
+                CGRect(x: 180, y: 390, width: 420, height: 14),
+                CGRect(x: 180, y: 450, width: 300, height: 14),
+            ]
+        } else {
+            rects = [
+                CGRect(x: 160, y: 220, width: 440, height: 14),
+                CGRect(x: 160, y: 248, width: 560, height: 14),
+                CGRect(x: 180, y: 330, width: 430, height: 14),
+                CGRect(x: 180, y: 390, width: 280, height: 14),
+                CGRect(x: 180, y: 450, width: 470, height: 14),
+            ]
+        }
+
+        for rect in rects {
+            context.fill(rect)
+        }
+
+        guard let image = context.makeImage() else {
+            throw NSError(domain: "ExamLoopOutcomeVerificationTests", code: 8)
         }
         return ScreenFrame(
             image: image,
