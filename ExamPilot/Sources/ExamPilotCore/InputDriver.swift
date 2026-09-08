@@ -40,6 +40,7 @@ public enum InputDriverError: Error, LocalizedError, Equatable {
     case eventSourceUnavailable
     case eventCreationFailed
     case unsupportedKey(String)
+    case cancelled
 
     public var errorDescription: String? {
         switch self {
@@ -49,6 +50,8 @@ public enum InputDriverError: Error, LocalizedError, Equatable {
             return "CoreGraphics could not create an input event."
         case .unsupportedKey(let key):
             return "Unsupported key: \(key)"
+        case .cancelled:
+            return "Physical input was cancelled by the emergency stop request."
         }
     }
 }
@@ -56,16 +59,20 @@ public enum InputDriverError: Error, LocalizedError, Equatable {
 public final class NativeInputDriver: InputDriving {
     private let profile: HumanInputProfile
     private let randomUnit: () -> Double
+    private let shouldStop: () -> Bool
 
     public init(
         profile: HumanInputProfile = HumanInputProfile(),
-        randomUnit: @escaping () -> Double = { Double.random(in: 0...1) }
+        randomUnit: @escaping () -> Double = { Double.random(in: 0...1) },
+        shouldStop: @escaping () -> Bool = { false }
     ) {
         self.profile = profile
         self.randomUnit = randomUnit
+        self.shouldStop = shouldStop
     }
 
     public func moveAndClick(x: Double, y: Double) async throws {
+        try checkStop()
         guard let source = CGEventSource(stateID: .hidSystemState) else {
             throw InputDriverError.eventSourceUnavailable
         }
@@ -90,6 +97,7 @@ public final class NativeInputDriver: InputDriving {
 
         let stepNanos = UInt64(max(1, duration / steps)) * 1_000_000
         for index in 1...steps {
+            try checkStop()
             let t = CGFloat(index) / CGFloat(steps)
             let point = cubicBezier(start, c1, c2, end, t)
             guard let move = CGEvent(
@@ -104,6 +112,7 @@ public final class NativeInputDriver: InputDriving {
             try await Task.sleep(nanoseconds: stepNanos)
         }
 
+        try checkStop()
         guard let down = CGEvent(
             mouseEventSource: source,
             mouseType: .leftMouseDown,
@@ -119,6 +128,8 @@ public final class NativeInputDriver: InputDriving {
         }
 
         down.post(tap: .cghidEventTap)
+        // Once mouseDown is posted, always post mouseUp even if stop is requested
+        // during this short interval so the system is never left with a stuck button.
         try await Task.sleep(nanoseconds: UInt64(45 + Int(randomUnit() * 45)) * 1_000_000)
         up.post(tap: .cghidEventTap)
     }
@@ -127,6 +138,7 @@ public final class NativeInputDriver: InputDriving {
         guard !text.isEmpty else { return }
 
         for character in text {
+            try checkStop()
             if character == "\n" {
                 try await pressKey("return")
             } else if character == "\t" {
@@ -149,6 +161,7 @@ public final class NativeInputDriver: InputDriving {
     }
 
     public func pressKey(_ key: String) async throws {
+        try checkStop()
         guard let source = CGEventSource(stateID: .hidSystemState) else {
             throw InputDriverError.eventSourceUnavailable
         }
@@ -160,11 +173,13 @@ public final class NativeInputDriver: InputDriving {
             throw InputDriverError.eventCreationFailed
         }
         down.post(tap: .cghidEventTap)
+        // Keep key-up paired with key-down even if stop arrives during the press.
         try await Task.sleep(nanoseconds: 28_000_000)
         up.post(tap: .cghidEventTap)
     }
 
     public func scroll(amount: Int) async throws {
+        try checkStop()
         guard let source = CGEventSource(stateID: .hidSystemState) else {
             throw InputDriverError.eventSourceUnavailable
         }
@@ -184,7 +199,19 @@ public final class NativeInputDriver: InputDriving {
 
     public func wait(milliseconds: Int) async throws {
         guard milliseconds > 0 else { return }
-        try await Task.sleep(nanoseconds: UInt64(milliseconds) * 1_000_000)
+        var remaining = milliseconds
+        while remaining > 0 {
+            try checkStop()
+            let slice = min(50, remaining)
+            try await Task.sleep(nanoseconds: UInt64(slice) * 1_000_000)
+            remaining -= slice
+        }
+    }
+
+    private func checkStop() throws {
+        if shouldStop() {
+            throw InputDriverError.cancelled
+        }
     }
 
     private func postUnicode(_ text: String) throws {
