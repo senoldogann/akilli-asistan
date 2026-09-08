@@ -7,6 +7,19 @@ public enum ExpectedOutcomeKind: Codable, Equatable {
     case viewportChange
     case navigation
 
+    public var rawValue: String {
+        switch self {
+        case .none:
+            return "none"
+        case .answerMutation, .answerMutationAt:
+            return "answerMutation"
+        case .viewportChange:
+            return "viewportChange"
+        case .navigation:
+            return "navigation"
+        }
+    }
+
     fileprivate var normalizedInteractionPoint: CGPoint? {
         guard case .answerMutationAt(let normalizedX, let normalizedY) = self else {
             return nil
