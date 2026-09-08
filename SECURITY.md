@@ -1,31 +1,51 @@
 # Security Policy
 
-## Supported Versions
+## Supported version
 
-Security fixes are applied to the latest version on `main`.
+Security fixes target the latest code on `main`.
 
-## Reporting a Vulnerability
+## Reporting a vulnerability
 
-If you discover a security issue, do not open a public issue first.
+Do not publish sensitive vulnerability details in a public issue before the maintainer has had an opportunity to triage them.
 
-Send a report to the maintainer with:
-- A clear description of the issue
-- Reproduction steps
-- Impact assessment
-- Suggested mitigation (if available)
+A useful report includes:
 
-You will receive an acknowledgment as soon as possible. Valid reports will be
-triaged and fixed before public disclosure when feasible.
+- a concise description of the vulnerability;
+- reliable reproduction steps;
+- affected component and version/commit;
+- impact assessment;
+- suggested mitigation, if known.
 
-## Scope Notes
+## Security model
 
-- Never commit API keys or credentials.
-- Assume model output is untrusted input.
-- Prefer allowlist-based command execution over free-form shell execution.
-- Verified: ZeroLose stores API keys in the macOS Keychain (via `Secrets.swift`); no
-  hardcoded keys are present in the source tree or the packaged binary.
-- Generated runtime artifacts (Xcode `DerivedData`, build logs, CCM vector caches,
-  `ZeroLose/dist`) are git-ignored and must never be committed.
-- Run `python3 scripts/verify_all.py` before declaring any provider/config change
-  complete; it validates provider config, git-ignore coverage, symlink contract,
-  and real secret presence.
+Akıllı Asistan treats model/provider output as untrusted input.
+
+The computer-use runtime therefore keeps deterministic authority outside the model:
+
+- `ActionPolicy` validates whether proposed actions are executable;
+- stale observation/state versions are rejected;
+- Chrome focus/window continuity is checked before live input;
+- protected navigation remains fail-closed until runtime verification allows it;
+- unknown native Computer Use actions fail closed;
+- retries and waits are bounded;
+- emergency-stop checks remain active during long-running native input;
+- semantic outcome verification, not model self-report, determines success.
+
+## Secrets and private data
+
+- Never commit API keys, credentials, private keys, access tokens, or session secrets.
+- Use environment variables or platform secret storage as appropriate for the executable.
+- Working-memory telemetry must not retain raw screenshots, API headers, provider payloads, or private typed content.
+- Generated build/runtime artifacts must remain ignored by Git.
+
+## Automation scope
+
+The project is intended for user-authorized interaction and testing. Security-sensitive boundaries must not be weakened to add stealth/evasion, anti-proctoring, monitoring defeat, CAPTCHA bypass, or access-control circumvention behavior.
+
+## Verification
+
+Run the repository gate before declaring a security-sensitive change complete:
+
+```bash
+python3 scripts/verify_all.py
+```

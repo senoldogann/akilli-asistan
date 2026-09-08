@@ -1,27 +1,50 @@
 # Contributing
 
-## Development Setup
+## Development setup
 
-1. Open `ZeroLose/ZeroLose.xcodeproj` in Xcode.
-2. Set your API keys from the app Settings screen after launch.
-3. Run build and tests before submitting changes.
+The primary computer-use runtime is the Swift Package under `ExamPilot/`.
 
-## Build and Test
+Requirements:
+
+- macOS 14+
+- Swift 5.10+
+- Xcode for the `ZeroLose` application build
+
+## Verification
+
+Run the repository gate before opening or merging a pull request:
 
 ```bash
-xcodebuild -project ZeroLose/ZeroLose.xcodeproj -scheme ZeroLose -destination 'platform=macOS' build
-xcodebuild -project ZeroLose/ZeroLose.xcodeproj -scheme ZeroLose -destination 'platform=macOS' test
+python3 scripts/verify_all.py
 ```
 
-## Pull Request Rules
+For focused ExamPilot development:
 
-- Keep changes focused and small.
-- Include tests for behavior changes.
-- Do not introduce hardcoded secrets.
-- Update docs when behavior changes.
+```bash
+cd ExamPilot
+swift test
+swift build -c release
+```
 
-## Code Quality
+## Pull request rules
 
-- Prefer `async/await` over callback-style APIs.
-- Keep UI state updates on `@MainActor`.
-- Avoid force unwraps outside test code.
+- Keep changes focused and reviewable.
+- Add a regression test before fixing runtime behavior.
+- Do not weaken `ActionPolicy`, stale-state checks, focus continuity, semantic verification, recovery budgets, or emergency-stop behavior to make a test pass.
+- Treat provider/model output as untrusted input.
+- Do not introduce hardcoded secrets, credentials, private keys, or tokens.
+- Update architecture documentation when a change modifies component authority or data flow.
+- Use current official OpenAI documentation before changing Responses API or Computer Use request contracts.
+
+## Swift conventions
+
+- Prefer explicit types at runtime boundaries.
+- Use structured concurrency and propagate cancellation.
+- Keep UI-only state on the appropriate actor.
+- Avoid force unwraps outside tightly controlled test fixtures.
+- Bound retries, waits, action counts, and memory growth.
+- Return structured errors instead of silently recovering from malformed provider output.
+
+## Repository hygiene
+
+Project-local `.agent`, `.codex`, `.claude`, and `.opencode` adapter trees are not part of the repository architecture. Do not regenerate or commit them.

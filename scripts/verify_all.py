@@ -1,150 +1,146 @@
 #!/usr/bin/env python3
-"""Full Maestro verification suite.
+"""Repository-wide verification gate.
 
-Order matters: sync provider adapters first, then validate provider config,
-then run structural / metadata / dependency audits.
-
-This is a real gate: it fails when a check is genuinely broken, not merely when
-a file is absent. `scan_results.json` is intentionally regenerated last so it
-reflects the actual state of this run.
+This script intentionally verifies only the real product/runtime surfaces that
+remain in the repository. Legacy multi-provider adapter trees are forbidden.
 """
 
-import json
-import os
+from __future__ import annotations
+
+import shutil
 import subprocess
 import sys
-from datetime import datetime
 from pathlib import Path
 
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
-from common_utils import print_header, print_success, print_fail, print_info, print_warning
-
 ROOT = Path(__file__).resolve().parent.parent
+EXAMPILOT = ROOT / "ExamPilot"
+ZEROLOSE_PROJECT = ROOT / "ZeroLose" / "ZeroLose.xcodeproj"
+
+FORBIDDEN_PATHS = (
+    ".agent",
+    ".codex",
+    ".claude",
+    ".opencode",
+    "CLAUDE.md",
+    "opencode.json",
+    "CODEBASE.md",
+    "OPERATIONS.md",
+    "USAGE_GUIDE.md",
+    "scan_results.json",
+    "scripts/sync_agents.py",
+    "scripts/provider_config_validator.py",
+    "scripts/generate_skill_index.py",
+    "scripts/fix_agent_tools.py",
+    "scripts/prune_memory.py",
+    "scripts/skill.sh",
+    "scripts/codex-fast.sh",
+    "scripts/codex-research.sh",
+    "scripts/codex-review.sh",
+    "scripts/codex-safe.sh",
+)
 
 
-def run_script(script_name: str) -> bool:
-    print_info(f"Running {script_name}...")
-    result = subprocess.run(
-        [sys.executable, str(ROOT / "scripts" / script_name)],
-        capture_output=True,
-        text=True,
+def fail(message: str) -> int:
+    print(f"[FAIL] {message}", file=sys.stderr)
+    return 1
+
+
+def run(command: list[str], *, cwd: Path) -> bool:
+    printable = " ".join(command)
+    print(f"\n[RUN] ({cwd.relative_to(ROOT) if cwd != ROOT else '.'}) {printable}")
+    completed = subprocess.run(command, cwd=cwd)
+    if completed.returncode != 0:
+        print(f"[FAIL] exit={completed.returncode}: {printable}", file=sys.stderr)
+        return False
+    print(f"[OK] {printable}")
+    return True
+
+
+def verify_layout() -> bool:
+    ok = True
+    for relative in FORBIDDEN_PATHS:
+        path = ROOT / relative
+        if path.exists() or path.is_symlink():
+            print(f"[FAIL] legacy path still exists: {relative}", file=sys.stderr)
+            ok = False
+
+    required = (
+        ROOT / "README.md",
+        ROOT / "AGENTS.md",
+        EXAMPILOT / "Package.swift",
+        ROOT / ".github" / "workflows" / "exampilot.yml",
     )
-    print(result.stdout)
-    if result.returncode == 0:
-        print_success(f"{script_name} passed.")
+    for path in required:
+        if not path.exists():
+            print(f"[FAIL] required path missing: {path.relative_to(ROOT)}", file=sys.stderr)
+            ok = False
+
+    readme = ROOT / "README.md"
+    if readme.exists():
+        content = readme.read_text(encoding="utf-8", errors="replace").strip()
+        if len(content) < 500 or content.lower() == "placeholder":
+            print("[FAIL] README.md is incomplete", file=sys.stderr)
+            ok = False
+
+    return ok
+
+
+def verify_exampilot() -> bool:
+    if not EXAMPILOT.is_dir():
+        return False
+    if shutil.which("swift") is None:
+        print("[FAIL] swift is required to verify ExamPilot", file=sys.stderr)
+        return False
+
+    return (
+        run(["swift", "test"], cwd=EXAMPILOT)
+        and run(["swift", "build", "-c", "release"], cwd=EXAMPILOT)
+    )
+
+
+def verify_zerolose() -> bool:
+    if not ZEROLOSE_PROJECT.exists():
+        print("[INFO] ZeroLose project not present; skipping Xcode build")
         return True
-    print_fail(f"{script_name} failed.")
-    if result.stderr:
-        print(result.stderr)
-    return False
-
-
-def check_zeroLose_build() -> bool:
-    """Type-check / build the ZeroLose macOS app if Xcode is available.
-
-    This is the only real code gate in the suite: without it, verify_all can
-    pass while the Swift project is broken. Using a generic destination keeps
-    the build hardware-independent and avoids requiring a configured simulator.
-    """
-    project = ROOT / "ZeroLose" / "ZeroLose.xcodeproj"
-    if not project.exists():
-        print_warning("ZeroLose.xcodeproj not found; skipping build check.")
+    if shutil.which("xcodebuild") is None:
+        print("[INFO] xcodebuild unavailable; skipping ZeroLose build")
         return True
 
-    try:
-        subprocess.run(["xcodebuild", "-version"], capture_output=True, check=True)
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        print_warning("xcodebuild not available; skipping ZeroLose build check.")
-        return True
-
-    print_info("Running ZeroLose build (generic macOS, no signing)...")
-    result = subprocess.run(
+    derived_data = ROOT / "ZeroLose" / "build" / "VerificationDerivedData"
+    return run(
         [
             "xcodebuild",
-            "-project", str(project),
-            "-scheme", "ZeroLose",
-            "-configuration", "Debug",
-            "-destination", "generic/platform=macOS",
-            "-derivedDataPath", str(ROOT / "ZeroLose" / "build" / "DD"),
+            "-project",
+            str(ZEROLOSE_PROJECT),
+            "-scheme",
+            "ZeroLose",
+            "-configuration",
+            "Debug",
+            "-destination",
+            "generic/platform=macOS",
+            "-derivedDataPath",
+            str(derived_data),
             "CODE_SIGNING_ALLOWED=NO",
             "build",
         ],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode == 0:
-        print_success("ZeroLose build passed.")
-        return True
-    print_fail("ZeroLose build failed.")
-    # Print the relevant stderr tail but avoid dumping hundreds of linker lines.
-    lines = result.stderr.splitlines() or result.stdout.splitlines()
-    for line in lines[-30:]:
-        if any(k in line.lower() for k in ("error:", "failed", "warning:")):
-            print(line if len(line) < 300 else line[:300])
-    return False
-
-
-def write_scan_results(ok: bool) -> None:
-    """Write a truthful, regenerated scan_results.json instead of leaving stale claims."""
-    scan = {
-        "project": str(ROOT.relative_to(ROOT.parent)) if ROOT.parent else ".",
-        "timestamp": datetime.now().isoformat(),
-        "scan_type": "maestro_verify_all",
-        "scans": {
-            "provider_config": {
-                "tool": "provider_config_validator.py",
-                "status": "[OK]" if ok else "[FAIL]",
-                "findings": [],
-            },
-            "structure": {
-                "tool": "checklist.py",
-                "status": "[OK]" if ok else "[FAIL]",
-                "findings": [],
-            },
-            "dependencies": {
-                "tool": "dependency_analyzer.py",
-                "status": "[OK]" if ok else "[FAIL]",
-                "findings": [],
-            },
-        },
-        "notes": "Regenerated by scripts/verify_all.py. Do not edit manually.",
-    }
-    (ROOT / "scan_results.json").write_text(
-        json.dumps(scan, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
+        cwd=ROOT,
     )
 
 
 def main() -> int:
-    print_header("MAESTRO FULL VERIFICATION SUITE")
+    print("Akıllı Asistan repository verification")
 
-    scripts_to_run = [
-        "sync_agents.py",
-        "provider_config_validator.py",
-        "checklist.py",
-        "dependency_analyzer.py",
-    ]
+    if not verify_layout():
+        return fail("repository layout verification failed")
 
-    all_success = True
-    for script in scripts_to_run:
-        if not run_script(script):
-            all_success = False
+    if not verify_exampilot():
+        return fail("ExamPilot verification failed")
 
-    # Real code gate: build the Swift app so verify_all cannot pass while the
-    # project is broken.
-    if not check_zeroLose_build():
-        all_success = False
+    if not verify_zerolose():
+        return fail("ZeroLose build verification failed")
 
-    # A failed verification should still record the failure, not silently keep
-    # the previous "all OK" result.
-    write_scan_results(all_success)
-
-    if all_success:
-        print_header("FINAL VERIFICATION: SUCCESS")
-        return 0
-    print_header("FINAL VERIFICATION: FAILED")
-    return 1
+    print("\n[OK] repository verification completed successfully")
+    return 0
 
 
 if __name__ == "__main__":

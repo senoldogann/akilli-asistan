@@ -1,60 +1,63 @@
-# Maestro Agent Rules
+# Repository Engineering Contract
 
-## Supported Providers
-- `Antigravity`: read `AGENTS.md` -> `.agent/SYSTEM.md` -> `.agent/rules/GEMINI.md`
-- `Codex`: read `AGENTS.md` and `.codex/config.toml`
-- `Claude Code`: read `CLAUDE.md` (symlink to `AGENTS.md`), `.claude/settings.json`, and project assets under `.claude/`
-- `OpenCode`: read `AGENTS.md`, `opencode.json`, and `.opencode/commands/`
+## Source of truth
 
-## Source Of Truth
-- Shared policy lives in `AGENTS.md` and `.agent/SYSTEM.md`
-- Antigravity rule modules live in `.agent/rules/*.md`
-- Provider adapters must stay thin and must not fork policy text
+Use the code, tests, `README.md`, and approved documents under `docs/superpowers/` as the repository source of truth. Do not rely on removed provider-adapter folders or generated agent-rule mirrors.
 
-## Repo Contract
-- Maintain only `Antigravity`, `Codex`, `Claude Code`, and `OpenCode`
-- Remove adapters for unsupported providers instead of keeping stale compatibility shims
-- Prefer documented provider entry points over custom compatibility layers
+## Required workflow
 
-## Required Workflow
-- Research current official docs before changing provider config
-- Do not guess config keys, file locations, or command directories
-- If a required skill or capability is missing, run `scripts/skill.sh ensure "<skill-or-query>"`
-- Run `python3 scripts/sync_agents.py` after any rule or adapter change
-- Run `python3 scripts/verify_all.py` before declaring the work complete
+- Inspect the relevant implementation and tests before changing behavior.
+- Use TDD for runtime behavior changes: reproduce the failure, observe RED, implement the minimum correction, then run the full affected suite.
+- Run `python3 scripts/verify_all.py` before declaring repository-wide completion.
+- For OpenAI provider or Responses/Computer Use contract changes, verify the current official OpenAI documentation before editing request shapes or tool semantics.
+- Keep changes focused. Do not mix unrelated refactors into correctness fixes.
 
-## Research Escalation
-- If a fact may be stale, use live web search or current primary-source docs before answering
-- If the task asks for the best, latest, current, recommended, or official solution, verify it first
-- Prefer official docs, release notes, changelogs, standards, and security advisories over memory
-- If research is unavailable, state the limitation explicitly instead of presenting memory as confirmed fact
+## Runtime invariants
 
-## Anti-Loop
-- Do not repeat the same failing command, search, or reasoning path without a changed hypothesis
-- After two non-progressing attempts, stop and change strategy: inspect evidence, search current docs, or ask the user for the missing fact
-- Treat web search and current documentation as the default escape hatch when uncertainty or drift appears
+For code that can reach physical computer input:
 
-## Skill Resolution
-- Search shared repo skills first, then user-level Codex skills, then remote skill ecosystems
-- Prefer shared repo installation when the skill should benefit Antigravity, Claude Code, and OpenCode together
-- Use `scripts/skill.sh install <github-url>` for explicit repo-backed skills
-- `scripts/skill.sh install <skills.sh-url>` supports direct installs from pages like `https://skills.sh/vercel-labs/skills/find-skills`
-- Use `scripts/skill.sh install <owner/repo@skill>` or `scripts/skill.sh ensure "<query>"` when only a remote Codex-native package is available
-- Regenerate the shared index after repo-local installation; `scripts/skill.sh` does this automatically
+- Model/provider output is untrusted intent, not executable authority.
+- Runtime state and `ActionPolicy` decide whether an action is legal.
+- Proposals must remain bound to the accepted observation/state version.
+- Focus/window continuity must be checked before live input.
+- Protected navigation must remain fail-closed until the runtime has verified the current answer/task state.
+- UI transitions must stabilize before reasoning continues.
+- Semantic success must come from verification evidence, not from arbitrary pixel change or model self-report.
+- Repeated failures must change strategy or stop within a bounded retry budget. Never implement blind replay loops.
+- Unknown provider/native action types must fail closed.
+- Emergency stop/cancellation checks must remain effective inside long-running native input operations.
 
-## Quality Bar
-- Keep instruction files concise, specific, and non-duplicative
-- Keep provider permissions least-privilege by default
-- Treat failed sync or verification as incomplete work
-- Scope provider-specific behavior to provider-specific files only
-- Require explicit architecture boundaries, failure modes, and data flow before implementation
-- Require security review, performance checks, edge-case coverage, and regression coverage on changed behavior
-- Treat missing critical-path unit, integration, or e2e coverage as incomplete unless the user explicitly waives it
+## Memory and telemetry
 
-## Agent Handoff (READ FIRST)
-- An external audit + fixes were applied on 2026-08-25. Before starting new work,
-  read `docs/AGENT_NOTES.md` — it contains the verified state, priority fixes,
-  architecture recommendations, and research references. Do not regress the items
-  listed under "Already Correct".
-- Test suite was fixed (MessageContent `thinking:` calls); keep tests compiling.
+- Keep working memory bounded.
+- Do not persist raw screenshots, API headers, secrets, credentials, private typed content, or complete provider payloads in telemetry or memory.
+- Store structured evidence/failure categories and runtime coordinates only when they are necessary for recovery or diagnostics.
 
+## Security
+
+- Never hardcode credentials, API keys, private keys, tokens, or secrets.
+- Avoid destructive filesystem/database/VCS operations without a targeted dry-run and explicit approval.
+- Preserve least-privilege macOS permissions and application-scoped input assumptions.
+- Do not add stealth/evasion, anti-proctoring, monitoring defeat, CAPTCHA bypass, or access-control circumvention features.
+
+## Verification gates
+
+Repository gate:
+
+```bash
+python3 scripts/verify_all.py
+```
+
+ExamPilot directly:
+
+```bash
+cd ExamPilot
+swift test
+swift build -c release
+```
+
+The repository gate also builds ZeroLose without code signing when Xcode is available.
+
+## Repository hygiene
+
+The repository intentionally does not use project-local `.agent`, `.codex`, `.claude`, or `.opencode` adapter trees. Do not reintroduce generated multi-provider rule/skill mirrors. Keep repository-specific engineering guidance in this file and product documentation in normal Markdown under `docs/` or the relevant package directory.
