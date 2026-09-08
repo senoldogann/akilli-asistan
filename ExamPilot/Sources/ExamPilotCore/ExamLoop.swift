@@ -238,6 +238,7 @@ public final class ExamLoop {
                 }
 
                 var structuralBaseline = before.image
+                var interruptedTransitionFrame: ScreenFrame?
                 let execution = try await executor.execute(
                     batch,
                     dryRun: false,
@@ -260,6 +261,9 @@ public final class ExamLoop {
                             after: interim.image
                         )
                         structuralBaseline = interim.image
+                        if changedStructurally {
+                            interruptedTransitionFrame = interim
+                        }
                         return !changedStructurally
                     }
                 )
@@ -277,6 +281,16 @@ public final class ExamLoop {
                         state: runtimeState,
                         detail: "batch_interrupted_for_ui_change"
                     )
+                    if let interruptedTransitionFrame {
+                        runtimeState.beginBoundaryTransition()
+                        recordEvent(
+                            .boundaryTransitionStarted,
+                            cycle: cycles,
+                            state: runtimeState,
+                            detail: "unexpected_structural_change"
+                        )
+                        pendingTransitionFrame = interruptedTransitionFrame
+                    }
                     continue
                 }
 
