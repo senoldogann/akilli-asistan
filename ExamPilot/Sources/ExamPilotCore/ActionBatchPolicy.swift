@@ -61,6 +61,9 @@ public struct ActionBatchPolicy {
             guard let key = action.key, !key.isEmpty else {
                 throw ActionValidationError.missingRequiredField(.key)
             }
+            guard SupportedInputKey(rawValue: key.lowercased()) != nil else {
+                throw ActionValidationError.unsupportedKey(key)
+            }
 
         case .scroll:
             guard let amount = action.amount else {
