@@ -36,19 +36,23 @@ public final class ActionBatchExecutor {
                 return ActionExecutionResult(executedCount: executed, finished: true, cancelled: false)
             }
 
-            switch action.kind {
-            case .moveClick:
-                try await driver.moveAndClick(x: action.x!, y: action.y!)
-            case .typeText:
-                try await driver.typeText(action.text!)
-            case .key:
-                try await driver.pressKey(action.key!)
-            case .scroll:
-                try await driver.scroll(amount: action.amount!)
-            case .wait:
-                try await driver.wait(milliseconds: action.milliseconds!)
-            case .finish:
-                break
+            do {
+                switch action.kind {
+                case .moveClick:
+                    try await driver.moveAndClick(x: action.x!, y: action.y!)
+                case .typeText:
+                    try await driver.typeText(action.text!)
+                case .key:
+                    try await driver.pressKey(action.key!)
+                case .scroll:
+                    try await driver.scroll(amount: action.amount!)
+                case .wait:
+                    try await driver.wait(milliseconds: action.milliseconds!)
+                case .finish:
+                    break
+                }
+            } catch InputDriverError.cancelled {
+                return ActionExecutionResult(executedCount: executed, finished: false, cancelled: true)
             }
             executed += 1
         }
