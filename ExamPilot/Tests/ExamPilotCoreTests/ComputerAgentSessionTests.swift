@@ -86,6 +86,76 @@ final class ComputerAgentSessionTests: XCTestCase {
         XCTAssertEqual(session.runtimeState.stateVersion, 9)
     }
 
+    func testProviderTurnAtomicallyOwnsResponseAndPendingCallIDs() {
+        let session = ComputerAgentSession(
+            id: "native-provider-session",
+            goal: "Run",
+            initialRuntimeState: ExamRuntimeState(stateVersion: 12, questionGeneration: 4)
+        )
+        session.requestStop()
+
+        session.applyProviderTurn(
+            ComputerAgentProviderTurn(
+                responseID: "resp_first",
+                computerCallID: "call_first",
+                actions: [NativeComputerAction(kind: .wait)],
+                finalText: nil
+            )
+        )
+
+        XCTAssertEqual(session.providerConversationState.previousResponseID, "resp_first")
+        XCTAssertEqual(session.providerConversationState.pendingComputerCallID, "call_first")
+        XCTAssertEqual(session.runtimeState.stateVersion, 12)
+        XCTAssertEqual(session.runtimeState.questionGeneration, 4)
+        XCTAssertEqual(session.stopState, .stopRequested)
+
+        session.applyProviderTurn(
+            ComputerAgentProviderTurn(
+                responseID: "resp_terminal",
+                computerCallID: nil,
+                actions: [],
+                finalText: "done"
+            )
+        )
+
+        XCTAssertEqual(session.providerConversationState.previousResponseID, "resp_terminal")
+        XCTAssertNil(session.providerConversationState.pendingComputerCallID)
+        XCTAssertEqual(session.stopState, .stopRequested)
+    }
+
+    func testProviderStateSnapshotUsesSessionOwnedContinuationAndBoundedMemory() {
+        let session = ComputerAgentSession(
+            id: "provider-state-session",
+            goal: "Authorized goal",
+            initialRuntimeState: ExamRuntimeState(
+                stateVersion: 20,
+                questionGeneration: 6,
+                answerState: .verified,
+                uiPhase: .stable
+            )
+        )
+        session.recordFailure(.noVisibleEffect, recoveryStrategy: .reobserveAndReplan)
+        session.applyProviderTurn(
+            ComputerAgentProviderTurn(
+                responseID: "resp_state",
+                computerCallID: "call_state",
+                actions: [NativeComputerAction(kind: .screenshot)],
+                finalText: nil
+            )
+        )
+
+        let state = session.computerProviderState()
+
+        XCTAssertEqual(state.sessionID, "provider-state-session")
+        XCTAssertEqual(state.goal, "Authorized goal")
+        XCTAssertEqual(state.stateVersion, 20)
+        XCTAssertEqual(state.questionGeneration, 6)
+        XCTAssertTrue(state.answerVerified)
+        XCTAssertEqual(state.previousResponseID, "resp_state")
+        XCTAssertEqual(state.pendingComputerCallID, "call_state")
+        XCTAssertEqual(state.workingMemory.failures.map(\.reason), [.noVisibleEffect])
+    }
+
     func testStopStateMovesForwardOnly() {
         let session = ComputerAgentSession(id: "stop-session", goal: "Run")
         XCTAssertEqual(session.stopState, .running)
