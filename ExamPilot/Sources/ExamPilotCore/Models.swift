@@ -134,19 +134,22 @@ public struct ValidatedBatch: Equatable {
     public let actions: [ExamAction]
     public let stateVersion: UInt64
     public let deferredProtectedBoundary: Bool
+    public let expectedOutcome: ExpectedOutcomeKind
 
     public init(
         summary: String,
         expectsVisualChange: Bool,
         actions: [ExamAction],
         stateVersion: UInt64 = 0,
-        deferredProtectedBoundary: Bool = false
+        deferredProtectedBoundary: Bool = false,
+        expectedOutcome: ExpectedOutcomeKind = .none
     ) {
         self.summary = summary
         self.expectsVisualChange = expectsVisualChange
         self.actions = actions
         self.stateVersion = stateVersion
         self.deferredProtectedBoundary = deferredProtectedBoundary
+        self.expectedOutcome = expectedOutcome
     }
 
     public var containsProtectedBoundary: Bool {

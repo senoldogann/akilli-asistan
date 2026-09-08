@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 @testable import ExamPilotCore
 
@@ -24,6 +25,34 @@ final class ActionBatchExecutorTests: XCTestCase {
         XCTAssertFalse(result.cancelled)
     }
 
+    func testCompletedPhysicalActionsProduceOrderedReceipts() async throws {
+        let clock = SequenceDateClock(values: [
+            Date(timeIntervalSince1970: 10),
+            Date(timeIntervalSince1970: 11),
+            Date(timeIntervalSince1970: 12),
+            Date(timeIntervalSince1970: 13),
+        ])
+        let driver = RecordingInputDriver()
+        let executor = ActionBatchExecutor(driver: driver, now: clock.now)
+        let batch = ValidatedBatch(
+            summary: "click then type",
+            expectsVisualChange: true,
+            actions: [.moveClick(x: 10, y: 10), .typeText("A")],
+            stateVersion: 9
+        )
+
+        let result = try await executor.execute(batch, dryRun: false)
+
+        XCTAssertEqual(result.receipts.count, 2)
+        XCTAssertEqual(result.receipts.map(\.actionIndex), [0, 1])
+        XCTAssertEqual(result.receipts.map(\.stateVersion), [9, 9])
+        XCTAssertEqual(result.receipts.map(\.status), [.completed, .completed])
+        XCTAssertEqual(result.receipts[0].startedAt, Date(timeIntervalSince1970: 10))
+        XCTAssertEqual(result.receipts[0].completedAt, Date(timeIntervalSince1970: 11))
+        XCTAssertEqual(result.receipts[1].startedAt, Date(timeIntervalSince1970: 12))
+        XCTAssertEqual(result.receipts[1].completedAt, Date(timeIntervalSince1970: 13))
+    }
+
     func testDryRunNeverCallsInputDriver() async throws {
         let driver = RecordingInputDriver()
         let executor = ActionBatchExecutor(driver: driver)
@@ -34,6 +63,7 @@ final class ActionBatchExecutorTests: XCTestCase {
         XCTAssertTrue(driver.calls.isEmpty)
         XCTAssertEqual(result.executedCount, 0)
         XCTAssertFalse(result.cancelled)
+        XCTAssertTrue(result.receipts.isEmpty)
     }
 
     func testFinishStopsBatchWithoutPostingInput() async throws {
@@ -46,6 +76,7 @@ final class ActionBatchExecutorTests: XCTestCase {
         XCTAssertTrue(result.finished)
         XCTAssertTrue(driver.calls.isEmpty)
         XCTAssertEqual(result.executedCount, 0)
+        XCTAssertTrue(result.receipts.isEmpty)
     }
 
     func testCancellationIsCheckedBetweenActions() async throws {
@@ -62,6 +93,9 @@ final class ActionBatchExecutorTests: XCTestCase {
         XCTAssertEqual(driver.calls, ["type:a"])
         XCTAssertTrue(result.cancelled)
         XCTAssertEqual(result.executedCount, 1)
+        XCTAssertEqual(result.receipts.count, 1)
+        XCTAssertEqual(result.receipts.first?.actionIndex, 0)
+        XCTAssertEqual(result.receipts.first?.kind, .typeText)
     }
 
     func testDriverCancellationBecomesCancelledExecutionResult() async throws {
@@ -74,6 +108,32 @@ final class ActionBatchExecutorTests: XCTestCase {
         XCTAssertTrue(result.cancelled)
         XCTAssertEqual(result.executedCount, 0)
         XCTAssertFalse(result.finished)
+        XCTAssertTrue(result.receipts.isEmpty)
+    }
+
+    func testInterruptedBatchPreservesOnlyCompletedActionReceipts() async throws {
+        let driver = RecordingInputDriver()
+        let executor = ActionBatchExecutor(driver: driver)
+        let batch = ValidatedBatch(
+            summary: "interrupt after click",
+            expectsVisualChange: true,
+            actions: [.moveClick(x: 10, y: 10), .typeText("must not run")],
+            stateVersion: 11
+        )
+
+        let result = try await executor.execute(
+            batch,
+            dryRun: false,
+            afterAction: { _, _ in false }
+        )
+
+        XCTAssertTrue(result.interruptedForUIChange)
+        XCTAssertEqual(result.executedCount, 1)
+        XCTAssertEqual(driver.calls, ["click:10.0,10.0"])
+        XCTAssertEqual(result.receipts.count, 1)
+        XCTAssertEqual(result.receipts[0].actionIndex, 0)
+        XCTAssertEqual(result.receipts[0].kind, .moveClick)
+        XCTAssertEqual(result.receipts[0].stateVersion, 11)
     }
 
     func testNativeDriverChecksStopBeforeTypingAnyCharacter() async {
@@ -94,6 +154,19 @@ final class ActionBatchExecutorTests: XCTestCase {
         XCTAssertEqual(profile.keyDelayMilliseconds(randomUnit: 0), 35)
         XCTAssertEqual(profile.keyDelayMilliseconds(randomUnit: 1), 90)
         XCTAssertTrue((35...90).contains(profile.keyDelayMilliseconds(randomUnit: 0.5)))
+    }
+}
+
+private final class SequenceDateClock {
+    private var values: [Date]
+
+    init(values: [Date]) {
+        self.values = values
+    }
+
+    func now() -> Date {
+        precondition(!values.isEmpty, "SequenceDateClock exhausted")
+        return values.removeFirst()
     }
 }
 

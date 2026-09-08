@@ -56,6 +56,14 @@ public struct ExamRuntimeState: Codable, Equatable {
         advanceVersion()
     }
 
+    public mutating func failBoundaryTransition() {
+        guard uiPhase == .transitioning else {
+            return
+        }
+        uiPhase = .stable
+        advanceVersion()
+    }
+
     public mutating func cancelBoundaryTransition() {
         uiPhase = .stable
         advanceVersion()

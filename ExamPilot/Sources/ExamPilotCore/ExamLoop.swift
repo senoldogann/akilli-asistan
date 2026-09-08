@@ -9,6 +9,10 @@ public enum ExamRunResult: Equatable {
     case failed(cycles: Int, message: String)
 }
 
+private struct PendingTransitionVerification {
+    let beforeFrame: ScreenFrame
+}
+
 public final class ExamLoop {
     private let capture: ScreenCapturing
     private let visionAgent: VisionAgent
@@ -16,6 +20,7 @@ public final class ExamLoop {
     private let executor: ActionBatchExecutor
     private let detector: VisualChangeDetector
     private let structuralDetector: VisualChangeDetector
+    private let outcomeVerifier: OutcomeVerifying
     private let stabilityDetector: UIStabilityDetector
     private let maxStabilitySamples: Int
     private let initialRuntimeState: ExamRuntimeState
@@ -36,6 +41,7 @@ public final class ExamLoop {
         executor: ActionBatchExecutor,
         detector: VisualChangeDetector = VisualChangeDetector(),
         structuralDetector: VisualChangeDetector = VisualChangeDetector(threshold: 0.08),
+        outcomeVerifier: OutcomeVerifying? = nil,
         stabilityDetector: UIStabilityDetector = UIStabilityDetector(),
         maxStabilitySamples: Int = 4,
         initialRuntimeState: ExamRuntimeState = ExamRuntimeState(),
@@ -61,6 +67,10 @@ public final class ExamLoop {
         self.executor = executor
         self.detector = detector
         self.structuralDetector = structuralDetector
+        self.outcomeVerifier = outcomeVerifier ?? OutcomeVerifier(
+            progressDetector: detector,
+            structuralDetector: structuralDetector
+        )
         self.stabilityDetector = stabilityDetector
         self.maxStabilitySamples = max(1, maxStabilitySamples)
         self.initialRuntimeState = initialRuntimeState
@@ -81,6 +91,7 @@ public final class ExamLoop {
         var lastSummary: String?
         var runtimeState = initialRuntimeState
         var pendingTransitionFrame: ScreenFrame?
+        var pendingTransitionVerification: PendingTransitionVerification?
 
         while cycles < maxCycles {
             if shouldStop() {
@@ -133,16 +144,108 @@ public final class ExamLoop {
                         continue
                     }
 
-                    runtimeState.completeBoundaryTransition()
-                    recordEvent(
-                        .boundaryTransitionCompleted,
-                        cycle: cycles,
-                        state: runtimeState,
-                        detail: "ui_stable"
-                    )
-                    pendingTransitionFrame = nil
-                    nonProgressCount = 0
-                    before = stableFrame
+                    if let verification = pendingTransitionVerification {
+                        let outcome = outcomeVerifier.verify(
+                            expected: .navigation,
+                            before: verification.beforeFrame.image,
+                            after: stableFrame.image,
+                            uiStable: true
+                        )
+
+                        switch outcome {
+                        case .success(.navigation):
+                            runtimeState.completeBoundaryTransition()
+                            recordEvent(
+                                .outcomeVerified,
+                                cycle: cycles,
+                                state: runtimeState,
+                                detail: "navigation_verified"
+                            )
+                            recordEvent(
+                                .boundaryTransitionCompleted,
+                                cycle: cycles,
+                                state: runtimeState,
+                                detail: "ui_stable"
+                            )
+                            pendingTransitionFrame = nil
+                            pendingTransitionVerification = nil
+                            nonProgressCount = 0
+                            before = stableFrame
+
+                        case .failure(.navigationIdentityUnchanged):
+                            runtimeState.failBoundaryTransition()
+                            recordEvent(
+                                .verificationFailed,
+                                cycle: cycles,
+                                state: runtimeState,
+                                detail: "navigation_identity_unchanged"
+                            )
+                            pendingTransitionFrame = nil
+                            pendingTransitionVerification = nil
+                            nonProgressCount += 1
+                            if nonProgressCount >= maxNonProgress {
+                                return .nonProgress(cycles: cycles)
+                            }
+                            before = stableFrame
+
+                        case .pending:
+                            pendingTransitionFrame = stableFrame
+                            nonProgressCount += 1
+                            recordEvent(
+                                .outcomePending,
+                                cycle: cycles,
+                                state: runtimeState,
+                                detail: "ui_transitioning"
+                            )
+                            if nonProgressCount >= maxNonProgress {
+                                return .nonProgress(cycles: cycles)
+                            }
+                            continue
+
+                        case .failure(.noVisibleEffect):
+                            runtimeState.failBoundaryTransition()
+                            recordEvent(
+                                .verificationFailed,
+                                cycle: cycles,
+                                state: runtimeState,
+                                detail: "no_visible_effect"
+                            )
+                            pendingTransitionFrame = nil
+                            pendingTransitionVerification = nil
+                            nonProgressCount += 1
+                            if nonProgressCount >= maxNonProgress {
+                                return .nonProgress(cycles: cycles)
+                            }
+                            before = stableFrame
+
+                        case .success:
+                            runtimeState.failBoundaryTransition()
+                            recordEvent(
+                                .verificationFailed,
+                                cycle: cycles,
+                                state: runtimeState,
+                                detail: "navigation_verification_mismatch"
+                            )
+                            pendingTransitionFrame = nil
+                            pendingTransitionVerification = nil
+                            nonProgressCount += 1
+                            if nonProgressCount >= maxNonProgress {
+                                return .nonProgress(cycles: cycles)
+                            }
+                            before = stableFrame
+                        }
+                    } else {
+                        runtimeState.completeBoundaryTransition()
+                        recordEvent(
+                            .boundaryTransitionCompleted,
+                            cycle: cycles,
+                            state: runtimeState,
+                            detail: "ui_stable"
+                        )
+                        pendingTransitionFrame = nil
+                        nonProgressCount = 0
+                        before = stableFrame
+                    }
                 } else {
                     before = try await capture.capture()
                 }
@@ -267,6 +370,16 @@ public final class ExamLoop {
                         return !changedStructurally
                     }
                 )
+
+                for _ in execution.receipts {
+                    recordEvent(
+                        .actionExecuted,
+                        cycle: cycles,
+                        state: runtimeState,
+                        detail: "action_completed"
+                    )
+                }
+
                 if execution.cancelled || shouldStop() {
                     return .stopped(cycles: cycles)
                 }
@@ -284,12 +397,19 @@ public final class ExamLoop {
                     if let interruptedTransitionFrame {
                         runtimeState.beginBoundaryTransition()
                         recordEvent(
+                            .outcomePending,
+                            cycle: cycles,
+                            state: runtimeState,
+                            detail: "unexpected_structural_change"
+                        )
+                        recordEvent(
                             .boundaryTransitionStarted,
                             cycle: cycles,
                             state: runtimeState,
                             detail: "unexpected_structural_change"
                         )
                         pendingTransitionFrame = interruptedTransitionFrame
+                        pendingTransitionVerification = PendingTransitionVerification(beforeFrame: before)
                     }
                     continue
                 }
@@ -305,56 +425,128 @@ public final class ExamLoop {
                 }
 
                 let after = try await capture.capture()
-                if detector.hasMeaningfulChange(before: before.image, after: after.image) {
-                    nonProgressCount = 0
 
-                    let changedStructurally = structuralDetector.hasMeaningfulChange(
-                        before: before.image,
-                        after: after.image
+                if batch.containsProtectedBoundary {
+                    runtimeState.beginBoundaryTransition()
+                    recordEvent(
+                        .outcomePending,
+                        cycle: cycles,
+                        state: runtimeState,
+                        detail: "ui_transitioning"
+                    )
+                    recordEvent(
+                        .boundaryTransitionStarted,
+                        cycle: cycles,
+                        state: runtimeState,
+                        detail: "protected_boundary_changed_ui"
+                    )
+                    pendingTransitionFrame = after
+                    pendingTransitionVerification = PendingTransitionVerification(beforeFrame: before)
+                    nonProgressCount = 0
+                    continue
+                }
+
+                let outcome = outcomeVerifier.verify(
+                    expected: batch.expectedOutcome,
+                    before: before.image,
+                    after: after.image,
+                    uiStable: true
+                )
+
+                switch outcome {
+                case .success(.answerMutation):
+                    nonProgressCount = 0
+                    runtimeState.recordAnswerVerified()
+                    recordEvent(
+                        .answerVerified,
+                        cycle: cycles,
+                        state: runtimeState,
+                        detail: "answer_mutation_verified"
+                    )
+                    recordEvent(
+                        .outcomeVerified,
+                        cycle: cycles,
+                        state: runtimeState,
+                        detail: "answer_mutation_verified"
                     )
 
-                    if batch.containsProtectedBoundary {
-                        runtimeState.beginBoundaryTransition()
-                        recordEvent(
-                            .boundaryTransitionStarted,
-                            cycle: cycles,
-                            state: runtimeState,
-                            detail: "protected_boundary_changed_ui"
-                        )
-                        pendingTransitionFrame = after
-                    } else if batch.hasPotentialAnswerMutation && changedStructurally {
-                        // A large structural shift after an action that was *not* declared as a
-                        // boundary cannot safely be treated as answer verification. The model's
-                        // boundary flag is advisory, so fail closed and re-establish lifecycle
-                        // state from a stable observation before allowing any navigation.
-                        runtimeState.beginBoundaryTransition()
-                        recordEvent(
-                            .boundaryTransitionStarted,
-                            cycle: cycles,
-                            state: runtimeState,
-                            detail: "unexpected_post_action_structural_change"
-                        )
-                        pendingTransitionFrame = after
-                    } else if batch.hasPotentialAnswerMutation {
-                        runtimeState.recordAnswerVerified()
-                        recordEvent(
-                            .answerVerified,
-                            cycle: cycles,
-                            state: runtimeState,
-                            detail: "answer_mutation_verified"
-                        )
-                    }
-                } else {
+                case .success(.viewportChange):
+                    nonProgressCount = 0
+                    recordEvent(
+                        .outcomeVerified,
+                        cycle: cycles,
+                        state: runtimeState,
+                        detail: "viewport_change_verified"
+                    )
+
+                case .success(.none):
+                    nonProgressCount = 0
+                    recordEvent(
+                        .outcomeVerified,
+                        cycle: cycles,
+                        state: runtimeState,
+                        detail: "no_semantic_change_expected"
+                    )
+
+                case .success(.navigation):
+                    runtimeState.beginBoundaryTransition()
+                    recordEvent(
+                        .outcomePending,
+                        cycle: cycles,
+                        state: runtimeState,
+                        detail: "ui_transitioning"
+                    )
+                    recordEvent(
+                        .boundaryTransitionStarted,
+                        cycle: cycles,
+                        state: runtimeState,
+                        detail: "unexpected_post_action_structural_change"
+                    )
+                    pendingTransitionFrame = after
+                    pendingTransitionVerification = PendingTransitionVerification(beforeFrame: before)
+                    nonProgressCount = 0
+
+                case .failure(.noVisibleEffect):
                     nonProgressCount += 1
                     recordEvent(
                         .verificationFailed,
                         cycle: cycles,
                         state: runtimeState,
-                        detail: "expected_visual_change_missing"
+                        detail: "no_visible_effect"
                     )
                     if nonProgressCount >= maxNonProgress {
                         return .nonProgress(cycles: cycles)
                     }
+
+                case .failure(.navigationIdentityUnchanged):
+                    nonProgressCount += 1
+                    recordEvent(
+                        .verificationFailed,
+                        cycle: cycles,
+                        state: runtimeState,
+                        detail: "navigation_identity_unchanged"
+                    )
+                    if nonProgressCount >= maxNonProgress {
+                        return .nonProgress(cycles: cycles)
+                    }
+
+                case .pending(.unexpectedStructuralChange), .pending(.uiTransitioning):
+                    runtimeState.beginBoundaryTransition()
+                    recordEvent(
+                        .outcomePending,
+                        cycle: cycles,
+                        state: runtimeState,
+                        detail: "unexpected_structural_change"
+                    )
+                    recordEvent(
+                        .boundaryTransitionStarted,
+                        cycle: cycles,
+                        state: runtimeState,
+                        detail: "unexpected_post_action_structural_change"
+                    )
+                    pendingTransitionFrame = after
+                    pendingTransitionVerification = PendingTransitionVerification(beforeFrame: before)
+                    nonProgressCount = 0
                 }
             } catch {
                 return .failed(cycles: cycles, message: error.localizedDescription)
