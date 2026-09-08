@@ -32,6 +32,35 @@ public enum ExamActionKind: String, Codable, CaseIterable {
     case finish
 }
 
+public enum SupportedInputKey: String, CaseIterable {
+    case returnKey = "return"
+    case enter
+    case tab
+    case space
+    case delete
+    case backspace
+    case escape
+    case esc
+    case home
+    case pageup
+    case pageUp = "page_up"
+    case end
+    case pagedown
+    case pageDown = "page_down"
+    case left
+    case arrowleft
+    case arrowLeft = "arrow_left"
+    case right
+    case arrowright
+    case arrowRight = "arrow_right"
+    case down
+    case arrowdown
+    case arrowDown = "arrow_down"
+    case up
+    case arrowup
+    case arrowUp = "arrow_up"
+}
+
 public struct ExamAction: Codable, Equatable {
     public var kind: ExamActionKind
     public var x: Double?
@@ -116,6 +145,7 @@ public enum ActionValidationError: Error, Equatable, LocalizedError {
     case coordinateOutOfBounds
     case waitOutOfRange
     case scrollOutOfRange
+    case unsupportedKey(String)
     case missingRequiredField(ExamActionKind)
 
     public var errorDescription: String? {
@@ -128,6 +158,8 @@ public enum ActionValidationError: Error, Equatable, LocalizedError {
             return "Wait duration must be between 0 and 5000 milliseconds."
         case .scrollOutOfRange:
             return "Scroll amount must be between -1400 and 1400 pixels."
+        case .unsupportedKey(let key):
+            return "Unsupported key action: \(key)."
         case .missingRequiredField(let kind):
             return "Action \(kind.rawValue) is missing a required field."
         }
