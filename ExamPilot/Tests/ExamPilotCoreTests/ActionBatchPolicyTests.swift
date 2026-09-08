@@ -84,6 +84,68 @@ final class ActionBatchPolicyTests: XCTestCase {
         XCTAssertEqual(batch.stateVersion, 12)
     }
 
+    func testProtectedBoundaryProducesNavigationExpectation() throws {
+        let batch = try ActionBatchPolicy().validate(
+            ExamDecision(
+                summary: "next",
+                expectsVisualChange: true,
+                actions: [.moveClick(x: 50, y: 50, boundary: true)]
+            ),
+            screenBounds: bounds,
+            context: ActionPolicyContext(stateVersion: 4, navigationAllowed: true)
+        )
+
+        XCTAssertEqual(batch.expectedOutcome, .navigation)
+    }
+
+    func testDeferredBoundaryProducesAnswerMutationExpectation() throws {
+        let batch = try ActionBatchPolicy().validate(
+            ExamDecision(
+                summary: "answer then next",
+                expectsVisualChange: true,
+                actions: [
+                    .moveClick(x: 20, y: 20),
+                    .moveClick(x: 80, y: 80, boundary: true),
+                ]
+            ),
+            screenBounds: bounds,
+            context: ActionPolicyContext(stateVersion: 4, navigationAllowed: false)
+        )
+
+        XCTAssertTrue(batch.deferredProtectedBoundary)
+        XCTAssertEqual(batch.expectedOutcome, .answerMutation)
+    }
+
+    func testScrollOnlyProducesViewportExpectation() throws {
+        let batch = try ActionBatchPolicy().validate(
+            ExamDecision(summary: "scroll", expectsVisualChange: true, actions: [.scroll(amount: -300)]),
+            screenBounds: bounds,
+            context: ActionPolicyContext(stateVersion: 4, navigationAllowed: false)
+        )
+
+        XCTAssertEqual(batch.expectedOutcome, .viewportChange)
+    }
+
+    func testWaitOnlyProducesNoSemanticExpectation() throws {
+        let batch = try ActionBatchPolicy().validate(
+            ExamDecision(summary: "wait", expectsVisualChange: false, actions: [.wait(milliseconds: 100)]),
+            screenBounds: bounds,
+            context: ActionPolicyContext(stateVersion: 4, navigationAllowed: false)
+        )
+
+        XCTAssertEqual(batch.expectedOutcome, .none)
+    }
+
+    func testFinishOnlyProducesNoSemanticExpectation() throws {
+        let batch = try ActionBatchPolicy().validate(
+            ExamDecision(summary: "finish", expectsVisualChange: false, actions: [.finish()]),
+            screenBounds: bounds,
+            context: ActionPolicyContext(stateVersion: 4, navigationAllowed: false)
+        )
+
+        XCTAssertEqual(batch.expectedOutcome, .none)
+    }
+
     func testRejectsMoreThanTwelveActions() {
         let decision = ExamDecision(
             summary: "too many",
