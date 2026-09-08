@@ -7,6 +7,8 @@ It intentionally does **not** use Chrome extensions, DOM/CDP automation, JavaScr
 ## What it does
 
 - captures the focused/active Google Chrome window with ScreenCaptureKit when Accessibility can resolve it, with the largest visible Chrome window as a fallback;
+- carries the captured Chrome process identity into the action loop and, before live input, re-activates Chrome and verifies that the focused window geometry still matches the screenshot;
+- aborts physical input if focus moved to a different Chrome window while the model was reasoning;
 - understands single-choice, multi-choice, text, code-entry, scrolling, and navigation states through a vision-capable model;
 - plans several safe actions from one screenshot instead of forcing one model round-trip per click;
 - stops an action batch at the first UI-changing boundary such as Next, Continue, Run/Test, Submit, or equivalent controls in any language;
@@ -15,7 +17,7 @@ It intentionally does **not** use Chrome extensions, DOM/CDP automation, JavaScr
 - never reads or writes `NSPasteboard`;
 - scrolls using native pixel wheel events;
 - gives expected UI changes a short settling interval, captures the UI again, and stops after repeated non-progress;
-- supports `--dry-run` to inspect the first planned batch without physical input;
+- supports `--dry-run` to inspect the first planned batch without physical input or changing application focus;
 - supports Ctrl-C as an emergency stop before the next physical action.
 
 ## Requirements
@@ -45,7 +47,7 @@ cd ExamPilot
 swift run exampilot --dry-run
 ```
 
-Dry-run captures the visible Chrome window and produces one validated action batch without moving the mouse or typing.
+Dry-run captures the visible Chrome window and produces one validated action batch without moving the mouse, typing, or re-activating Chrome.
 
 For live execution:
 
@@ -88,20 +90,22 @@ Live input requires Accessibility permission for the executable/terminal that la
 
 `System Settings > Privacy & Security > Accessibility`
 
-`--dry-run` does not require Accessibility because it never posts physical input. Without Accessibility, window selection falls back to the largest visible Chrome window because AX focused-window information is unavailable.
+`--dry-run` does not require Accessibility because it never posts physical input or changes application focus. Without Accessibility, dry-run window selection falls back to the largest visible Chrome window because AX focused-window information is unavailable.
 
 ## Execution model
 
 ExamPilot uses this loop:
 
 ```text
-capture focused visible Chrome window
+capture focused visible Chrome window + process identity
         ↓
 vision model returns structured ExamDecision
         ↓
 validate coordinates + action limits
         ↓
 truncate at first UI-changing boundary
+        ↓
+re-focus captured Chrome process + verify same window geometry
         ↓
 execute safe batch with real input
         ↓
@@ -123,7 +127,7 @@ click D
 click Next   ← boundary; batch ends here
 ```
 
-The next question is never acted on using coordinates guessed from the previous screenshot.
+The next question is never acted on using coordinates guessed from the previous screenshot. If Chrome focus changes to another window before input starts, the batch is cancelled rather than replayed against stale coordinates.
 
 ## Safety limits
 
@@ -133,7 +137,9 @@ The core runtime rejects or bounds model output before it reaches physical input
 - waits are limited to 5 seconds per action;
 - scroll is limited to ±1400 pixels per action;
 - click coordinates must be inside the captured Chrome window;
+- live input requires the captured Chrome process to still exist and the focused window to geometrically match the captured window;
 - actions after the first boundary are discarded;
+- a boundary action forces post-action visual verification even if model output incorrectly claims no visual change is expected;
 - three consecutive expected-change batches with no meaningful visual change terminate the run;
 - 200 observation cycles by default, configurable with `--max-cycles`;
 - no shell tool, arbitrary filesystem action, clipboard access, browser injection, or DOM tool is exposed to the model.
@@ -149,6 +155,7 @@ ExamPilot/
 │   │   ├── Models.swift
 │   │   ├── ActionBatchPolicy.swift
 │   │   ├── ChromeWindowSelection.swift
+│   │   ├── ChromeInputFocusService.swift
 │   │   ├── ScreenCaptureService.swift
 │   │   ├── VisualChangeDetector.swift
 │   │   ├── InputDriver.swift
