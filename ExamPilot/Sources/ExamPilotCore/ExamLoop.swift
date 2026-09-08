@@ -18,6 +18,7 @@ public final class ExamLoop {
     private let dryRun: Bool
     private let maxCycles: Int
     private let maxNonProgress: Int
+    private let postActionSettler: () async throws -> Void
     private let shouldStop: () -> Bool
 
     public init(
@@ -29,6 +30,9 @@ public final class ExamLoop {
         dryRun: Bool,
         maxCycles: Int = 200,
         maxNonProgress: Int = 3,
+        postActionSettler: @escaping () async throws -> Void = {
+            try await Task.sleep(nanoseconds: 450_000_000)
+        },
         shouldStop: @escaping () -> Bool = { false }
     ) {
         self.capture = capture
@@ -39,6 +43,7 @@ public final class ExamLoop {
         self.dryRun = dryRun
         self.maxCycles = maxCycles
         self.maxNonProgress = maxNonProgress
+        self.postActionSettler = postActionSettler
         self.shouldStop = shouldStop
     }
 
@@ -88,6 +93,14 @@ public final class ExamLoop {
                 guard batch.expectsVisualChange else {
                     nonProgressCount = 0
                     continue
+                }
+
+                // Give browser selection state, editor rendering, navigation and test output
+                // a short bounded chance to settle before deciding whether the action worked.
+                // The closure is injectable so tests stay fast and deterministic.
+                try await postActionSettler()
+                if shouldStop() {
+                    return .stopped(cycles: cycles)
                 }
 
                 let after = try await capture.capture()
