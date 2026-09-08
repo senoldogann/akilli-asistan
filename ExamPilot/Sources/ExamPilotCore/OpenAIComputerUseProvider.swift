@@ -134,13 +134,11 @@ public final class OpenAIComputerUseProvider: ComputerAgentProvider {
                   let rawActions = item["actions"] as? [[String: Any]] else {
                 throw ComputerAgentProviderError.malformedComputerCall
             }
-            guard rawActions.isEmpty else {
-                throw ComputerAgentProviderError.malformedComputerCall
-            }
+            let actions = try rawActions.map(decodeAction)
             return ComputerAgentProviderTurn(
                 responseID: responseID,
                 computerCallID: callID,
-                actions: [],
+                actions: actions,
                 finalText: nil
             )
         }
@@ -160,5 +158,84 @@ public final class OpenAIComputerUseProvider: ComputerAgentProvider {
         }
 
         throw ComputerAgentProviderError.missingOutput
+    }
+
+    private static func decodeAction(_ raw: [String: Any]) throws -> NativeComputerAction {
+        guard let type = raw["type"] as? String else {
+            throw ComputerAgentProviderError.malformedComputerCall
+        }
+
+        switch type {
+        case "click", "double_click":
+            guard let x = number(raw["x"]),
+                  let y = number(raw["y"]),
+                  let button = raw["button"] as? String else {
+                throw ComputerAgentProviderError.malformedComputerCall
+            }
+            return NativeComputerAction(
+                kind: type == "click" ? .click : .doubleClick,
+                x: x,
+                y: y,
+                button: button
+            )
+
+        case "type":
+            guard let text = raw["text"] as? String else {
+                throw ComputerAgentProviderError.malformedComputerCall
+            }
+            return NativeComputerAction(kind: .type, text: text)
+
+        case "scroll":
+            guard let x = number(raw["x"]),
+                  let y = number(raw["y"]),
+                  let scrollX = number(raw["scroll_x"]),
+                  let scrollY = number(raw["scroll_y"]) else {
+                throw ComputerAgentProviderError.malformedComputerCall
+            }
+            return NativeComputerAction(
+                kind: .scroll,
+                x: x,
+                y: y,
+                scrollX: scrollX,
+                scrollY: scrollY
+            )
+
+        case "keypress":
+            guard let keys = raw["keys"] as? [String], !keys.isEmpty else {
+                throw ComputerAgentProviderError.malformedComputerCall
+            }
+            return NativeComputerAction(kind: .keypress, keys: keys)
+
+        case "move":
+            guard let x = number(raw["x"]), let y = number(raw["y"]) else {
+                throw ComputerAgentProviderError.malformedComputerCall
+            }
+            return NativeComputerAction(kind: .move, x: x, y: y)
+
+        case "drag":
+            guard let rawPath = raw["path"] as? [[String: Any]], !rawPath.isEmpty else {
+                throw ComputerAgentProviderError.malformedComputerCall
+            }
+            let path = try rawPath.map { point -> NativeComputerPoint in
+                guard let x = number(point["x"]), let y = number(point["y"]) else {
+                    throw ComputerAgentProviderError.malformedComputerCall
+                }
+                return NativeComputerPoint(x: x, y: y)
+            }
+            return NativeComputerAction(kind: .drag, path: path)
+
+        case "wait":
+            return NativeComputerAction(kind: .wait)
+
+        case "screenshot":
+            return NativeComputerAction(kind: .screenshot)
+
+        default:
+            throw ComputerAgentProviderError.unknownAction(type)
+        }
+    }
+
+    private static func number(_ value: Any?) -> Double? {
+        (value as? NSNumber)?.doubleValue
     }
 }
