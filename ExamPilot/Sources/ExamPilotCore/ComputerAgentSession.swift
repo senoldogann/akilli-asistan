@@ -6,13 +6,23 @@ public enum ComputerAgentTaskProfile: String, Codable, Equatable {
 
 public struct ProviderConversationState: Codable, Equatable {
     public private(set) var previousResponseID: String?
+    public private(set) var pendingComputerCallID: String?
 
-    public init(previousResponseID: String? = nil) {
+    public init(
+        previousResponseID: String? = nil,
+        pendingComputerCallID: String? = nil
+    ) {
         self.previousResponseID = previousResponseID
+        self.pendingComputerCallID = pendingComputerCallID
     }
 
     fileprivate mutating func updatePreviousResponseID(_ value: String?) {
         previousResponseID = value
+    }
+
+    fileprivate mutating func apply(turn: ComputerAgentProviderTurn) {
+        previousResponseID = turn.responseID
+        pendingComputerCallID = turn.computerCallID
     }
 }
 
@@ -86,6 +96,24 @@ public final class ComputerAgentSession {
 
     public func updatePreviousResponseID(_ value: String?) {
         providerConversationState.updatePreviousResponseID(value)
+    }
+
+    public func applyProviderTurn(_ turn: ComputerAgentProviderTurn) {
+        providerConversationState.apply(turn: turn)
+    }
+
+    public func computerProviderState() -> ComputerAgentProviderState {
+        ComputerAgentProviderState(
+            sessionID: id,
+            goal: goal,
+            stateVersion: runtimeState.stateVersion,
+            questionGeneration: runtimeState.questionGeneration,
+            answerVerified: runtimeState.answerState == .verified,
+            uiPhase: runtimeState.uiPhase,
+            workingMemory: workingMemory.snapshot(),
+            previousResponseID: providerConversationState.previousResponseID,
+            pendingComputerCallID: providerConversationState.pendingComputerCallID
+        )
     }
 
     public func requestStop() {
