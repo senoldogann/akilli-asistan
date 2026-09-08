@@ -92,6 +92,37 @@ final class OpenAIComputerUseProviderTests: XCTestCase {
         XCTAssertTrue((output["image_url"] as? String)?.hasPrefix("data:image/jpeg;base64,") == true)
     }
 
+    func testDecodesOrderedComputerCallActions() throws {
+        let data = Data(#"{"id":"resp_actions","output":[{"type":"computer_call","call_id":"call_actions","status":"completed","actions":[{"type":"click","button":"left","x":405,"y":157},{"type":"double_click","button":"left","x":410,"y":160},{"type":"type","text":"penguin"},{"type":"scroll","x":600,"y":500,"scroll_x":0,"scroll_y":420},{"type":"keypress","keys":["TAB","ENTER"]},{"type":"move","x":700,"y":300},{"type":"drag","path":[{"x":10,"y":20},{"x":30,"y":40}]},{"type":"wait"},{"type":"screenshot"}]}]}"#.utf8)
+
+        let turn = try OpenAIComputerUseProvider.decodeTurn(from: data)
+
+        XCTAssertEqual(turn.responseID, "resp_actions")
+        XCTAssertEqual(turn.computerCallID, "call_actions")
+        XCTAssertEqual(turn.actions.map(\.kind), [
+            .click, .doubleClick, .type, .scroll, .keypress, .move, .drag, .wait, .screenshot
+        ])
+        XCTAssertEqual(turn.actions[0].x, 405)
+        XCTAssertEqual(turn.actions[0].button, "left")
+        XCTAssertEqual(turn.actions[2].text, "penguin")
+        XCTAssertEqual(turn.actions[3].scrollY, 420)
+        XCTAssertEqual(turn.actions[4].keys, ["TAB", "ENTER"])
+        XCTAssertEqual(turn.actions[6].path, [
+            NativeComputerPoint(x: 10, y: 20),
+            NativeComputerPoint(x: 30, y: 40)
+        ])
+        XCTAssertNil(turn.finalText)
+        XCTAssertFalse(turn.isTerminal)
+    }
+
+    func testUnknownComputerActionFailsClosed() {
+        let data = Data(#"{"id":"resp_unknown","output":[{"type":"computer_call","call_id":"call_unknown","actions":[{"type":"teleport","x":1,"y":2}]}]}"#.utf8)
+
+        XCTAssertThrowsError(try OpenAIComputerUseProvider.decodeTurn(from: data)) { error in
+            XCTAssertEqual(error as? ComputerAgentProviderError, .unknownAction("teleport"))
+        }
+    }
+
     private func terminalResponseData() -> Data {
         Data(#"{"id":"resp_done","output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}]}"#.utf8)
     }
