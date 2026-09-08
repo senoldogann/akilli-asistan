@@ -58,7 +58,7 @@ struct ExamPilotMain {
         print("ExamPilot starting")
         print("  mode: \(options.dryRun ? "dry-run" : "live")")
         print("  model: \(model)")
-        print("  target: largest visible Google Chrome window")
+        print("  target: focused Chrome window (largest visible Chrome fallback)")
         print("  stop: Ctrl-C")
 
         let capture = ScreenCaptureService()
