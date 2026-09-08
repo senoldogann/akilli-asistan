@@ -76,6 +76,7 @@ final class ActionBatchExecutorTests: XCTestCase {
         XCTAssertTrue(result.finished)
         XCTAssertTrue(driver.calls.isEmpty)
         XCTAssertEqual(result.executedCount, 0)
+        XCTAssertTrue(result.receipts.isEmpty)
     }
 
     func testCancellationIsCheckedBetweenActions() async throws {
@@ -92,6 +93,9 @@ final class ActionBatchExecutorTests: XCTestCase {
         XCTAssertEqual(driver.calls, ["type:a"])
         XCTAssertTrue(result.cancelled)
         XCTAssertEqual(result.executedCount, 1)
+        XCTAssertEqual(result.receipts.count, 1)
+        XCTAssertEqual(result.receipts.first?.actionIndex, 0)
+        XCTAssertEqual(result.receipts.first?.kind, .typeText)
     }
 
     func testDriverCancellationBecomesCancelledExecutionResult() async throws {
@@ -104,6 +108,32 @@ final class ActionBatchExecutorTests: XCTestCase {
         XCTAssertTrue(result.cancelled)
         XCTAssertEqual(result.executedCount, 0)
         XCTAssertFalse(result.finished)
+        XCTAssertTrue(result.receipts.isEmpty)
+    }
+
+    func testInterruptedBatchPreservesOnlyCompletedActionReceipts() async throws {
+        let driver = RecordingInputDriver()
+        let executor = ActionBatchExecutor(driver: driver)
+        let batch = ValidatedBatch(
+            summary: "interrupt after click",
+            expectsVisualChange: true,
+            actions: [.moveClick(x: 10, y: 10), .typeText("must not run")],
+            stateVersion: 11
+        )
+
+        let result = try await executor.execute(
+            batch,
+            dryRun: false,
+            afterAction: { _, _ in false }
+        )
+
+        XCTAssertTrue(result.interruptedForUIChange)
+        XCTAssertEqual(result.executedCount, 1)
+        XCTAssertEqual(driver.calls, ["click:10.0,10.0"])
+        XCTAssertEqual(result.receipts.count, 1)
+        XCTAssertEqual(result.receipts[0].actionIndex, 0)
+        XCTAssertEqual(result.receipts[0].kind, .moveClick)
+        XCTAssertEqual(result.receipts[0].stateVersion, 11)
     }
 
     func testNativeDriverChecksStopBeforeTypingAnyCharacter() async {
