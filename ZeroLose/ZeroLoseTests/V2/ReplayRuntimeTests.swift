@@ -20,6 +20,18 @@ final class ReplayRuntimeTests: XCTestCase {
         )
     }
 
+    func testReplayRunsThroughReplayExecutingBoundary() async throws {
+        let event = try toolEvent(sequence: 1, invocationID: "inv-1")
+        let executor = RecordingReplayExecutor()
+        let replay = ReplayRuntime(events: [event], executor: executor)
+
+        let state = try await replay.run()
+        let recordedSequences = await executor.recordedSequences()
+
+        XCTAssertEqual(recordedSequences, [1])
+        XCTAssertEqual(state.toolReceipts.map { $0.invocationID.rawValue }, ["boundary-invocation"])
+    }
+
     func testReplayRuntimeSourceContainsNoLiveMutationDependencies() throws {
         let testFileURL = URL(fileURLWithPath: #filePath)
         let zeroLoseDirectory = testFileURL
@@ -90,5 +102,27 @@ final class ReplayRuntimeTests: XCTestCase {
             tainted: false,
             recordedAt: startedAt
         )
+    }
+}
+
+private actor RecordingReplayExecutor: ReplayExecuting {
+    private var sequences: [UInt64] = []
+
+    func receipt(for recordedEvent: RuntimeEvent) async throws -> ToolExecutionReceipt {
+        sequences.append(recordedEvent.sequence)
+        let startedAt = Date(timeIntervalSince1970: 100)
+        return ToolExecutionReceipt(
+            invocationID: InvocationID(rawValue: "boundary-invocation"),
+            toolID: ToolID(rawValue: "builtin.boundary"),
+            startedAt: startedAt,
+            completedAt: startedAt.addingTimeInterval(1),
+            providerReference: "recorded-boundary",
+            resultProvenance: "test",
+            resultTainted: false
+        )
+    }
+
+    func recordedSequences() -> [UInt64] {
+        sequences
     }
 }
