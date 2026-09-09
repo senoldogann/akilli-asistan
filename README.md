@@ -17,7 +17,8 @@ That separation prevents common failure modes such as stale-coordinate replay, r
 
 - ScreenCaptureKit observation of the active Chrome window.
 - Read-only macOS Accessibility fusion for bounded role, geometry, focused, selected, and enabled hints.
-- Accessibility hints are bound to the current process, focused-window geometry, and runtime state version before reaching the planner.
+- Optional read-only Chrome DevTools Protocol fusion for bounded browser role/state and viewport-relative geometry hints.
+- Accessibility and browser hints are bound to the current Chrome process, browser-window geometry, and runtime state version before reaching the planner.
 - CoreGraphics mouse, keyboard, scroll, and bounded wait execution.
 - Chrome process/window focus continuity checks before live input.
 - Runtime-owned lifecycle state with monotonic state versions.
@@ -36,8 +37,9 @@ That separation prevents common failure modes such as stale-coordinate replay, r
 flowchart TD
     G[User goal] --> S[ComputerAgentSession]
     S --> O[Screen observation]
-    O --> F[Read-only Accessibility fusion]
-    F --> P[Agent provider]
+    O --> A[Read-only Accessibility fusion]
+    A --> B[Optional read-only browser semantic fusion]
+    B --> P[Agent provider]
     P --> I[Proposed intent/actions]
     I --> R[Runtime state + ActionPolicy]
     R -->|denied| O
@@ -53,7 +55,7 @@ flowchart TD
 
 | Component | Responsibility |
 | --- | --- |
-| Screen/Accessibility observation | Supplies read-only evidence; cannot grant runtime authority |
+| Screen/Accessibility/browser observation | Supplies read-only evidence; cannot grant runtime authority |
 | Agent provider | Proposes the next action or intent |
 | Runtime state | Describes accepted application/task state |
 | ActionPolicy | Determines whether a proposed action is executable |
@@ -70,8 +72,9 @@ The provider and observation sensors never directly grant permission to navigate
 - Swift 5.10+
 - Google Chrome for the current ExamPilot workflow
 - Screen Recording permission
-- Accessibility permission enables read-only semantic hints and is required for live physical input
+- Accessibility permission enables read-only macOS semantic hints and is required for live physical input
 - `OPENAI_API_KEY`
+- Optional: a user-authorized loopback Chrome DevTools endpoint for browser semantic hints
 
 ## Quick start
 
@@ -102,6 +105,40 @@ swift run exampilot --max-cycles 80
 swift run exampilot --verbose
 ```
 
+### Optional browser semantic hints
+
+Browser semantic fusion is disabled unless `EXAMPILOT_CDP_ENDPOINT` is explicitly configured. The endpoint must be an uncredentialed loopback HTTP URL such as `http://127.0.0.1:9222`; arbitrary hosts, HTTPS endpoints, credentials, paths, queries, and fragments are rejected.
+
+Chrome 136+ does not honor `--remote-debugging-port` against the default Chrome data directory. Use a separate non-default user data directory or Chrome for Testing. One macOS example is:
+
+```bash
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
+  --remote-debugging-port=9222 \
+  --user-data-dir="$HOME/.exampilot-chrome"
+```
+
+Then enable the read-only sensor:
+
+```bash
+export EXAMPILOT_CDP_ENDPOINT='http://127.0.0.1:9222'
+swift run exampilot --dry-run
+```
+
+The runtime verifies that CDP reports the same Chrome OS process as the captured window, requires exactly one focused and visible page target, compares browser-window geometry with the captured window, and binds the snapshot to the current runtime state version. If the endpoint is valid but unavailable, stale, ambiguous, or inconsistent, browser hints are discarded and planning continues with the screenshot and available macOS Accessibility hints.
+
+Slice 8 only permits the following CDP methods:
+
+- `SystemInfo.getProcessInfo`
+- `Runtime.evaluate` with a fixed internal expression used only to confirm page focus and visibility
+- `Browser.getWindowForTarget`
+- `Page.getLayoutMetrics`
+- `Accessibility.getFullAXTree`
+- `DOM.getContentQuads`
+
+Navigation and input methods such as `Page.navigate`, `Input.*`, `DOM.focus`, `Browser.set*`, and `Target.activateTarget` are rejected by the transport allowlist. Browser semantics remain a sensor; live mutation continues through the existing native CoreGraphics input path.
+
+Raw page URLs, titles, accessible names, text values, DOM payloads, AX payloads, cookies, storage, and network data are not forwarded into planner state or working-memory telemetry. Only bounded role/state metadata and normalized viewport geometry reach the planner.
+
 `--verbose` prints bounded cycle-level diagnostics such as state version, question generation, event kind, verification failure ID, and recovery strategy. It deliberately excludes session identifiers, screenshots, provider payloads, raw typed answers, and secrets.
 
 For a reproducible diagnostic run:
@@ -131,7 +168,10 @@ The active ExamPilot path is intentionally fail-closed:
 7. Unknown native Computer Use action types fail closed.
 8. Accessibility hints are accepted only for the matching process, focused-window geometry, and current state version; they cannot mark answers verified or grant navigation authority.
 9. Accessibility observation is read-only and falls back to screenshot-only planning when unavailable or inconsistent.
-10. Secrets, raw screenshots, typed private text, raw Accessibility labels/values, and provider payloads are not persisted in working-memory telemetry.
+10. Browser semantic hints are opt-in and accepted only for the matching Chrome process, focused/visible page, browser-window geometry, and current state version.
+11. Browser semantic observation is read-only; mutation-capable CDP methods are not in the transport allowlist.
+12. Browser hints are viewport-relative advisory evidence and cannot directly become unchecked global physical coordinates.
+13. Secrets, raw screenshots, typed private text, raw Accessibility labels/values, raw browser semantic payloads, and provider payloads are not persisted in working-memory telemetry.
 
 ## Provider model
 
@@ -141,7 +181,9 @@ Two provider surfaces coexist deliberately:
 
 `OpenAIResponsesVisionAgent` is the current physical-execution planner. It returns the repository's structured action schema, which allows the runtime to classify protected boundaries before any native input occurs.
 
-The CLI decorates this planner with `AccessibilityFusingVisionAgent`. The decorator attempts a bounded read-only Accessibility observation for the captured Chrome process, rejects stale or mismatched snapshots, and forwards only structured role/geometry/focused/selected/enabled hints. If Accessibility is unavailable or inconsistent, the same planner continues with the screenshot alone.
+The CLI first decorates this planner with `AccessibilityFusingVisionAgent`. That decorator attempts a bounded read-only Accessibility observation for the captured Chrome process, rejects stale or mismatched snapshots, and forwards only structured role/geometry/focused/selected/enabled hints.
+
+When `EXAMPILOT_CDP_ENDPOINT` is configured, `BrowserSemanticFusingVisionAgent` adds a second optional read-only sensor. It forwards only bounded browser role/state metadata and normalized viewport geometry after process, focused-page, window, and state-version checks. If either sensor is unavailable or inconsistent, the planner continues with the remaining trusted observation sources; neither sensor gains runtime authority.
 
 ### Native OpenAI Computer Use
 
@@ -197,7 +239,7 @@ The gate checks the cleaned repository layout, runs the ExamPilot test suite, bu
 - Keep model/provider and sensor output untrusted until deterministic policy validates it.
 - Preserve strict typing, bounded retries, cancellation, and resource cleanup.
 - Do not hardcode API keys, tokens, credentials, or private data.
-- Use current official provider documentation before changing OpenAI request/tool contracts.
+- Use current official provider and browser documentation before changing external request/tool contracts.
 - Keep architecture decisions and implementation plans under `docs/superpowers/`.
 
 See [AGENTS.md](AGENTS.md) for the repository engineering contract.
