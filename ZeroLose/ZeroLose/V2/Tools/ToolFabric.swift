@@ -1,8 +1,11 @@
+import Foundation
+
 enum ToolFabricError: Error, Equatable {
     case unknownTool(ToolID)
     case staleRegistryRevision(expected: UInt64, actual: UInt64)
     case staleDescriptorRevision(expected: UInt64, actual: UInt64)
     case schemaDigestMismatch(expected: String, actual: String)
+    case missingLogicalOperationKey
     case policyDenied(PolicyDenialReason)
 }
 
@@ -60,6 +63,14 @@ actor ToolFabric {
                 expected: descriptor.schemaDigest,
                 actual: invocation.schemaDigest
             )
+        }
+
+        if descriptor.idempotency == .logicalOperationKeyRequired {
+            guard let logicalOperationKey = invocation.logicalOperationKey?.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ), !logicalOperationKey.isEmpty else {
+                throw ToolFabricError.missingLogicalOperationKey
+            }
         }
 
         let provider = providersByID[descriptor.providerID]
