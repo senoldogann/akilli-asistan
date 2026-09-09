@@ -1,12 +1,16 @@
 import Foundation
 
+protocol ReplayExecuting: Sendable {
+    func receipt(for recordedEvent: RuntimeEvent) async throws -> ToolExecutionReceipt
+}
+
 enum ReplayError: Error, Equatable {
     case unsupportedSchemaVersion(UInt32)
     case invalidToolArtifact
 }
 
-struct ReplayToolExecutor: Sendable {
-    func receipt(for recordedEvent: RuntimeEvent) throws -> ToolExecutionReceipt {
+struct ReplayToolExecutor: ReplayExecuting {
+    func receipt(for recordedEvent: RuntimeEvent) async throws -> ToolExecutionReceipt {
         guard recordedEvent.schemaVersion == 1 else {
             throw ReplayError.unsupportedSchemaVersion(recordedEvent.schemaVersion)
         }

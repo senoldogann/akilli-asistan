@@ -5,7 +5,7 @@ struct ReplayState: Sendable, Equatable {
 
 struct ReplayRuntime: Sendable {
     let events: [RuntimeEvent]
-    let executor: ReplayToolExecutor
+    let executor: any ReplayExecuting
 
     func run() async throws -> ReplayState {
         let orderedEvents = events.sorted { lhs, rhs in
@@ -23,7 +23,7 @@ struct ReplayRuntime: Sendable {
 
             switch event.eventKind {
             case .tool:
-                receipts.append(try executor.receipt(for: event))
+                receipts.append(try await executor.receipt(for: event))
             default:
                 continue
             }
