@@ -1,3 +1,5 @@
+import ComputerAgentCore
+
 public enum FocusValidationResult: Equatable, Sendable {
     case valid
     case reobserve(ObservationReobserveReason)
