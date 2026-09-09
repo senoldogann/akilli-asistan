@@ -17,7 +17,8 @@ final class ToolFabricTests: XCTestCase {
             XCTFail("Unexpected error: \(error)")
         }
 
-        XCTAssertEqual(await provider.executionCount, 0)
+        let executionCount = await provider.executionCount
+        XCTAssertEqual(executionCount, 0)
     }
 
     func testStaleRegistryRevisionNeverReachesProvider() async {
@@ -35,7 +36,8 @@ final class ToolFabricTests: XCTestCase {
             XCTFail("Unexpected error: \(error)")
         }
 
-        XCTAssertEqual(await provider.executionCount, 0)
+        let executionCount = await provider.executionCount
+        XCTAssertEqual(executionCount, 0)
     }
 
     func testMissingCredentialScopeIsDeniedBeforeHandleIssuanceAndProviderExecution() async {
@@ -54,8 +56,10 @@ final class ToolFabricTests: XCTestCase {
             XCTFail("Unexpected error: \(error)")
         }
 
-        XCTAssertEqual(await broker.issueCount, 0)
-        XCTAssertEqual(await provider.executionCount, 0)
+        let issueCount = await broker.issueCount
+        let executionCount = await provider.executionCount
+        XCTAssertEqual(issueCount, 0)
+        XCTAssertEqual(executionCount, 0)
     }
 
     func testProviderReceivesOpaqueHandleForEveryRequiredCredentialScope() async throws {
@@ -72,9 +76,12 @@ final class ToolFabricTests: XCTestCase {
 
         _ = try await fabric.execute(.test(toolID: "builtin.multi-scope", registryRevision: 1))
 
-        XCTAssertEqual(await broker.issueCount, 2)
-        XCTAssertEqual(await provider.receivedCredentialScopes, ["scope.a", "scope.b"])
-        XCTAssertEqual(await provider.executionCount, 1)
+        let issueCount = await broker.issueCount
+        let receivedScopes = await provider.receivedCredentialScopes
+        let executionCount = await provider.executionCount
+        XCTAssertEqual(issueCount, 2)
+        XCTAssertEqual(receivedScopes, Set(["scope.a", "scope.b"]))
+        XCTAssertEqual(executionCount, 1)
     }
 
     private func makeFabric(
