@@ -267,8 +267,8 @@ public final class ChromeDevToolsBrowserSemanticObserver: BrowserSemanticObservi
             y: minY / viewport.height,
             width: (maxX - minX) / viewport.width,
             height: (maxY - minY) / viewport.height
-        )
-        return bounds.clamped().isMeaningful ? bounds.clamped() : nil
+        ).clamped()
+        return bounds.isMeaningful ? bounds : nil
     }
 }
 
@@ -353,10 +353,11 @@ private final class URLSessionChromeDevToolsBrowserSemanticClient: ChromeDevTool
     }
 
     func windowBounds(for target: ChromeDevToolsPageTarget) async throws -> BrowserSemanticWindowBounds {
+        let browserSocket = try await browserWebSocketURL()
         let result = try await transport.command(
             method: "Browser.getWindowForTarget",
             params: ["targetId": target.id],
-            webSocketURL: target.webSocketURL
+            webSocketURL: browserSocket
         )
         guard let bounds = result["bounds"] as? [String: Any],
               let left = Self.double(bounds["left"]),
@@ -480,7 +481,7 @@ private final class URLSessionChromeDevToolsBrowserSemanticClient: ChromeDevTool
     }
 }
 
-private final class ChromeDevToolsTransport {
+final class ChromeDevToolsTransport {
     private let session: URLSession
     private let timeoutNanoseconds: UInt64
     private let commandIDLock = NSLock()
@@ -505,6 +506,10 @@ private final class ChromeDevToolsTransport {
         self.timeoutNanoseconds = UInt64(safeTimeout * 1_000_000_000)
     }
 
+    static func isAllowedReadOnlyMethod(_ method: String) -> Bool {
+        readOnlyMethods.contains(method)
+    }
+
     func get(_ url: URL, maximumBytes: Int) async throws -> Data {
         let (data, response) = try await session.data(from: url)
         guard let http = response as? HTTPURLResponse else {
@@ -524,7 +529,7 @@ private final class ChromeDevToolsTransport {
         params: [String: Any],
         webSocketURL: URL
     ) async throws -> [String: Any] {
-        guard Self.readOnlyMethods.contains(method) else {
+        guard Self.isAllowedReadOnlyMethod(method) else {
             throw ChromeDevToolsBrowserSemanticError.protocolError("method_not_allowed")
         }
         _ = try ChromeDevToolsEndpoint.validateDebuggerWebSocketURL(webSocketURL)
