@@ -1,4 +1,5 @@
 import XCTest
+import ComputerAgentCore
 @testable import ComputerAgentMacOS
 
 final class FocusValidatorTests: XCTestCase {
