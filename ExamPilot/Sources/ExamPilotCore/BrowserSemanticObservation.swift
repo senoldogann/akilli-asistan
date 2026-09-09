@@ -62,11 +62,31 @@ public struct BrowserSemanticNormalizedBounds: Codable, Equatable {
     }
 
     func clamped() -> BrowserSemanticNormalizedBounds {
-        BrowserSemanticNormalizedBounds(
-            x: Self.unit(x),
-            y: Self.unit(y),
-            width: Self.unit(width),
-            height: Self.unit(height)
+        guard x.isFinite,
+              y.isFinite,
+              width.isFinite,
+              height.isFinite,
+              width > 0,
+              height > 0 else {
+            return .zero
+        }
+
+        let rawRight = x + width
+        let rawBottom = y + height
+        guard rawRight.isFinite, rawBottom.isFinite else {
+            return .zero
+        }
+
+        let left = Self.unit(x)
+        let top = Self.unit(y)
+        let right = Self.unit(rawRight)
+        let bottom = Self.unit(rawBottom)
+
+        return BrowserSemanticNormalizedBounds(
+            x: left,
+            y: top,
+            width: max(0, right - left),
+            height: max(0, bottom - top)
         )
     }
 
@@ -74,9 +94,15 @@ public struct BrowserSemanticNormalizedBounds: Codable, Equatable {
         width > 0 && height > 0
     }
 
+    private static let zero = BrowserSemanticNormalizedBounds(
+        x: 0,
+        y: 0,
+        width: 0,
+        height: 0
+    )
+
     private static func unit(_ value: Double) -> Double {
-        guard value.isFinite else { return 0 }
-        return min(1, max(0, value))
+        min(1, max(0, value))
     }
 }
 
