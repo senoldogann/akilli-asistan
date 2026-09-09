@@ -13,7 +13,13 @@ let package = Package(
     targets: [
         .target(name: "ComputerAgentCore"),
         .target(name: "ComputerAgentMacOS", dependencies: ["ComputerAgentCore"]),
-        .target(name: "ExamPilotCore", dependencies: ["ComputerAgentCore"]),
+        .target(
+            name: "ExamPilotCore",
+            dependencies: ["ComputerAgentCore"],
+            linkerSettings: [
+                .linkedLibrary("sqlite3"),
+            ]
+        ),
         .executableTarget(name: "ExamPilotCLI", dependencies: ["ExamPilotCore"]),
         .testTarget(name: "ExamPilotCoreTests", dependencies: ["ExamPilotCore"]),
         .testTarget(name: "ComputerAgentCoreTests", dependencies: ["ComputerAgentCore"]),

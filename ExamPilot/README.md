@@ -146,6 +146,18 @@ The core runtime rejects or bounds model output before it reaches physical input
 - 200 observation cycles by default, configurable with `--max-cycles`;
 - no shell tool, arbitrary filesystem action, clipboard access, browser injection, or DOM tool is exposed to the model.
 
+## Persistence and replay
+
+The runtime now has an opt-in local persistence foundation for diagnostics, replay, and future resume flows. The caller chooses the SQLite database location; persistence is intentionally split into three contracts even when one SQLite file backs all of them:
+
+- `AgentEventStore` is append-only. SQLite triggers reject direct `UPDATE` and `DELETE` operations on persisted event rows.
+- `AgentConversationStore` owns provider continuation metadata separately from runtime truth.
+- `AgentMemoryStore` owns bounded structured working-memory snapshots.
+
+Persisted event details are reduced to bounded diagnostic identifiers before storage. Screenshots, raw typed text, API credentials, Authorization headers, and complete provider payloads are not part of the persistence model.
+
+Replay is read-only. `AgentResumeCheckpoint` deliberately marks persisted state as historical context with `requiresFreshObservation` and `requiresReconciliation`; it does not restore a verified answer, navigation eligibility, stale state version, transitioning UI state, or pending provider call as live execution authority. This slice is not wired into the default CLI, so persistence availability cannot silently change the existing physical-input path.
+
 ## Project layout
 
 ```text
@@ -155,6 +167,10 @@ ExamPilot/
 ├── Sources/
 │   ├── ExamPilotCore/
 │   │   ├── Models.swift
+│   │   ├── AgentPersistence.swift
+│   │   ├── SQLiteAgentPersistence.swift
+│   │   ├── AgentReplay.swift
+│   │   ├── AgentPersistenceCoordinator.swift
 │   │   ├── ActionBatchPolicy.swift
 │   │   ├── ChromeWindowSelection.swift
 │   │   ├── ChromeInputFocusService.swift

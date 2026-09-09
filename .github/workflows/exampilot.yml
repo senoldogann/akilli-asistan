@@ -15,39 +15,77 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Guard V2 legacy execution symbols
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="ZeroLose/ZeroLose/V2"
+          if git grep -nE '\[ACTION\]|extractActionsFromText|handleActions' -- "$root"; then
+            echo "Legacy ACTION execution path found in ZeroLose V2."
+            exit 1
+          fi
+
+      - name: Guard V2 forbidden runtime dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="ZeroLose/ZeroLose/V2"
+          if git grep -nE '\b(InputDriving|ExamPilot|GhostViewModel|ZeroOperator)\b' -- "$root"; then
+            echo "Forbidden legacy/domain runtime dependency found in ZeroLose V2."
+            exit 1
+          fi
+
+      - name: Guard V2 dynamic plugin loading
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="ZeroLose/ZeroLose/V2"
+          if git grep -nE '\b(dlopen|dlsym)\b|Bundle[^[:alnum:]_]*\(' -- "$root"; then
+            echo "Dynamic plugin loading found in ZeroLose V2."
+            exit 1
+          fi
+
+      - name: Collect changed-file whitespace diagnostics
+        id: whitespace
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            range="${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}"
+          else
+            range="HEAD^...HEAD"
+          fi
+
+          output="$(git diff --check "$range" || true)"
+          printf '%s\n' "$output" > /tmp/diff-check.txt
+          if [[ -n "$output" ]]; then
+            echo "has_errors=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_errors=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload whitespace diagnostics
+        if: steps.whitespace.outputs.has_errors == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: whitespace-diagnostics-${{ github.run_id }}
+          path: /tmp/diff-check.txt
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Guard changed-file whitespace
+        if: steps.whitespace.outputs.has_errors == 'true'
+        shell: bash
+        run: |
+          cat /tmp/diff-check.txt
+          exit 1
+
       - name: Test ZeroLose
         run: >-
           xcodebuild -project ZeroLose/ZeroLose.xcodeproj
           -scheme ZeroLose
           -destination 'platform=macOS'
           test CODE_SIGNING_ALLOWED=NO
-
-      - name: Verify V2 architecture guards
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if git grep -nE '\[ACTION:|handleActions' -- ZeroLose/ZeroLose/V2; then
-            echo "Legacy ACTION execution path found in ZeroLose V2."
-            exit 1
-          fi
-
-          if git grep -nE 'ExamPilot|InputDriving|GhostViewModel|ZeroOperator' -- ZeroLose/ZeroLose/V2; then
-            echo "Forbidden legacy/domain runtime dependency found in ZeroLose V2."
-            exit 1
-          fi
-
-          if git grep -nE 'dlopen|Bundle.*load' -- ZeroLose/ZeroLose/V2/Plugins; then
-            echo "Dynamic plugin loading found in ZeroLose V2."
-            exit 1
-          fi
-
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            git diff --check \
-              "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}"
-          else
-            git diff --check HEAD^...HEAD
-          fi
 
       - name: Verify repository
         run: python3 scripts/verify_all.py

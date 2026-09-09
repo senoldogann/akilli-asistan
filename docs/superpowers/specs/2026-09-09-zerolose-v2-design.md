@@ -1,7 +1,7 @@
 # ZeroLose V2 Design
 
-Date: 2026-09-09  
-Status: Architecture approved; implementation planning authorized  
+Date: 2026-09-09
+Status: Architecture approved; implementation planning authorized
 Repository baseline: `471d025f7ed3477197e0b507aec748fee72a539f`
 
 ## 1. Purpose

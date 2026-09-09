@@ -55,17 +55,54 @@ struct ExamPilotMain {
             ?? environment["EXAMPILOT_MODEL"]
             ?? "gpt-5.6-sol"
 
+        let capture = ScreenCaptureService()
+        let input = NativeInputDriver(shouldStop: { stopController.isStopped })
+        let executor = ActionBatchExecutor(driver: input)
+        let baseVision = OpenAIResponsesVisionAgent(apiKey: apiKey, model: model)
+        let accessibilityVision: VisionAgent = AccessibilityFusingVisionAgent(
+            base: baseVision,
+            observer: MacOSAccessibilityObserver()
+        )
+
+        let vision: VisionAgent
+        let browserSemanticMode: String
+        if let rawEndpoint = environment["EXAMPILOT_CDP_ENDPOINT"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !rawEndpoint.isEmpty {
+            guard let endpointURL = URL(string: rawEndpoint) else {
+                fputs(
+                    "ExamPilot: EXAMPILOT_CDP_ENDPOINT must be a valid loopback HTTP URL such as http://127.0.0.1:9222.\n",
+                    stderr
+                )
+                Darwin.exit(2)
+            }
+            do {
+                let browserObserver = try ChromeDevToolsBrowserSemanticObserver(endpoint: endpointURL)
+                vision = BrowserSemanticFusingVisionAgent(
+                    base: accessibilityVision,
+                    observer: browserObserver
+                )
+                browserSemanticMode = "enabled (read-only loopback CDP)"
+            } catch {
+                fputs(
+                    "ExamPilot: EXAMPILOT_CDP_ENDPOINT must be an uncredentialed loopback HTTP endpoint with no path.\n",
+                    stderr
+                )
+                Darwin.exit(2)
+            }
+        } else {
+            vision = accessibilityVision
+            browserSemanticMode = "off"
+        }
+
         print("ExamPilot starting")
         print("  mode: \(options.dryRun ? "dry-run" : "live")")
         print("  model: \(model)")
         print("  target: focused Chrome window (largest visible Chrome fallback)")
+        print("  browser semantics: \(browserSemanticMode)")
         print("  diagnostics: \(options.verbose ? "verbose" : "off")")
         print("  stop: Ctrl-C")
 
-        let capture = ScreenCaptureService()
-        let input = NativeInputDriver(shouldStop: { stopController.isStopped })
-        let executor = ActionBatchExecutor(driver: input)
-        let vision = OpenAIResponsesVisionAgent(apiKey: apiKey, model: model)
         let focusService = ChromeInputFocusService()
         let eventSink: AgentEventSinking
         if options.verbose {
@@ -148,8 +185,9 @@ private struct CLIOptions {
       -h, --help            Show this help.
 
     Environment:
-      OPENAI_API_KEY        Required. Never printed by ExamPilot.
-      EXAMPILOT_MODEL       Optional model override.
+      OPENAI_API_KEY         Required. Never printed by ExamPilot.
+      EXAMPILOT_MODEL        Optional model override.
+      EXAMPILOT_CDP_ENDPOINT Optional read-only loopback Chrome DevTools endpoint, e.g. http://127.0.0.1:9222.
     """
 
     init(arguments: [String]) throws {
