@@ -54,7 +54,8 @@ final class SQLiteEventStoreTests: XCTestCase {
             XCTFail("Unexpected error: \(error)")
         }
 
-        XCTAssertEqual(try await store.events(streamID: "g1", after: 0), [])
+        let persistedEvents = try await store.events(streamID: "g1", after: 0)
+        XCTAssertEqual(persistedEvents, [])
     }
 
     private func temporaryDatabaseURL() -> URL {
