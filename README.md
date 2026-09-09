@@ -16,6 +16,8 @@ That separation prevents common failure modes such as stale-coordinate replay, r
 ## Core capabilities
 
 - ScreenCaptureKit observation of the active Chrome window.
+- Read-only macOS Accessibility fusion for bounded role, geometry, focused, selected, and enabled hints.
+- Accessibility hints are bound to the current process, focused-window geometry, and runtime state version before reaching the planner.
 - CoreGraphics mouse, keyboard, scroll, and bounded wait execution.
 - Chrome process/window focus continuity checks before live input.
 - Runtime-owned lifecycle state with monotonic state versions.
@@ -33,8 +35,9 @@ That separation prevents common failure modes such as stale-coordinate replay, r
 ```mermaid
 flowchart TD
     G[User goal] --> S[ComputerAgentSession]
-    S --> O[Observation]
-    O --> P[Agent provider]
+    S --> O[Screen observation]
+    O --> F[Read-only Accessibility fusion]
+    F --> P[Agent provider]
     P --> I[Proposed intent/actions]
     I --> R[Runtime state + ActionPolicy]
     R -->|denied| O
@@ -50,6 +53,7 @@ flowchart TD
 
 | Component | Responsibility |
 | --- | --- |
+| Screen/Accessibility observation | Supplies read-only evidence; cannot grant runtime authority |
 | Agent provider | Proposes the next action or intent |
 | Runtime state | Describes accepted application/task state |
 | ActionPolicy | Determines whether a proposed action is executable |
@@ -58,7 +62,7 @@ flowchart TD
 | RecoveryEngine | Changes strategy after classified failures |
 | ComputerAgentSession | Owns runtime state, provider continuation, working memory, and stop state |
 
-The provider never directly grants itself permission to navigate, mark an answer as verified, or bypass stale-state checks.
+The provider and observation sensors never directly grant permission to navigate, mark an answer as verified, or bypass stale-state checks.
 
 ## Requirements
 
@@ -66,7 +70,7 @@ The provider never directly grants itself permission to navigate, mark an answer
 - Swift 5.10+
 - Google Chrome for the current ExamPilot workflow
 - Screen Recording permission
-- Accessibility permission for live physical input
+- Accessibility permission enables read-only semantic hints and is required for live physical input
 - `OPENAI_API_KEY`
 
 ## Quick start
@@ -125,7 +129,9 @@ The active ExamPilot path is intentionally fail-closed:
 5. A visual difference alone is not sufficient evidence of semantic success.
 6. Repeated failed intents consume a bounded recovery budget; the runtime does not blindly replay the same click.
 7. Unknown native Computer Use action types fail closed.
-8. Secrets, raw screenshots, typed private text, and provider payloads are not persisted in working-memory telemetry.
+8. Accessibility hints are accepted only for the matching process, focused-window geometry, and current state version; they cannot mark answers verified or grant navigation authority.
+9. Accessibility observation is read-only and falls back to screenshot-only planning when unavailable or inconsistent.
+10. Secrets, raw screenshots, typed private text, raw Accessibility labels/values, and provider payloads are not persisted in working-memory telemetry.
 
 ## Provider model
 
@@ -134,6 +140,8 @@ Two provider surfaces coexist deliberately:
 ### Structured vision execution
 
 `OpenAIResponsesVisionAgent` is the current physical-execution planner. It returns the repository's structured action schema, which allows the runtime to classify protected boundaries before any native input occurs.
+
+The CLI decorates this planner with `AccessibilityFusingVisionAgent`. The decorator attempts a bounded read-only Accessibility observation for the captured Chrome process, rejects stale or mismatched snapshots, and forwards only structured role/geometry/focused/selected/enabled hints. If Accessibility is unavailable or inconsistent, the same planner continues with the screenshot alone.
 
 ### Native OpenAI Computer Use
 
@@ -186,7 +194,7 @@ The gate checks the cleaned repository layout, runs the ExamPilot test suite, bu
 ## Development rules
 
 - Add regression coverage for every behavior change that can reach physical input.
-- Keep model/provider output untrusted until deterministic policy validates it.
+- Keep model/provider and sensor output untrusted until deterministic policy validates it.
 - Preserve strict typing, bounded retries, cancellation, and resource cleanup.
 - Do not hardcode API keys, tokens, credentials, or private data.
 - Use current official provider documentation before changing OpenAI request/tool contracts.
