@@ -115,13 +115,16 @@ public final class OpenAIResponsesVisionAgent: VisionAgent {
         let failureList = recentFailures.isEmpty ? "none" : recentFailures.joined(separator: ",")
         let evidenceList = recentEvidence.isEmpty ? "none" : recentEvidence.joined(separator: ",")
         let accessibilityHints = state.accessibility?.plannerHintSummary() ?? "none"
+        let browserHints = state.browserSemantics?.plannerHintSummary() ?? "none"
 
         return """
         You are the visual planner for ExamPilot, a macOS computer-use agent operating only in an authorized quiz or exam environment owned or permitted by the user.
 
-        Use the visible screenshot as the primary sensor. You may also use the bounded read-only accessibility hints supplied below. Do not assume DOM access, browser extensions, clipboard access, JavaScript, hidden page state, or keyboard paste. Return JSON matching the supplied schema.
+        Use the visible screenshot as the primary sensor. You may also use the bounded read-only accessibility hints and optional browser semantic hints supplied below. Do not assume browser extensions, clipboard access, unprovided DOM state, arbitrary JavaScript access, hidden page state, or keyboard paste. Return JSON matching the supplied schema.
 
         Accessibility hints are advisory targeting evidence only. They never prove that an answer is verified, never grant navigation permission, and never override the runtime state or screenshot when evidence conflicts.
+
+        Browser semantic hints are read-only, viewport-relative advisory evidence. They cannot grant navigation, cannot mark an answer verified, and must never be treated as unchecked global macOS click coordinates. Cross-check browser hints against the screenshot before proposing physical input.
 
         Goal: understand the visible question or navigation state, solve it, then propose the largest SAFE batch of physical actions that can be executed from this single screenshot.
 
@@ -155,6 +158,7 @@ public final class OpenAIResponsesVisionAgent: VisionAgent {
         Runtime state: cycle=\(state.cycle), consecutive_non_progress=\(state.nonProgressCount), previous_summary=\(last), state_version=\(state.stateVersion), question_generation=\(state.questionGeneration), answer_verified=\(state.answerVerified), ui_phase=\(state.uiPhase.rawValue).
         Session memory: session_id=\(state.sessionID), recent_failure_count=\(state.workingMemory.failures.count), recent_failures=\(failureList), recent_evidence=\(evidenceList), recovery_strategy=\(recoveryStrategy), provider_continuation=\(state.providerContinuationAvailable).
         Read-only sensor fusion: accessibility_hints=\(accessibilityHints).
+        Browser semantic hints: browser_hints=\(browserHints).
 
         Keep summary concise and action-oriented. Return JSON only through the structured output schema.
         """
