@@ -34,11 +34,7 @@ actor SQLiteEventStore: EventStoring {
         }
         defer { sqlite3_finalize(statement) }
 
-        do {
-            try bind(event, to: statement)
-        } catch {
-            throw error
-        }
+        try bind(event, to: statement)
 
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw SQLiteEventStoreError.databaseFailure(database.lastErrorMessage())
@@ -86,7 +82,7 @@ actor SQLiteEventStore: EventStoring {
         try bindOptionalUnsigned(event.policyRevision, to: statement, index: 13, field: "policyRevision")
         try bindBlob(event.payload, to: statement, index: 14)
         try bindText(event.redactionClass.rawValue, to: statement, index: 15)
-        try bindText(event.provenance, to: statement, index: 16)
+        try bindOptionalText(event.provenance, to: statement, index: 16)
 
         guard sqlite3_bind_int(statement, 17, event.tainted ? 1 : 0) == SQLITE_OK else {
             throw SQLiteEventStoreError.databaseFailure(database.lastErrorMessage())
@@ -116,8 +112,7 @@ actor SQLiteEventStore: EventStoring {
             throw SQLiteEventStoreError.invalidStoredValue("redactionClass")
         }
         guard let eventID = columnText(statement, index: 0),
-              let streamID = columnText(statement, index: 1),
-              let provenance = columnText(statement, index: 15) else {
+              let streamID = columnText(statement, index: 1) else {
             throw SQLiteEventStoreError.invalidStoredValue("required text column")
         }
 
@@ -142,7 +137,7 @@ actor SQLiteEventStore: EventStoring {
             policyRevision: try columnOptionalUnsigned(statement, index: 12, field: "policyRevision"),
             payload: payload,
             redactionClass: redactionClass,
-            provenance: provenance,
+            provenance: columnText(statement, index: 15),
             tainted: tainted,
             recordedAt: recordedAt
         )
@@ -187,6 +182,9 @@ actor SQLiteEventStore: EventStoring {
     }
 
     private func bindBlob(_ data: Data, to statement: OpaquePointer, index: Int32) throws {
+        guard data.count <= Int(Int32.max) else {
+            throw SQLiteEventStoreError.integerOverflow("payload")
+        }
         let result = data.withUnsafeBytes { buffer -> Int32 in
             guard let baseAddress = buffer.baseAddress else {
                 return sqlite3_bind_blob(statement, index, nil, 0, Self.sqliteTransient)
@@ -246,7 +244,7 @@ actor SQLiteEventStore: EventStoring {
         policy_revision INTEGER,
         payload BLOB NOT NULL,
         redaction_class TEXT NOT NULL,
-        provenance TEXT NOT NULL,
+        provenance TEXT,
         tainted INTEGER NOT NULL,
         recorded_at REAL NOT NULL,
         PRIMARY KEY (stream_id, sequence)
