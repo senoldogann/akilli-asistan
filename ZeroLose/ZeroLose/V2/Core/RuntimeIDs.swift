@@ -17,4 +17,3 @@ struct InvocationID: Hashable, Codable, Sendable {
 struct RuntimeEventID: Hashable, Codable, Sendable {
     let rawValue: String
 }
-
