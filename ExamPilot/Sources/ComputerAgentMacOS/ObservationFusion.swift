@@ -1,20 +1,24 @@
+import ComputerAgentCore
+
 public struct ComputerObservationSource: Equatable, Sendable {
     public let processID: Int32?
     public let windowID: UInt32?
+    public let provenance: String
+    public let tainted: Bool
+    public let confidence: Double
 
-    public init(processID: Int32?, windowID: UInt32?) {
+    public init(
+        processID: Int32?,
+        windowID: UInt32?,
+        provenance: String = "",
+        tainted: Bool = false,
+        confidence: Double = 1.0
+    ) {
         self.processID = processID
         self.windowID = windowID
-    }
-}
-
-public struct ComputerWindowIdentity: Equatable, Sendable {
-    public let processID: Int32
-    public let windowID: UInt32
-
-    public init(processID: Int32, windowID: UInt32) {
-        self.processID = processID
-        self.windowID = windowID
+        self.provenance = provenance
+        self.tainted = tainted
+        self.confidence = confidence
     }
 }
 
