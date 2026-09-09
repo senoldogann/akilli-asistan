@@ -110,6 +110,36 @@ final class ToolFabricTests: XCTestCase {
         XCTAssertEqual(executionCount, 0)
     }
 
+    func testLogicalOperationKeyRequiredFailsClosedBeforeProviderExecution() async {
+        let registry = ToolRegistry()
+        let provider = RecordingToolProvider(providerID: "builtin")
+        await registry.register(
+            .test(
+                id: "builtin.send",
+                effectClass: .externalCommunication,
+                declaredRisk: .externalCommunication,
+                idempotency: .logicalOperationKeyRequired
+            )
+        )
+        let fabric = makeFabric(
+            registry: registry,
+            provider: provider,
+            authorityMode: .autonomous
+        )
+
+        do {
+            _ = try await fabric.execute(.test(toolID: "builtin.send", registryRevision: 1))
+            XCTFail("Expected missing logical operation key to fail closed")
+        } catch let error as ToolFabricError {
+            XCTAssertEqual(error, .missingLogicalOperationKey)
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+
+        let executionCount = await provider.executionCount
+        XCTAssertEqual(executionCount, 0)
+    }
+
     func testProviderReceivesOpaqueHandleForEveryRequiredCredentialScope() async throws {
         let registry = ToolRegistry()
         let provider = RecordingToolProvider(providerID: "builtin")
@@ -135,14 +165,15 @@ final class ToolFabricTests: XCTestCase {
     private func makeFabric(
         registry: ToolRegistry,
         provider: RecordingToolProvider,
-        broker: RecordingCredentialBroker = RecordingCredentialBroker(availableScopes: [])
+        broker: RecordingCredentialBroker = RecordingCredentialBroker(availableScopes: []),
+        authorityMode: AuthorityMode = .auto
     ) -> ToolFabric {
         ToolFabric(
             registry: registry,
             policy: DefaultPolicyKernel(),
             credentialBroker: broker,
             providers: [provider],
-            authorityMode: .auto
+            authorityMode: authorityMode
         )
     }
 }
@@ -201,7 +232,10 @@ private extension ToolDescriptor {
     static func test(
         id: String,
         providerID: String = "builtin",
-        requiredCredentialScopes: Set<String> = []
+        effectClass: EffectClass = .read,
+        declaredRisk: RiskLevel = .readOnly,
+        requiredCredentialScopes: Set<String> = [],
+        idempotency: IdempotencySemantics = .none
     ) -> Self {
         Self(
             id: ToolID(rawValue: id),
@@ -211,11 +245,11 @@ private extension ToolDescriptor {
             schemaDigest: "sha256:test",
             inputSchemaJSON: Data("{}".utf8),
             outputSchemaJSON: nil,
-            effectClass: .read,
-            declaredRisk: .readOnly,
+            effectClass: effectClass,
+            declaredRisk: declaredRisk,
             requiredCredentialScopes: requiredCredentialScopes,
-            idempotency: .none,
-            concurrencyClass: .read,
+            idempotency: idempotency,
+            concurrencyClass: effectClass == .read ? .read : .mutation,
             verificationContract: VerificationContract(kind: "none"),
             enabled: true
         )
