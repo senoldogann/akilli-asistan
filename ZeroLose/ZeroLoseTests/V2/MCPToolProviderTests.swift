@@ -60,6 +60,39 @@ final class MCPToolProviderTests: XCTestCase {
         XCTAssertNotNil(changedSnapshot.descriptors[ToolID(rawValue: "mcp.gmail.search_messages")])
         XCTAssertNil(changedSnapshot.descriptors[ToolID(rawValue: "mcp.gmail.send_message")])
     }
+
+    func testExecutePreservesResultProvenanceAndTaintInReceipt() async throws {
+        let registry = ToolRegistry()
+        let result = MCPToolResult(
+            contentJSON: Data(#"{"messages":[]}"#.utf8),
+            providerReference: "provider-result-1",
+            provenance: "mcp:gmail:remote-result",
+            tainted: true
+        )
+        let client = ResultMCPClient(result: result)
+        let provider = MCPToolProvider(serverID: "gmail", client: client, registry: registry)
+        let descriptor = try MCPToolMapper(serverID: "gmail").descriptor(
+            for: .test(name: "search_messages", readOnlyHint: true)
+        )
+        let invocation = ToolInvocation(
+            invocationID: InvocationID(rawValue: "invocation-mcp-result"),
+            toolID: descriptor.id,
+            registryRevision: 0,
+            descriptorRevision: descriptor.descriptorRevision,
+            schemaDigest: descriptor.schemaDigest,
+            argumentsJSON: Data("{}".utf8)
+        )
+
+        let receipt = try await provider.execute(
+            descriptor: descriptor,
+            invocation: invocation,
+            credentialHandles: []
+        )
+
+        XCTAssertEqual(receipt.providerReference, "provider-result-1")
+        XCTAssertEqual(receipt.resultProvenance, "mcp:gmail:remote-result")
+        XCTAssertTrue(receipt.resultTainted)
+    }
 }
 
 private actor RecordingMCPClient: MCPClient {
@@ -79,6 +112,18 @@ private actor RecordingMCPClient: MCPClient {
 
     func callTool(name: String, argumentsJSON: Data) async throws -> MCPToolResult {
         throw RecordingMCPClientError.unexpectedCall
+    }
+}
+
+private struct ResultMCPClient: MCPClient {
+    let result: MCPToolResult
+
+    func listTools() async throws -> [MCPDiscoveredTool] {
+        []
+    }
+
+    func callTool(name: String, argumentsJSON: Data) async throws -> MCPToolResult {
+        result
     }
 }
 
