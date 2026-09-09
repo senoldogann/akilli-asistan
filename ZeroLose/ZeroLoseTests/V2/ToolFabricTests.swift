@@ -140,6 +140,37 @@ final class ToolFabricTests: XCTestCase {
         XCTAssertEqual(executionCount, 0)
     }
 
+    func testLogicalOperationKeyRequiredReachesProviderWhenPresent() async throws {
+        let registry = ToolRegistry()
+        let provider = RecordingToolProvider(providerID: "builtin")
+        await registry.register(
+            .test(
+                id: "builtin.send",
+                effectClass: .externalCommunication,
+                declaredRisk: .externalCommunication,
+                idempotency: .logicalOperationKeyRequired
+            )
+        )
+        let fabric = makeFabric(
+            registry: registry,
+            provider: provider,
+            authorityMode: .autonomous
+        )
+
+        _ = try await fabric.execute(
+            .test(
+                toolID: "builtin.send",
+                registryRevision: 1,
+                logicalOperationKey: "operation-123"
+            )
+        )
+
+        let executionCount = await provider.executionCount
+        let receivedKey = await provider.receivedLogicalOperationKey
+        XCTAssertEqual(executionCount, 1)
+        XCTAssertEqual(receivedKey, "operation-123")
+    }
+
     func testProviderReceivesOpaqueHandleForEveryRequiredCredentialScope() async throws {
         let registry = ToolRegistry()
         let provider = RecordingToolProvider(providerID: "builtin")
@@ -182,6 +213,7 @@ private actor RecordingToolProvider: ToolProviding {
     nonisolated let providerID: String
     private(set) var executionCount = 0
     private(set) var receivedCredentialScopes: Set<String> = []
+    private(set) var receivedLogicalOperationKey: String?
 
     init(providerID: String) {
         self.providerID = providerID
@@ -194,6 +226,7 @@ private actor RecordingToolProvider: ToolProviding {
     ) async throws -> ToolExecutionReceipt {
         executionCount += 1
         receivedCredentialScopes = Set(credentialHandles.map(\.scope.rawValue))
+        receivedLogicalOperationKey = invocation.logicalOperationKey
         let now = Date()
         return ToolExecutionReceipt(
             invocationID: invocation.invocationID,
@@ -262,7 +295,8 @@ private extension ToolInvocation {
         registryRevision: UInt64,
         descriptorRevision: UInt64 = 1,
         schemaDigest: String = "sha256:test",
-        argumentsJSON: Data = Data("{}".utf8)
+        argumentsJSON: Data = Data("{}".utf8),
+        logicalOperationKey: String? = nil
     ) -> Self {
         Self(
             invocationID: InvocationID(rawValue: "invocation-1"),
@@ -270,7 +304,8 @@ private extension ToolInvocation {
             registryRevision: registryRevision,
             descriptorRevision: descriptorRevision,
             schemaDigest: schemaDigest,
-            argumentsJSON: argumentsJSON
+            argumentsJSON: argumentsJSON,
+            logicalOperationKey: logicalOperationKey
         )
     }
 }
