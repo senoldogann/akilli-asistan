@@ -47,7 +47,7 @@ struct ChromeDevToolsEndpoint: Equatable {
     init(url: URL) throws {
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               components.scheme?.lowercased() == "http",
-              let host = components.host?.lowercased(),
+              let host = Self.normalizedHost(components),
               Self.loopbackHosts.contains(host),
               components.user == nil,
               components.password == nil,
@@ -74,13 +74,20 @@ struct ChromeDevToolsEndpoint: Equatable {
     static func validateDebuggerWebSocketURL(_ url: URL) throws -> URL {
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               components.scheme?.lowercased() == "ws",
-              let host = components.host?.lowercased(),
+              let host = normalizedHost(components),
               loopbackHosts.contains(host),
               components.user == nil,
               components.password == nil else {
             throw ChromeDevToolsBrowserSemanticError.invalidDebuggerURL
         }
         return url
+    }
+
+    private static func normalizedHost(_ components: URLComponents) -> String? {
+        guard let rawHost = components.host?.lowercased(), !rawHost.isEmpty else {
+            return nil
+        }
+        return rawHost.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
     }
 
     private static let loopbackHosts: Set<String> = ["127.0.0.1", "localhost", "::1"]
