@@ -17,6 +17,7 @@ final class LegacyCapabilityAdapterTests: XCTestCase {
         XCTAssertEqual(Set(descriptors.map(\.id)).count, descriptors.count)
         XCTAssertTrue(descriptors.allSatisfy { $0.id.rawValue.hasPrefix("builtin.legacy.") })
         XCTAssertTrue(descriptors.allSatisfy { $0.providerID == "legacy.inventory" })
+        XCTAssertTrue(descriptors.allSatisfy { !$0.enabled })
     }
 
     func testKnownReadCapabilityRemainsReadOnlyInventory() throws {
