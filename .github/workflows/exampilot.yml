@@ -26,7 +26,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if git grep -nE '\[ACTION:|handleActions' -- ZeroLose/ZeroLose/V2; then
+          root="ZeroLose/ZeroLose/V2"
+          if git grep -nE '\[ACTION\]|extractActionsFromText|handleActions' -- "$root"; then
             echo "Legacy ACTION execution path found in ZeroLose V2."
             exit 1
           fi
@@ -35,7 +36,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if git grep -nE 'ExamPilot|InputDriving|GhostViewModel|ZeroOperator' -- ZeroLose/ZeroLose/V2; then
+          root="ZeroLose/ZeroLose/V2"
+          if git grep -nE '\b(InputDriving|ExamPilot|GhostViewModel|ZeroOperator)\b' -- "$root"; then
             echo "Forbidden legacy/domain runtime dependency found in ZeroLose V2."
             exit 1
           fi
@@ -44,7 +46,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if git grep -nE 'dlopen|Bundle.*load' -- ZeroLose/ZeroLose/V2/Plugins; then
+          root="ZeroLose/ZeroLose/V2"
+          if git grep -nE '\b(dlopen|dlsym)\b|Bundle[^[:alnum:]_]*\(' -- "$root"; then
             echo "Dynamic plugin loading found in ZeroLose V2."
             exit 1
           fi
