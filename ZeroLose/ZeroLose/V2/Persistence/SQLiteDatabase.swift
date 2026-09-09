@@ -16,7 +16,9 @@ final class SQLiteDatabase {
         let result = sqlite3_open_v2(databaseURL.path, &database, flags, nil)
 
         guard result == SQLITE_OK, let database else {
-            let message = database.flatMap { sqlite3_errmsg($0) }.map(String.init(cString:))
+            let message = database
+                .flatMap { sqlite3_errmsg($0) }
+                .map { String(cString: $0) }
                 ?? "sqlite3_open_v2 failed with code \(result)"
             if let database {
                 sqlite3_close(database)
@@ -42,7 +44,7 @@ final class SQLiteDatabase {
         var errorMessage: UnsafeMutablePointer<CChar>?
         let result = sqlite3_exec(handle, sql, nil, nil, &errorMessage)
         guard result == SQLITE_OK else {
-            let message = errorMessage.map(String.init(cString:))
+            let message = errorMessage.map { String(cString: $0) }
                 ?? String(cString: sqlite3_errmsg(handle))
             sqlite3_free(errorMessage)
             throw SQLiteDatabaseError.executeFailed(message)
