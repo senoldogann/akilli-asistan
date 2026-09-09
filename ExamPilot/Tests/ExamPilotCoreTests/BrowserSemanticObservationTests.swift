@@ -80,16 +80,16 @@ final class BrowserSemanticObservationTests: XCTestCase {
         )
     }
 
-    func testClampsNormalizedBoundsAndElementCount() throws {
+    func testClipsNormalizedBoundsGeometricallyAndBoundsElementCount() throws {
         let frame = try makeFrame(processID: 42)
         let elements = (0..<90).map { index in
             BrowserSemanticElementHint(
                 role: .button,
                 bounds: BrowserSemanticNormalizedBounds(
                     x: index == 0 ? -0.2 : 0.1,
-                    y: index == 0 ? 1.2 : 0.2,
+                    y: index == 0 ? 0.8 : 0.2,
                     width: index == 0 ? 1.4 : 0.3,
-                    height: 0.1
+                    height: index == 0 ? 0.5 : 0.1
                 ),
                 isFocused: false,
                 isSelected: nil,
@@ -116,9 +116,39 @@ final class BrowserSemanticObservationTests: XCTestCase {
         XCTAssertEqual(observation.elements.count, 24)
         let first = try XCTUnwrap(observation.elements.first)
         XCTAssertEqual(first.bounds.x, 0, accuracy: 0.0001)
-        XCTAssertEqual(first.bounds.y, 1, accuracy: 0.0001)
+        XCTAssertEqual(first.bounds.y, 0.8, accuracy: 0.0001)
         XCTAssertEqual(first.bounds.width, 1, accuracy: 0.0001)
-        XCTAssertEqual(first.bounds.height, 0.1, accuracy: 0.0001)
+        XCTAssertEqual(first.bounds.height, 0.2, accuracy: 0.0001)
+    }
+
+    func testDiscardsBoundsFullyOutsideViewport() throws {
+        let frame = try makeFrame(processID: 42)
+        let snapshot = BrowserSemanticSnapshot(
+            stateVersion: 7,
+            processID: 42,
+            windowBounds: BrowserSemanticWindowBounds(x: 10, y: 20, width: 800, height: 600),
+            viewportWidth: 760,
+            viewportHeight: 470,
+            elements: [
+                BrowserSemanticElementHint(
+                    role: .button,
+                    bounds: BrowserSemanticNormalizedBounds(x: 1.2, y: 0.2, width: 0.1, height: 0.1),
+                    isFocused: false,
+                    isSelected: nil,
+                    isEnabled: true
+                )
+            ]
+        )
+
+        let observation = try XCTUnwrap(
+            BrowserSemanticObservationFusion().fuse(
+                snapshot: snapshot,
+                target: frame,
+                stateVersion: 7
+            )
+        )
+
+        XCTAssertTrue(observation.elements.isEmpty)
     }
 
     func testPlannerSummaryContainsOnlyBoundedRoleStateAndGeometry() throws {
