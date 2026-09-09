@@ -65,7 +65,11 @@ struct ExamPilotMain {
         let capture = ScreenCaptureService()
         let input = NativeInputDriver(shouldStop: { stopController.isStopped })
         let executor = ActionBatchExecutor(driver: input)
-        let vision = OpenAIResponsesVisionAgent(apiKey: apiKey, model: model)
+        let baseVision = OpenAIResponsesVisionAgent(apiKey: apiKey, model: model)
+        let vision = AccessibilityFusingVisionAgent(
+            base: baseVision,
+            observer: MacOSAccessibilityObserver()
+        )
         let focusService = ChromeInputFocusService()
         let eventSink: AgentEventSinking
         if options.verbose {
