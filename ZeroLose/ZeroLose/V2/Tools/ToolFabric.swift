@@ -1,6 +1,8 @@
 enum ToolFabricError: Error, Equatable {
     case unknownTool(ToolID)
     case staleRegistryRevision(expected: UInt64, actual: UInt64)
+    case staleDescriptorRevision(expected: UInt64, actual: UInt64)
+    case schemaDigestMismatch(expected: String, actual: String)
     case policyDenied(PolicyDenialReason)
 }
 
@@ -44,6 +46,20 @@ actor ToolFabric {
 
         guard let descriptor = snapshot.descriptors[invocation.toolID], descriptor.enabled else {
             throw ToolFabricError.unknownTool(invocation.toolID)
+        }
+
+        guard descriptor.descriptorRevision == invocation.descriptorRevision else {
+            throw ToolFabricError.staleDescriptorRevision(
+                expected: descriptor.descriptorRevision,
+                actual: invocation.descriptorRevision
+            )
+        }
+
+        guard descriptor.schemaDigest == invocation.schemaDigest else {
+            throw ToolFabricError.schemaDigestMismatch(
+                expected: descriptor.schemaDigest,
+                actual: invocation.schemaDigest
+            )
         }
 
         let provider = providersByID[descriptor.providerID]
