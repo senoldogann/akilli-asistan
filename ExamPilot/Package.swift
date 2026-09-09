@@ -11,7 +11,7 @@ let package = Package(
     ],
     targets: [
         .target(name: "ComputerAgentCore"),
-        .target(name: "ExamPilotCore"),
+        .target(name: "ExamPilotCore", dependencies: ["ComputerAgentCore"]),
         .executableTarget(name: "ExamPilotCLI", dependencies: ["ExamPilotCore"]),
         .testTarget(name: "ExamPilotCoreTests", dependencies: ["ExamPilotCore"]),
         .testTarget(name: "ComputerAgentCoreTests", dependencies: ["ComputerAgentCore"]),

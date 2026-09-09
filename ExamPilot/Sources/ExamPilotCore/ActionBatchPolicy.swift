@@ -1,12 +1,28 @@
 import CoreGraphics
+import ComputerAgentCore
 
 public struct ActionPolicyContext: Equatable {
     public let stateVersion: UInt64
-    public let navigationAllowed: Bool
+    private let taskProfile: ExamTaskProfile
+
+    public var navigationAllowed: Bool {
+        taskProfile.navigationAllowed
+    }
 
     public init(stateVersion: UInt64, navigationAllowed: Bool) {
         self.stateVersion = stateVersion
-        self.navigationAllowed = navigationAllowed
+        self.taskProfile = ExamTaskProfile(
+            state: ExamRuntimeState(
+                stateVersion: stateVersion,
+                answerState: navigationAllowed ? .verified : .unanswered,
+                uiPhase: .stable
+            )
+        )
+    }
+
+    public init(state: ExamRuntimeState) {
+        self.stateVersion = state.stateVersion
+        self.taskProfile = ExamTaskProfile(state: state)
     }
 }
 
@@ -34,7 +50,12 @@ public struct ActionBatchPolicy {
         screenBounds: CGRect,
         context: ActionPolicyContext
     ) throws -> ValidatedBatch {
-        guard decision.actions.count <= maxActions else {
+        let safetyPolicy = ComputerAgentSafetyPolicy()
+        let taskProfile = computerTaskProfile
+        guard safetyPolicy.validate(
+            actionCount: decision.actions.count,
+            profile: taskProfile
+        ) == .allowed else {
             throw ActionValidationError.tooManyActions
         }
 
@@ -51,7 +72,12 @@ public struct ActionBatchPolicy {
                 break
             }
 
-            try validate(action, screenBounds: screenBounds)
+            try validate(
+                action,
+                screenBounds: screenBounds,
+                safetyPolicy: safetyPolicy,
+                taskProfile: taskProfile
+            )
             accepted.append(action)
 
             if action.boundary || action.kind == .finish {
@@ -74,6 +100,14 @@ public struct ActionBatchPolicy {
                 containsProtectedBoundary: boundaryRequiresVerification,
                 screenBounds: screenBounds
             )
+        )
+    }
+
+    private var computerTaskProfile: ComputerTaskProfile {
+        ComputerTaskProfile(
+            maxActions: maxActions,
+            maxWaitMilliseconds: maxWaitMilliseconds,
+            maxAbsoluteScroll: maxAbsoluteScroll
         )
     }
 
@@ -129,47 +163,65 @@ public struct ActionBatchPolicy {
         return .answerMutation
     }
 
-    private func validate(_ action: ExamAction, screenBounds: CGRect) throws {
+    private func validate(
+        _ action: ExamAction,
+        screenBounds: CGRect,
+        safetyPolicy: ComputerAgentSafetyPolicy,
+        taskProfile: ComputerTaskProfile
+    ) throws {
+        let bounds = ComputerSafetyBounds(
+            minX: screenBounds.minX,
+            minY: screenBounds.minY,
+            width: screenBounds.width,
+            height: screenBounds.height
+        )
+
+        let safetyAction: ComputerSafetyAction
         switch action.kind {
         case .moveClick:
-            guard let x = action.x, let y = action.y else {
-                throw ActionValidationError.missingRequiredField(.moveClick)
-            }
-            guard screenBounds.contains(CGPoint(x: x, y: y)) else {
-                throw ActionValidationError.coordinateOutOfBounds
-            }
-
+            safetyAction = .moveClick(x: action.x, y: action.y)
         case .typeText:
-            guard action.text != nil else {
-                throw ActionValidationError.missingRequiredField(.typeText)
-            }
-
+            safetyAction = .typeText(action.text)
         case .key:
-            guard let key = action.key, !key.isEmpty else {
-                throw ActionValidationError.missingRequiredField(.key)
-            }
-            guard SupportedInputKey(rawValue: key.lowercased()) != nil else {
-                throw ActionValidationError.unsupportedKey(key)
-            }
-
+            safetyAction = .key(action.key)
         case .scroll:
-            guard let amount = action.amount else {
-                throw ActionValidationError.missingRequiredField(.scroll)
-            }
-            guard (-maxAbsoluteScroll...maxAbsoluteScroll).contains(amount) else {
-                throw ActionValidationError.scrollOutOfRange
-            }
-
+            safetyAction = .scroll(amount: action.amount)
         case .wait:
-            guard let milliseconds = action.milliseconds else {
-                throw ActionValidationError.missingRequiredField(.wait)
-            }
-            guard milliseconds >= 0, milliseconds <= maxWaitMilliseconds else {
-                throw ActionValidationError.waitOutOfRange
-            }
-
+            safetyAction = .wait(milliseconds: action.milliseconds)
         case .finish:
+            safetyAction = .finish
+        }
+
+        switch safetyPolicy.validate(
+            safetyAction,
+            bounds: bounds,
+            profile: taskProfile
+        ) {
+        case .allowed:
             break
+        case .denied(.coordinateOutOfBounds):
+            throw ActionValidationError.coordinateOutOfBounds
+        case .denied(.waitOutOfRange):
+            throw ActionValidationError.waitOutOfRange
+        case .denied(.scrollOutOfRange):
+            throw ActionValidationError.scrollOutOfRange
+        case .denied(.tooManyActions):
+            throw ActionValidationError.tooManyActions
+        case .denied(.invalidActionShape):
+            throw ActionValidationError.missingRequiredField(action.kind)
+        case .denied(.staleState),
+             .denied(.staleObservation),
+             .denied(.focusMismatch),
+             .denied(.cancelled):
+            // Context-only denials cannot originate from action-shape validation.
+            // Fail closed while preserving the legacy validation error surface.
+            throw ActionValidationError.missingRequiredField(action.kind)
+        }
+
+        if action.kind == .key,
+           let key = action.key,
+           SupportedInputKey(rawValue: key.lowercased()) == nil {
+            throw ActionValidationError.unsupportedKey(key)
         }
     }
 }
