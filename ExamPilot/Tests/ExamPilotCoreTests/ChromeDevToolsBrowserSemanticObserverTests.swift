@@ -99,12 +99,11 @@ final class ChromeDevToolsBrowserSemanticObserverTests: XCTestCase {
         )
         let observer = ChromeDevToolsBrowserSemanticObserver(client: client, maximumElementCount: 24)
 
-        let snapshot = try XCTUnwrap(
-            try await observer.observe(
-                target: makeFrame(processID: 42),
-                stateVersion: 5
-            )
+        let observed = try await observer.observe(
+            target: makeFrame(processID: 42),
+            stateVersion: 5
         )
+        let snapshot = try XCTUnwrap(observed)
 
         XCTAssertEqual(snapshot.stateVersion, 5)
         XCTAssertEqual(snapshot.processID, 42)
@@ -144,12 +143,11 @@ final class ChromeDevToolsBrowserSemanticObserverTests: XCTestCase {
         )
         let observer = ChromeDevToolsBrowserSemanticObserver(client: client, maximumElementCount: 12)
 
-        let snapshot = try XCTUnwrap(
-            try await observer.observe(
-                target: makeFrame(processID: 42),
-                stateVersion: 5
-            )
+        let observed = try await observer.observe(
+            target: makeFrame(processID: 42),
+            stateVersion: 5
         )
+        let snapshot = try XCTUnwrap(observed)
 
         XCTAssertEqual(snapshot.elements.count, 12)
         XCTAssertEqual(client.requestedBackendNodeIDs.count, 12)
