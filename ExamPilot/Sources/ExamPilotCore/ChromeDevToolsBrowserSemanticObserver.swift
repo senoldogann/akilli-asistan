@@ -47,8 +47,7 @@ struct ChromeDevToolsEndpoint: Equatable {
     init(url: URL) throws {
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               components.scheme?.lowercased() == "http",
-              let host = Self.normalizedHost(components),
-              Self.loopbackHosts.contains(host),
+              Self.isLoopback(components),
               components.user == nil,
               components.password == nil,
               components.query == nil,
@@ -74,13 +73,29 @@ struct ChromeDevToolsEndpoint: Equatable {
     static func validateDebuggerWebSocketURL(_ url: URL) throws -> URL {
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               components.scheme?.lowercased() == "ws",
-              let host = normalizedHost(components),
-              loopbackHosts.contains(host),
+              isLoopback(components),
               components.user == nil,
-              components.password == nil else {
+              components.password == nil,
+              components.fragment == nil else {
             throw ChromeDevToolsBrowserSemanticError.invalidDebuggerURL
         }
         return url
+    }
+
+    static func isAllowedHTTPRedirectURL(_ url: URL) -> Bool {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return false
+        }
+        return components.scheme?.lowercased() == "http"
+            && isLoopback(components)
+            && components.user == nil
+            && components.password == nil
+            && components.fragment == nil
+    }
+
+    private static func isLoopback(_ components: URLComponents) -> Bool {
+        guard let host = normalizedHost(components) else { return false }
+        return loopbackHosts.contains(host)
     }
 
     private static func normalizedHost(_ components: URLComponents) -> String? {
@@ -127,6 +142,8 @@ protocol ChromeDevToolsBrowserSemanticClient: AnyObject {
 }
 
 public final class ChromeDevToolsBrowserSemanticObserver: BrowserSemanticObserving {
+    private static let maximumPageTargetCount = 32
+
     private let client: ChromeDevToolsBrowserSemanticClient
     private let maximumElementCount: Int
     private let windowTolerance: Double
@@ -159,6 +176,10 @@ public final class ChromeDevToolsBrowserSemanticObserver: BrowserSemanticObservi
         self.windowTolerance = max(0, windowTolerance)
     }
 
+    static func acceptsPageTargetCount(_ count: Int) -> Bool {
+        (1...maximumPageTargetCount).contains(count)
+    }
+
     public func observe(
         target: ScreenFrame,
         stateVersion: UInt64
@@ -167,12 +188,12 @@ public final class ChromeDevToolsBrowserSemanticObserver: BrowserSemanticObservi
         guard try await client.browserProcessID() == targetProcessID else { return nil }
 
         let targets = try await client.pageTargets()
-        guard !targets.isEmpty else { return nil }
+        guard Self.acceptsPageTargetCount(targets.count) else { return nil }
 
         var focusedTargets: [ChromeDevToolsPageTarget] = []
         focusedTargets.reserveCapacity(1)
 
-        for candidate in targets.prefix(32) {
+        for candidate in targets {
             let focus = try await client.focusState(for: candidate)
             if focus.isFocused && focus.isVisible {
                 focusedTargets.append(candidate)
@@ -371,6 +392,10 @@ private final class URLSessionChromeDevToolsBrowserSemanticClient: ChromeDevTool
               let top = Self.double(bounds["top"]),
               let width = Self.double(bounds["width"]),
               let height = Self.double(bounds["height"]),
+              left.isFinite,
+              top.isFinite,
+              width.isFinite,
+              height.isFinite,
               width > 0,
               height > 0 else {
             throw ChromeDevToolsBrowserSemanticError.invalidResponse
@@ -394,6 +419,8 @@ private final class URLSessionChromeDevToolsBrowserSemanticClient: ChromeDevTool
         guard let viewport,
               let width = Self.double(viewport["clientWidth"]),
               let height = Self.double(viewport["clientHeight"]),
+              width.isFinite,
+              height.isFinite,
               width > 0,
               height > 0 else {
             throw ChromeDevToolsBrowserSemanticError.invalidResponse
@@ -488,11 +515,30 @@ private final class URLSessionChromeDevToolsBrowserSemanticClient: ChromeDevTool
     }
 }
 
+private final class ChromeDevToolsLoopbackSessionDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        guard let url = request.url,
+              ChromeDevToolsEndpoint.isAllowedHTTPRedirectURL(url) else {
+            completionHandler(nil)
+            return
+        }
+        completionHandler(request)
+    }
+}
+
 final class ChromeDevToolsTransport {
+    private let redirectDelegate: ChromeDevToolsLoopbackSessionDelegate
     private let session: URLSession
     private let timeoutNanoseconds: UInt64
     private let commandIDLock = NSLock()
     private var nextCommandID = 1
+    private let maximumWebSocketMessageBytes = 4_000_000
 
     private static let readOnlyMethods: Set<String> = [
         "SystemInfo.getProcessInfo",
@@ -509,7 +555,14 @@ final class ChromeDevToolsTransport {
         configuration.timeoutIntervalForRequest = safeTimeout
         configuration.timeoutIntervalForResource = safeTimeout
         configuration.waitsForConnectivity = false
-        self.session = URLSession(configuration: configuration)
+
+        let redirectDelegate = ChromeDevToolsLoopbackSessionDelegate()
+        self.redirectDelegate = redirectDelegate
+        self.session = URLSession(
+            configuration: configuration,
+            delegate: redirectDelegate,
+            delegateQueue: nil
+        )
         self.timeoutNanoseconds = UInt64(safeTimeout * 1_000_000_000)
     }
 
@@ -518,9 +571,17 @@ final class ChromeDevToolsTransport {
     }
 
     func get(_ url: URL, maximumBytes: Int) async throws -> Data {
+        guard ChromeDevToolsEndpoint.isAllowedHTTPRedirectURL(url) else {
+            throw ChromeDevToolsBrowserSemanticError.invalidEndpoint
+        }
+
         let (data, response) = try await session.data(from: url)
         guard let http = response as? HTTPURLResponse else {
             throw ChromeDevToolsBrowserSemanticError.invalidHTTPResponse
+        }
+        guard let finalURL = http.url,
+              ChromeDevToolsEndpoint.isAllowedHTTPRedirectURL(finalURL) else {
+            throw ChromeDevToolsBrowserSemanticError.invalidEndpoint
         }
         guard (200..<300).contains(http.statusCode) else {
             throw ChromeDevToolsBrowserSemanticError.httpStatus(http.statusCode)
@@ -563,8 +624,14 @@ final class ChromeDevToolsTransport {
             let data: Data
             switch message {
             case .string(let string):
+                guard string.utf8.count <= maximumWebSocketMessageBytes else {
+                    throw ChromeDevToolsBrowserSemanticError.responseTooLarge
+                }
                 data = Data(string.utf8)
             case .data(let raw):
+                guard raw.count <= maximumWebSocketMessageBytes else {
+                    throw ChromeDevToolsBrowserSemanticError.responseTooLarge
+                }
                 data = raw
             @unknown default:
                 throw ChromeDevToolsBrowserSemanticError.invalidResponse
