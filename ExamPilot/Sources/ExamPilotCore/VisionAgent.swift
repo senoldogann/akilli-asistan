@@ -12,6 +12,7 @@ public struct ExamObservationState: Codable, Equatable {
     public var workingMemory: AgentWorkingMemorySnapshot
     public var providerContinuationAvailable: Bool
     public var accessibility: AccessibilityObservation?
+    public var browserSemantics: BrowserSemanticObservation?
 
     public init(
         cycle: Int,
@@ -24,7 +25,8 @@ public struct ExamObservationState: Codable, Equatable {
         sessionID: String = "unscoped",
         workingMemory: AgentWorkingMemorySnapshot = AgentWorkingMemorySnapshot(),
         providerContinuationAvailable: Bool = false,
-        accessibility: AccessibilityObservation? = nil
+        accessibility: AccessibilityObservation? = nil,
+        browserSemantics: BrowserSemanticObservation? = nil
     ) {
         self.cycle = cycle
         self.nonProgressCount = nonProgressCount
@@ -37,6 +39,7 @@ public struct ExamObservationState: Codable, Equatable {
         self.workingMemory = workingMemory
         self.providerContinuationAvailable = providerContinuationAvailable
         self.accessibility = accessibility
+        self.browserSemantics = browserSemantics
     }
 }
 
