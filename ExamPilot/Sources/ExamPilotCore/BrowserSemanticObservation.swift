@@ -37,7 +37,7 @@ public struct BrowserSemanticWindowBounds: Codable, Equatable {
         )
     }
 
-    fileprivate func approximatelyEquals(
+    func approximatelyEquals(
         _ other: BrowserSemanticWindowBounds,
         tolerance: Double
     ) -> Bool {
@@ -61,7 +61,7 @@ public struct BrowserSemanticNormalizedBounds: Codable, Equatable {
         self.height = height
     }
 
-    fileprivate func clamped() -> BrowserSemanticNormalizedBounds {
+    func clamped() -> BrowserSemanticNormalizedBounds {
         BrowserSemanticNormalizedBounds(
             x: Self.unit(x),
             y: Self.unit(y),
@@ -70,7 +70,7 @@ public struct BrowserSemanticNormalizedBounds: Codable, Equatable {
         )
     }
 
-    fileprivate var isMeaningful: Bool {
+    var isMeaningful: Bool {
         width > 0 && height > 0
     }
 
