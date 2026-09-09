@@ -81,7 +81,7 @@ private actor SequencedComputerMutationStateProvider: ComputerMutationStateProvi
         self.states = states
     }
 
-    func currentComputerMutationState() throws -> ComputerMutationState {
+    func currentComputerMutationState() async throws -> ComputerMutationState {
         guard index < states.count else {
             throw TestGatewayError.missingState
         }
