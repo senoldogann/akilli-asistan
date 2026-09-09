@@ -50,6 +50,7 @@ final class RuntimeCheckpointTests: XCTestCase {
         let zeroLoseDirectory = testFileURL
             .deletingLastPathComponent()
             .deletingLastPathComponent()
+            .deletingLastPathComponent()
         let sourceURL = zeroLoseDirectory
             .appendingPathComponent("ZeroLose/V2/Checkpoint/RuntimeCheckpoint.swift")
 
