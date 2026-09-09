@@ -34,11 +34,11 @@
 - Produces `StoredAgentEvent`, `AgentEventStore`, `AgentConversationRecord`, `AgentConversationStore`, `AgentMemoryRecord`, `AgentMemoryStore`, and `AgentPersistenceError`.
 - `StoredAgentEvent` owns a monotonically increasing store sequence and a sanitized `AgentEvent`.
 
-- [ ] **Step 1: Write failing contract tests** proving event-store API has append/read semantics, persistence models round-trip with Codable, and unsafe event detail is replaced by `redacted_detail` before persistence.
-- [ ] **Step 2: Run `cd ExamPilot && swift test --filter AgentPersistenceTests` and observe RED** because the persistence contracts do not exist.
-- [ ] **Step 3: Implement the minimal data models/protocols and one shared detail sanitizer**. The sanitizer accepts only lowercase ASCII `a-z`, digits, `_`, `.`, `-`, maximum 64 characters; every other detail becomes `redacted_detail`.
-- [ ] **Step 4: Run the focused tests and observe GREEN.**
-- [ ] **Step 5: Commit only Task 1 files.**
+- [x] **Step 1: Write failing contract tests** proving event-store API has append/read semantics, persistence models round-trip with Codable, and unsafe event detail is replaced by `redacted_detail` before persistence.
+- [x] **Step 2: Run `cd ExamPilot && swift test --filter AgentPersistenceTests` and observe RED** because the persistence contracts do not exist.
+- [x] **Step 3: Implement the minimal data models/protocols and one shared detail sanitizer**. The sanitizer accepts only lowercase ASCII `a-z`, digits, `_`, `.`, `-`, maximum 64 characters; every other detail becomes `redacted_detail`.
+- [x] **Step 4: Run the focused tests and observe GREEN.**
+- [x] **Step 5: Commit only Task 1 files.**
 
 ### Task 2: SQLite-backed stores with append-only events
 
@@ -53,12 +53,12 @@
 - `agent_events.sequence INTEGER PRIMARY KEY AUTOINCREMENT`; rows are only inserted and selected by the public API.
 - Conversation and memory rows are keyed by `session_id` and may be atomically upserted.
 
-- [ ] **Step 1: Write failing SQLite tests** using a unique temporary database. Prove event insertion order, session-scoped reads, append-only public surface, conversation replacement, memory replacement, close/reopen persistence, and malformed-record failure classification.
-- [ ] **Step 2: Run `cd ExamPilot && swift test --filter SQLiteAgentPersistenceTests` and observe RED.**
-- [ ] **Step 3: Add explicit `sqlite3` linker configuration to `Package.swift` and implement the smallest prepared-statement wrapper.** Use bound parameters only, `PRAGMA journal_mode=WAL`, `PRAGMA foreign_keys=ON`, and `PRAGMA user_version=1`. Never interpolate stored values into SQL.
-- [ ] **Step 4: Store event fields in typed columns plus sanitized detail; encode conversation/memory records as bounded JSON blobs.** Reject blobs larger than 64 KiB before writing or after reading.
-- [ ] **Step 5: Run focused SQLite tests and observe GREEN.**
-- [ ] **Step 6: Commit Task 2 files.**
+- [x] **Step 1: Write failing SQLite tests** using a unique temporary database. Prove event insertion order, session-scoped reads, append-only public surface, conversation replacement, memory replacement, close/reopen persistence, and malformed-record failure classification.
+- [x] **Step 2: Run `cd ExamPilot && swift test --filter SQLiteAgentPersistenceTests` and observe RED.**
+- [x] **Step 3: Add explicit `sqlite3` linker configuration to `Package.swift` and implement the smallest prepared-statement wrapper.** Use bound parameters only, `PRAGMA journal_mode=WAL`, `PRAGMA foreign_keys=ON`, and `PRAGMA user_version=1`. Never interpolate stored values into SQL.
+- [x] **Step 4: Store event fields in typed columns plus sanitized detail; encode conversation/memory records as bounded JSON blobs.** Reject blobs larger than 64 KiB before writing or after reading.
+- [x] **Step 5: Run focused SQLite tests and observe GREEN.**
+- [x] **Step 6: Commit Task 2 files.**
 
 ### Task 3: Read-only deterministic replay and resume checkpoint
 
@@ -72,19 +72,18 @@
 - `AgentResumeCheckpoint` exposes persisted conversation/memory as historical context plus `requiresFreshObservation == true` and `requiresReconciliation == true`.
 - No API in this task creates an executable `ComputerAgentSession` from persisted runtime coordinates.
 
-- [ ] **Step 1: Write failing replay tests** proving deterministic fold order, latest runtime coordinates, current question answer evidence derived from event history, and that an empty event list produces an inert snapshot.
-- [ ] **Step 2: Write failing resume tests** proving persisted `answerVerified`, transitioning UI state, and pending provider call IDs do not become executable runtime state; checkpoint always requires fresh observation and reconciliation.
-- [ ] **Step 3: Run `cd ExamPilot && swift test --filter AgentReplayTests` and observe RED.**
-- [ ] **Step 4: Implement the minimal projector/checkpoint.** Replay may describe historical state but must not expose `navigationAllowed` as live authority.
-- [ ] **Step 5: Run focused tests and observe GREEN.**
-- [ ] **Step 6: Commit Task 3 files.**
+- [x] **Step 1: Write failing replay tests** proving deterministic fold order, latest runtime coordinates, current question answer evidence derived from event history, and that an empty event list produces an inert snapshot.
+- [x] **Step 2: Write failing resume tests** proving persisted `answerVerified`, transitioning UI state, and pending provider call IDs do not become executable runtime state; checkpoint always requires fresh observation and reconciliation.
+- [x] **Step 3: Run `cd ExamPilot && swift test --filter AgentReplayTests` and observe RED.**
+- [x] **Step 4: Implement the minimal projector/checkpoint.** Replay may describe historical state but must not expose `navigationAllowed` as live authority.
+- [x] **Step 5: Run focused tests and observe GREEN.**
+- [x] **Step 6: Commit Task 3 files.**
 
 ### Task 4: Persistent event sink and session checkpoint coordinator
 
 **Files:**
 - Create: `ExamPilot/Sources/ExamPilotCore/AgentPersistenceCoordinator.swift`
 - Create: `ExamPilot/Tests/ExamPilotCoreTests/AgentPersistenceCoordinatorTests.swift`
-- Modify: `ExamPilot/Sources/ExamPilotCore/AgentEvent.swift`
 
 **Interfaces:**
 - Produces `PersistentAgentEventSink`, `CompositeAgentEventSink`, and `AgentPersistenceCoordinator`.
@@ -92,11 +91,11 @@
 - `AgentPersistenceCoordinator.checkpoint(session:)` stores provider-conversation and working-memory snapshots separately.
 - `prepareResume(sessionID:)` returns `AgentResumeCheckpoint`; it never mutates physical state.
 
-- [ ] **Step 1: Write failing tests** proving composite sinks preserve ordering, persistence failures expose only a stable error identifier, session checkpointing writes conversation/memory separately, and resume preparation is read-only.
-- [ ] **Step 2: Run `cd ExamPilot && swift test --filter AgentPersistenceCoordinatorTests` and observe RED.**
-- [ ] **Step 3: Implement the minimal sink/coordinator.** Do not wire persistence into the default CLI in this slice; default runtime behavior therefore cannot regress because a database is unavailable.
-- [ ] **Step 4: Run focused tests and observe GREEN.**
-- [ ] **Step 5: Commit Task 4 files.**
+- [x] **Step 1: Write failing tests** proving composite sinks preserve ordering, persistence failures expose only a stable error identifier, session checkpointing writes conversation/memory separately, and resume preparation is read-only.
+- [x] **Step 2: Run `cd ExamPilot && swift test --filter AgentPersistenceCoordinatorTests` and observe RED.**
+- [x] **Step 3: Implement the minimal sink/coordinator.** Do not wire persistence into the default CLI in this slice; default runtime behavior therefore cannot regress because a database is unavailable.
+- [x] **Step 4: Run focused tests and observe GREEN.**
+- [x] **Step 5: Commit Task 4 files.**
 
 ### Task 5: Security and repository verification
 
@@ -107,12 +106,25 @@
 **Interfaces:**
 - Documents the three-store boundary, SQLite location being caller-controlled, append-only event semantics, bounded/redacted persistence, and the fact that replay/resume does not execute physical input.
 
-- [ ] **Step 1: Add focused regression tests** asserting raw typed text and deliberately credential-shaped strings are not persisted in event detail and that resume never restores a verified answer as current authority.
-- [ ] **Step 2: Run `cd ExamPilot && swift test` and require all tests green.**
-- [ ] **Step 3: Run `cd ExamPilot && swift build -c release` and require success.**
-- [ ] **Step 4: Run `python3 scripts/verify_all.py` from repository root and require success.**
-- [ ] **Step 5: Run `git diff --check` and inspect the final diff for secret/logging/input-boundary regressions.**
-- [ ] **Step 6: Update this plan's checkboxes to reflect completed evidence and commit docs.**
+- [x] **Step 1: Add focused regression tests** asserting raw typed text and deliberately credential-shaped strings are not persisted in event detail and that resume never restores a verified answer as current authority.
+- [x] **Step 2: Run `cd ExamPilot && swift test` and require all tests green.**
+- [x] **Step 3: Run `cd ExamPilot && swift build -c release` and require success.**
+- [x] **Step 4: Run `python3 scripts/verify_all.py` from repository root and require success.**
+- [x] **Step 5: Run `git diff --check` and inspect the final diff for secret/logging/input-boundary regressions.**
+- [x] **Step 6: Update this plan's checkboxes to reflect completed evidence and commit docs.**
+
+## Verification Evidence
+
+- Baseline before Slice 6: repository gate green with 118 ExamPilot tests.
+- Task 1 RED: persistence contract types missing; GREEN: 4 focused tests.
+- Task 2 RED: `SQLiteAgentPersistence` missing; GREEN: 7 focused tests.
+- Task 3 RED: replay/checkpoint types missing; GREEN: 6 focused tests.
+- Task 4 RED: persistence sink/coordinator types missing; GREEN: 5 focused tests.
+- Final `swift test`: 140 tests, 0 failures.
+- Final `swift build -c release`: success.
+- Final `python3 scripts/verify_all.py`: success, including 140 ExamPilot tests, release build, CLI help verification, and ZeroLose unsigned Xcode build.
+- Final architecture scan: no replay/persistence source references to physical input, capture, focus, provider implementations, or API credential environment symbols.
+- Final `git diff --check`: clean.
 
 ## Definition of Done
 
