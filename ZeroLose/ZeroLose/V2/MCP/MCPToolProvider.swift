@@ -102,7 +102,9 @@ struct MCPToolProvider: ToolProviding {
             toolID: descriptor.id,
             startedAt: startedAt,
             completedAt: completedAt,
-            providerReference: result.providerReference
+            providerReference: result.providerReference,
+            resultProvenance: result.provenance,
+            resultTainted: result.tainted
         )
     }
 }
