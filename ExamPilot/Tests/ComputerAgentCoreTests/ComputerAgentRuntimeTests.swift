@@ -21,9 +21,10 @@ final class ComputerAgentRuntimeTests: XCTestCase {
         )
 
         let result = await runtime.run()
+        let stepCount = await probe.stepCount
 
         XCTAssertEqual(result, "finished:2")
-        XCTAssertEqual(await probe.stepCount, 2)
+        XCTAssertEqual(stepCount, 2)
     }
 
     func testRuntimeStopsBeforeExecutingNextStep() async {
@@ -41,9 +42,10 @@ final class ComputerAgentRuntimeTests: XCTestCase {
         )
 
         let result = await runtime.run()
+        let stepCount = await probe.stepCount
 
         XCTAssertEqual(result, "stopped:0")
-        XCTAssertEqual(await probe.stepCount, 0)
+        XCTAssertEqual(stepCount, 0)
     }
 
     func testRuntimeReportsFailureAtCurrentCycle() async {
