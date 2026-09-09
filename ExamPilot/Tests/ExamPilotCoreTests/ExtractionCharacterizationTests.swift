@@ -1,4 +1,5 @@
 import CoreGraphics
+import Foundation
 import XCTest
 @testable import ExamPilotCore
 
@@ -126,6 +127,27 @@ final class ExtractionCharacterizationTests: XCTestCase {
         session.requestStop()
 
         XCTAssertEqual(session.stopState, .stopped)
+    }
+
+    func testExamLoopComposesGenericComputerAgentRuntime() throws {
+        let packageRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = packageRoot
+            .appendingPathComponent("Sources", isDirectory: true)
+            .appendingPathComponent("ExamPilotCore", isDirectory: true)
+            .appendingPathComponent("ExamLoop.swift")
+        let contents = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertTrue(
+            contents.contains("ComputerAgentRuntime<ExamRunResult>"),
+            "ExamLoop must delegate outer cycle orchestration to ComputerAgentRuntime"
+        )
+        XCTAssertFalse(
+            contents.contains("while cycles < maxCycles"),
+            "ExamLoop must not own a second outer cycle loop after facade migration"
+        )
     }
 
     private func makeImage(gray: CGFloat) throws -> CGImage {
