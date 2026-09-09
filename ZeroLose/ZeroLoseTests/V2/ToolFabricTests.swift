@@ -40,6 +40,54 @@ final class ToolFabricTests: XCTestCase {
         XCTAssertEqual(executionCount, 0)
     }
 
+    func testStaleDescriptorRevisionNeverReachesProvider() async {
+        let registry = ToolRegistry()
+        let provider = RecordingToolProvider(providerID: "builtin")
+        await registry.register(.test(id: "builtin.echo"))
+        let fabric = makeFabric(registry: registry, provider: provider)
+        var didThrow = false
+
+        do {
+            _ = try await fabric.execute(
+                .test(
+                    toolID: "builtin.echo",
+                    registryRevision: 1,
+                    descriptorRevision: 0
+                )
+            )
+        } catch {
+            didThrow = true
+        }
+
+        let executionCount = await provider.executionCount
+        XCTAssertTrue(didThrow, "Expected stale descriptor revision to fail closed")
+        XCTAssertEqual(executionCount, 0)
+    }
+
+    func testSchemaDigestMismatchNeverReachesProvider() async {
+        let registry = ToolRegistry()
+        let provider = RecordingToolProvider(providerID: "builtin")
+        await registry.register(.test(id: "builtin.echo"))
+        let fabric = makeFabric(registry: registry, provider: provider)
+        var didThrow = false
+
+        do {
+            _ = try await fabric.execute(
+                .test(
+                    toolID: "builtin.echo",
+                    registryRevision: 1,
+                    schemaDigest: "sha256:stale"
+                )
+            )
+        } catch {
+            didThrow = true
+        }
+
+        let executionCount = await provider.executionCount
+        XCTAssertTrue(didThrow, "Expected schema digest mismatch to fail closed")
+        XCTAssertEqual(executionCount, 0)
+    }
+
     func testMissingCredentialScopeIsDeniedBeforeHandleIssuanceAndProviderExecution() async {
         let registry = ToolRegistry()
         let provider = RecordingToolProvider(providerID: "builtin")
