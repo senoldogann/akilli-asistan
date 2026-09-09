@@ -22,26 +22,37 @@ jobs:
           -destination 'platform=macOS'
           test CODE_SIGNING_ALLOWED=NO
 
-      - name: Verify V2 architecture guards
+      - name: Guard V2 legacy execution symbols
         shell: bash
         run: |
           set -euo pipefail
-
           if git grep -nE '\[ACTION:|handleActions' -- ZeroLose/ZeroLose/V2; then
             echo "Legacy ACTION execution path found in ZeroLose V2."
             exit 1
           fi
 
+      - name: Guard V2 forbidden runtime dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
           if git grep -nE 'ExamPilot|InputDriving|GhostViewModel|ZeroOperator' -- ZeroLose/ZeroLose/V2; then
             echo "Forbidden legacy/domain runtime dependency found in ZeroLose V2."
             exit 1
           fi
 
+      - name: Guard V2 dynamic plugin loading
+        shell: bash
+        run: |
+          set -euo pipefail
           if git grep -nE 'dlopen|Bundle.*load' -- ZeroLose/ZeroLose/V2/Plugins; then
             echo "Dynamic plugin loading found in ZeroLose V2."
             exit 1
           fi
 
+      - name: Guard changed-file whitespace
+        shell: bash
+        run: |
+          set -euo pipefail
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             git diff --check \
               "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}"
