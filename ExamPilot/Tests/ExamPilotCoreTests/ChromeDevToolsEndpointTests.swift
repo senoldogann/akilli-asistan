@@ -21,4 +21,33 @@ final class ChromeDevToolsEndpointTests: XCTestCase {
         XCTAssertEqual(endpoint.versionURL.absoluteString, "http://127.0.0.1:9222/json/version")
         XCTAssertEqual(endpoint.targetsURL.absoluteString, "http://127.0.0.1:9222/json/list")
     }
+
+    func testRedirectPolicyAllowsOnlyUncredentialedLoopbackHTTP() {
+        XCTAssertTrue(
+            ChromeDevToolsEndpoint.isAllowedHTTPRedirectURL(
+                URL(string: "http://127.0.0.1:9333/json/version")!
+            )
+        )
+        XCTAssertTrue(
+            ChromeDevToolsEndpoint.isAllowedHTTPRedirectURL(
+                URL(string: "http://[::1]:9333/json/list")!
+            )
+        )
+
+        XCTAssertFalse(
+            ChromeDevToolsEndpoint.isAllowedHTTPRedirectURL(
+                URL(string: "http://example.com:9333/json/version")!
+            )
+        )
+        XCTAssertFalse(
+            ChromeDevToolsEndpoint.isAllowedHTTPRedirectURL(
+                URL(string: "https://127.0.0.1:9333/json/version")!
+            )
+        )
+        XCTAssertFalse(
+            ChromeDevToolsEndpoint.isAllowedHTTPRedirectURL(
+                URL(string: "http://user:pass@127.0.0.1:9333/json/version")!
+            )
+        )
+    }
 }
