@@ -9,8 +9,13 @@ struct TaskRuntimeProjectionSnapshot: Sendable, Equatable {
 @Observable
 final class TaskRuntimeViewModel {
     private(set) var goalID: GoalID?
-    private(set) var statusText = ""
+    private(set) var statusText = "Autonomous runtime not configured"
     private let commandSender: any ApplicationCommandSending
+
+    var hasActiveGoal: Bool { goalID != nil }
+    var canPause: Bool { hasActiveGoal }
+    var canResume: Bool { hasActiveGoal }
+    var canCancel: Bool { hasActiveGoal }
 
     init(commandSender: any ApplicationCommandSending) {
         self.commandSender = commandSender
