@@ -5,7 +5,8 @@ final class TaskGraphTests: XCTestCase {
     func testAddingTaskCreatesNewGraphRevision() async throws {
         let graph = TaskGraph(goalID: GoalID(rawValue: "g1"))
 
-        XCTAssertEqual(await graph.revision, 0)
+        let initialRevision = await graph.revision
+        XCTAssertEqual(initialRevision, 0)
 
         try await graph.add(
             TaskNode(
@@ -14,7 +15,8 @@ final class TaskGraphTests: XCTestCase {
             )
         )
 
-        XCTAssertEqual(await graph.revision, 1)
+        let updatedRevision = await graph.revision
+        XCTAssertEqual(updatedRevision, 1)
         let snapshot = await graph.snapshot()
         XCTAssertEqual(snapshot.tasks[TaskID(rawValue: "t1")]?.lifecycle, .created)
     }
