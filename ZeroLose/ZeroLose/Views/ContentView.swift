@@ -44,7 +44,9 @@ struct LiquidGlassMainSurface: ViewModifier {
 }
 
 struct ContentView: View {
-    @Bindable var viewModel: GhostViewModel
+    @Bindable var viewModel: ShellViewModel
+    @Bindable var chatViewModel: ChatViewModel
+    @Bindable var settingsViewModel: SettingsViewModel
     @State private var inputText: String = ""
     @FocusState private var isInputFocused: Bool
     @State private var isNearBottom: Bool = true
@@ -53,6 +55,7 @@ struct ContentView: View {
     @State private var isMockInterviewPresented: Bool = false
     @State private var isDropTargeted: Bool = false
     @State private var isKeyboardDisguisePresented: Bool = false
+    @State private var commandErrorMessage: String?
 
     // User Settings
     @AppStorage("fontSize") private var fontSize: Double = 14.0
@@ -65,7 +68,6 @@ struct ContentView: View {
     @AppStorage("reasoning_effort_opencode_go") private var openCodeGoReasoningEffort: String = "high"
     @AppStorage("reasoning_effort_ollama") private var ollamaReasoningEffort: String = ""
     @AppStorage("windowOpacity") private var windowOpacity: Double = 1.0
-    @AppStorage("commandApprovalMode") private var commandApprovalMode: String = "ask"
     @AppStorage("llm_provider") private var llmProviderRaw: String = LLMProvider.ollama.rawValue
     @AppStorage("customOpenAIReasoningModel") private var customOpenAIReasoningModel: String = ""
     @AppStorage("customDeepSeekReasoningModel") private var customDeepSeekReasoningModel: String = ""
@@ -130,10 +132,11 @@ struct ContentView: View {
     }
 
     private var approvalLabel: String {
-        switch commandApprovalMode {
-        case "full": return "Tam Erişim"
-        case "auto": return "Oto Onay"
-        default: return "Onay İste"
+        switch settingsViewModel.authorityMode {
+        case .manual: return "Onay İste"
+        case .auto: return "Oto Onay"
+        case .autonomous: return "Otonom"
+        case .fullAccess: return "Oto Onay"
         }
     }
 
@@ -185,19 +188,20 @@ struct ContentView: View {
     /// Populate the provider model list in the background so the input picker
     /// shows live models without forcing the user to open Settings first.
     private func refreshModelCatalog() {
-        let service = DependencyContainer.shared.ollamaService
-        let provider = activeProvider
-        let apiKey: String
-        switch provider {
-        case .openAI: apiKey = Secrets.openAIApiKey
-        case .deepSeek: apiKey = Secrets.deepSeekApiKey
-        case .openCodeZen: apiKey = Secrets.openCodeZenApiKey
-        case .openCodeGo: apiKey = Secrets.openCodeGoApiKey
-        case .ollama: apiKey = Secrets.ollamaApiKey
+        let credentialProvider = credentialProvider(for: activeProvider)
+        Task { @MainActor in
+            _ = await settingsViewModel.reloadCredentials()
+            _ = await settingsViewModel.refreshModels(for: credentialProvider)
         }
-        guard !apiKey.isEmpty else { return }
-        Task {
-            _ = await service.fetchAvailableModels(provider: provider.rawValue, apiKey: apiKey)
+    }
+
+    private func credentialProvider(for provider: LLMProvider) -> CredentialProvider {
+        switch provider {
+        case .openAI: return .openAI
+        case .deepSeek: return .deepSeek
+        case .openCodeZen: return .openCodeZen
+        case .openCodeGo: return .openCodeGo
+        case .ollama: return .ollama
         }
     }
 
@@ -263,7 +267,7 @@ struct ContentView: View {
     @ViewBuilder
     private var modalLayer: some View {
         Group {
-            if let activeAction = viewModel.zeroOperator.activeAction {
+            if let activeAction = viewModel.activeAction {
                 VStack {
                     ActionHUDView(action: activeAction)
                         .padding(.top, 20)
@@ -488,6 +492,13 @@ struct ContentView: View {
                 Text(viewModel.statusMessage)
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            if let commandErrorMessage {
+                Text(commandErrorMessage)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.red)
                     .lineLimit(1)
             }
 
@@ -719,7 +730,7 @@ struct ContentView: View {
                             }
                             if message.allowsAIRefinement {
                                 MessageAIButton(disabled: viewModel.isBusy) {
-                                    viewModel.refineAnswerWithAI(messageID: message.id)
+                                    viewModel.refineAnswer(messageID: message.id)
                                 }
                             }
                             MessageCopyButton(text: message.text)
@@ -993,16 +1004,12 @@ struct ContentView: View {
             }
 
             Menu {
-                ForEach([("ask", "Onay İste", "Her mutasyon için onay sor"), ("auto", "Oto Onay", "Güvenli işlemleri otomatik çalıştır"), ("full", "Tam Erişim", "Tüm işlemleri onaysız çalıştır")], id: \.0) { value, label, desc in
-                    Button {
-                        commandApprovalMode = value
-                    } label: {
-                        Text(label)
-                    }
-                }
+                Button("Onay İste") { setAuthorityMode(.manual) }
+                Button("Oto Onay") { setAuthorityMode(.auto) }
+                Button("Otonom") { setAuthorityMode(.autonomous) }
             } label: {
                 HStack(spacing: 4) {
-                    Image(systemName: commandApprovalMode == "full" ? "checkmark.shield.fill" : "checkmark.shield")
+                    Image(systemName: settingsViewModel.authorityMode == .autonomous ? "checkmark.shield.fill" : "checkmark.shield")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(approvalColor)
                     Text(approvalLabel)
@@ -1038,15 +1045,22 @@ struct ContentView: View {
     }
 
     private var approvalColor: Color {
-        switch commandApprovalMode {
-        case "full": return .orange
-        case "auto": return .green
-        default: return .secondary
+        switch settingsViewModel.authorityMode {
+        case .manual: return .secondary
+        case .auto: return .green
+        case .autonomous: return .orange
+        case .fullAccess: return .orange
+        }
+    }
+
+    private func setAuthorityMode(_ mode: AuthorityMode) {
+        Task { @MainActor in
+            try? await settingsViewModel.setAuthorityMode(mode)
         }
     }
 
     private func reasoningModelCandidates(for provider: LLMProvider) -> [String] {
-        let cached = OllamaService.cachedModels(for: provider.rawValue)
+        let cached = settingsViewModel.models(for: credentialProvider(for: provider))
         if !cached.isEmpty {
             return cached
         }
@@ -1312,7 +1326,24 @@ struct ContentView: View {
         // message, so a prior manual scroll-up cannot permanently disable
         // auto-scroll for the next reply.
         isNearBottom = true
-        viewModel.askQuestion(query, webSearchMode: searchMode)
+
+        if viewModel.attachedFileData != nil || forceWebSearch {
+            // Attachment/forced-search presentation remains on the temporary
+            // compatibility bridge until the corresponding V2 commands land.
+            viewModel.submitQuery(query, webSearchMode: searchMode)
+        } else {
+            Task { @MainActor in
+                do {
+                    try await chatViewModel.submit(query)
+                    commandErrorMessage = nil
+                } catch {
+                    commandErrorMessage = "Command failed: \(error.localizedDescription)"
+                    if inputText.isEmpty {
+                        inputText = query
+                    }
+                }
+            }
+        }
     }
 
     private func showFilePicker() {

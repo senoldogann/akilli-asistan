@@ -9,6 +9,7 @@ import os
 
 struct SettingsView: View {
     @Binding var isPresented: Bool
+    @Bindable var viewModel: SettingsViewModel
     
     @AppStorage("fontSize") private var fontSize: Double = 14.0
     @AppStorage("fontDesign") private var fontDesignObj: String = "monospaced"
@@ -26,7 +27,6 @@ struct SettingsView: View {
     @AppStorage("teleprompterText") private var teleprompterText: String = ""
     @AppStorage("selectedThemeName") private var selectedTheme: String = "Red"
     @AppStorage("llm_provider") private var llmProvider: String = LLMProvider.ollama.rawValue
-    @AppStorage("commandApprovalMode") private var commandApprovalMode: String = "ask"
     
     // API Anahtarları
     @State private var openAIKey: String = ""
@@ -37,6 +37,7 @@ struct SettingsView: View {
     @State private var groqKey: String = ""
     @State private var tavilyKey: String = ""
     @State private var showKeys: Bool = false
+    @State private var isLoadingAPIKeys: Bool = false
     @State private var memoryChunkCount: Int = 0
     @State private var isClearingMemory: Bool = false
     @State private var memoryStatus: String = ""
@@ -115,6 +116,17 @@ struct SettingsView: View {
         }
     }
     
+    private var authorityModeBinding: Binding<AuthorityMode> {
+        Binding(
+            get: { viewModel.authorityMode },
+            set: { newValue in
+                Task { @MainActor in
+                    try? await viewModel.setAuthorityMode(newValue)
+                }
+            }
+        )
+    }
+
     // MARK: - Sekme Çubuğu Bileşenleri
     
     private var tabSelectorBar: some View {
@@ -493,27 +505,12 @@ struct SettingsView: View {
         guard !isClearingMemory else { return }
         isClearingMemory = true
         memoryStatus = "Clearing vector database and session context..."
-        
-        Task {
-            do {
-                try await DependencyContainer.shared.vectorStore.deleteAll()
-                await DependencyContainer.shared.chatHistoryService.startNewSession()
-                DependencyContainer.shared.intelligenceService.clearHistory()
-                
-                let countAfterClear = try await DependencyContainer.shared.vectorStore.countEmbeddings()
-                
-                await MainActor.run {
-                    memoryChunkCount = countAfterClear
-                    memoryStatus = "Memory cleared successfully."
-                    isClearingMemory = false
-                }
-            } catch {
-                logger.error("Failed to clear vector store: \(error.localizedDescription, privacy: .public)")
-                await MainActor.run {
-                    memoryStatus = "Failed to clear memory: \(error.localizedDescription)"
-                    isClearingMemory = false
-                }
-            }
+
+        Task { @MainActor in
+            await viewModel.clearMemory()
+            memoryChunkCount = viewModel.memoryChunkCount
+            memoryStatus = viewModel.memoryStatus
+            isClearingMemory = false
         }
     }
 
@@ -680,10 +677,10 @@ struct SettingsView: View {
                             .foregroundColor(Color.textSecondary)
                     }
                     Spacer()
-                    Picker("", selection: $commandApprovalMode) {
-                        Text("Onay iste").tag("ask")
-                        Text("Benim için onayla").tag("auto")
-                        Text("Tam erişim").tag("full")
+                    Picker("", selection: authorityModeBinding) {
+                        Text("Onay iste").tag(AuthorityMode.manual)
+                        Text("Benim için onayla").tag(AuthorityMode.auto)
+                        Text("Otonom").tag(AuthorityMode.autonomous)
                     }
                     .pickerStyle(.menu)
                     .labelsHidden()
@@ -809,7 +806,7 @@ struct SettingsView: View {
                             .font(.system(size: 12, weight: .medium))
                             .foregroundColor(.white.opacity(0.85))
                         Spacer()
-                        if Secrets.isOpenAIKeyValid {
+                        if viewModel.isCredentialValid(for: .openAI) {
                             Image(systemName: "checkmark.circle.fill")
                                 .foregroundColor(.green)
                                 .font(.system(size: 12))
@@ -826,7 +823,7 @@ struct SettingsView: View {
                             .background(Color.black.opacity(0.18))
                             .cornerRadius(6)
                             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.8))
-                            .onChange(of: openAIKey) { Secrets.openAIApiKey = openAIKey; fetchModels() }
+                            .onChange(of: openAIKey) { persistCredential(.openAI, value: openAIKey, refreshModels: true) }
                     } else {
                         SecureField("OpenAI API Key", text: $openAIKey)
                             .textFieldStyle(.plain)
@@ -834,7 +831,7 @@ struct SettingsView: View {
                             .background(Color.black.opacity(0.18))
                             .cornerRadius(6)
                             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.8))
-                            .onChange(of: openAIKey) { Secrets.openAIApiKey = openAIKey; fetchModels() }
+                            .onChange(of: openAIKey) { persistCredential(.openAI, value: openAIKey, refreshModels: true) }
                     }
                 }
 
@@ -845,7 +842,7 @@ struct SettingsView: View {
                             .font(.system(size: 12, weight: .medium))
                             .foregroundColor(.white.opacity(0.85))
                         Spacer()
-                        if Secrets.isDeepSeekKeyValid {
+                        if viewModel.isCredentialValid(for: .deepSeek) {
                             Image(systemName: "checkmark.circle.fill")
                                 .foregroundColor(.green)
                                 .font(.system(size: 12))
@@ -861,7 +858,7 @@ struct SettingsView: View {
                             .background(Color.black.opacity(0.18))
                             .cornerRadius(6)
                             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.8))
-                            .onChange(of: deepSeekKey) { Secrets.deepSeekApiKey = deepSeekKey; fetchModels() }
+                            .onChange(of: deepSeekKey) { persistCredential(.deepSeek, value: deepSeekKey, refreshModels: true) }
                     } else {
                         SecureField("DeepSeek API Key", text: $deepSeekKey)
                             .textFieldStyle(.plain)
@@ -869,7 +866,7 @@ struct SettingsView: View {
                             .background(Color.black.opacity(0.18))
                             .cornerRadius(6)
                             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.8))
-                            .onChange(of: deepSeekKey) { Secrets.deepSeekApiKey = deepSeekKey; fetchModels() }
+                            .onChange(of: deepSeekKey) { persistCredential(.deepSeek, value: deepSeekKey, refreshModels: true) }
                     }
                 }
                 
@@ -880,7 +877,7 @@ struct SettingsView: View {
                             .font(.system(size: 12, weight: .medium))
                             .foregroundColor(.white.opacity(0.85))
                         Spacer()
-                        if Secrets.isOpenCodeZenKeyValid {
+                        if viewModel.isCredentialValid(for: .openCodeZen) {
                             Image(systemName: "checkmark.circle.fill")
                                 .foregroundColor(.green)
                                 .font(.system(size: 12))
@@ -896,7 +893,7 @@ struct SettingsView: View {
                             .background(Color.black.opacity(0.18))
                             .cornerRadius(6)
                             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.8))
-                            .onChange(of: openCodeZenKey) { Secrets.openCodeZenApiKey = openCodeZenKey; fetchModels() }
+                            .onChange(of: openCodeZenKey) { persistCredential(.openCodeZen, value: openCodeZenKey, refreshModels: true) }
                     } else {
                         SecureField("OpenCode Zen API Key", text: $openCodeZenKey)
                             .textFieldStyle(.plain)
@@ -904,7 +901,7 @@ struct SettingsView: View {
                             .background(Color.black.opacity(0.18))
                             .cornerRadius(6)
                             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.8))
-                            .onChange(of: openCodeZenKey) { Secrets.openCodeZenApiKey = openCodeZenKey; fetchModels() }
+                            .onChange(of: openCodeZenKey) { persistCredential(.openCodeZen, value: openCodeZenKey, refreshModels: true) }
                     }
                 }
                 
@@ -915,7 +912,7 @@ struct SettingsView: View {
                             .font(.system(size: 12, weight: .medium))
                             .foregroundColor(.white.opacity(0.85))
                         Spacer()
-                        if Secrets.isOpenCodeGoKeyValid {
+                        if viewModel.isCredentialValid(for: .openCodeGo) {
                             Image(systemName: "checkmark.circle.fill")
                                 .foregroundColor(.green)
                                 .font(.system(size: 12))
@@ -931,7 +928,7 @@ struct SettingsView: View {
                             .background(Color.black.opacity(0.18))
                             .cornerRadius(6)
                             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.8))
-                            .onChange(of: openCodeGoKey) { Secrets.openCodeGoApiKey = openCodeGoKey; fetchModels() }
+                            .onChange(of: openCodeGoKey) { persistCredential(.openCodeGo, value: openCodeGoKey, refreshModels: true) }
                     } else {
                         SecureField("OpenCode Go API Key", text: $openCodeGoKey)
                             .textFieldStyle(.plain)
@@ -939,7 +936,7 @@ struct SettingsView: View {
                             .background(Color.black.opacity(0.18))
                             .cornerRadius(6)
                             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.8))
-                            .onChange(of: openCodeGoKey) { Secrets.openCodeGoApiKey = openCodeGoKey; fetchModels() }
+                            .onChange(of: openCodeGoKey) { persistCredential(.openCodeGo, value: openCodeGoKey, refreshModels: true) }
                     }
                 }
                 
@@ -950,7 +947,7 @@ struct SettingsView: View {
                             .font(.system(size: 12, weight: .medium))
                             .foregroundColor(.white.opacity(0.85))
                         Spacer()
-                        if Secrets.isOllamaKeyValid {
+                        if viewModel.isCredentialValid(for: .ollama) {
                             Image(systemName: "checkmark.circle.fill")
                                 .foregroundColor(.green)
                                 .font(.system(size: 12))
@@ -966,7 +963,7 @@ struct SettingsView: View {
                             .background(Color.black.opacity(0.18))
                             .cornerRadius(6)
                             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.8))
-                            .onChange(of: ollamaKey) { Secrets.ollamaApiKey = ollamaKey; fetchModels() }
+                            .onChange(of: ollamaKey) { persistCredential(.ollama, value: ollamaKey, refreshModels: true) }
                     } else {
                         SecureField("Ollama API Key", text: $ollamaKey)
                             .textFieldStyle(.plain)
@@ -974,7 +971,7 @@ struct SettingsView: View {
                             .background(Color.black.opacity(0.18))
                             .cornerRadius(6)
                             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.8))
-                            .onChange(of: ollamaKey) { Secrets.ollamaApiKey = ollamaKey; fetchModels() }
+                            .onChange(of: ollamaKey) { persistCredential(.ollama, value: ollamaKey, refreshModels: true) }
                     }
                 }
                 
@@ -985,7 +982,7 @@ struct SettingsView: View {
                             .font(.system(size: 12, weight: .medium))
                             .foregroundColor(.white.opacity(0.85))
                         Spacer()
-                        if Secrets.isGroqKeyValid {
+                        if viewModel.isCredentialValid(for: .groq) {
                             Image(systemName: "checkmark.circle.fill")
                                 .foregroundColor(.green)
                                 .font(.system(size: 12))
@@ -998,7 +995,7 @@ struct SettingsView: View {
                             .background(Color.black.opacity(0.18))
                             .cornerRadius(6)
                             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.8))
-                            .onChange(of: groqKey) { Secrets.groqApiKey = groqKey }
+                            .onChange(of: groqKey) { persistCredential(.groq, value: groqKey) }
                     } else {
                         SecureField("Groq API Key", text: $groqKey)
                             .textFieldStyle(.plain)
@@ -1006,7 +1003,7 @@ struct SettingsView: View {
                             .background(Color.black.opacity(0.18))
                             .cornerRadius(6)
                             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.8))
-                            .onChange(of: groqKey) { Secrets.groqApiKey = groqKey }
+                            .onChange(of: groqKey) { persistCredential(.groq, value: groqKey) }
                     }
                 }
                 
@@ -1017,7 +1014,7 @@ struct SettingsView: View {
                             .font(.system(size: 12, weight: .medium))
                             .foregroundColor(.white.opacity(0.85))
                         Spacer()
-                        if Secrets.isTavilyKeyValid {
+                        if viewModel.isCredentialValid(for: .tavily) {
                             Image(systemName: "checkmark.circle.fill")
                                 .foregroundColor(.green)
                                 .font(.system(size: 12))
@@ -1030,7 +1027,7 @@ struct SettingsView: View {
                             .background(Color.black.opacity(0.18))
                             .cornerRadius(6)
                             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.8))
-                            .onChange(of: tavilyKey) { Secrets.tavilyApiKey = tavilyKey }
+                            .onChange(of: tavilyKey) { persistCredential(.tavily, value: tavilyKey) }
                     } else {
                         SecureField("Tavily API Key", text: $tavilyKey)
                             .textFieldStyle(.plain)
@@ -1038,7 +1035,7 @@ struct SettingsView: View {
                             .background(Color.black.opacity(0.18))
                             .cornerRadius(6)
                             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.8))
-                            .onChange(of: tavilyKey) { Secrets.tavilyApiKey = tavilyKey }
+                            .onChange(of: tavilyKey) { persistCredential(.tavily, value: tavilyKey) }
                     }
                 }
                 
@@ -1120,10 +1117,7 @@ struct SettingsView: View {
                     .overlay(Color.glassStroke)
                 
                 // Anahtarları Temizle Düğmesi
-                Button(action: {
-                    Secrets.resetToDefaults()
-                    loadAPIKeys()
-                }) {
+                Button(action: { resetAPIKeys() }) {
                     HStack {
                         Image(systemName: "trash")
                         Text("Clear Saved Keys")
@@ -1144,79 +1138,71 @@ struct SettingsView: View {
     }
     
     private func loadAPIKeys() {
-        openAIKey = Secrets.openAIApiKey
-        deepSeekKey = Secrets.deepSeekApiKey
-        openCodeZenKey = Secrets.openCodeZenApiKey
-        openCodeGoKey = Secrets.openCodeGoApiKey
-        ollamaKey = Secrets.ollamaApiKey
-        groqKey = Secrets.groqApiKey
-        tavilyKey = Secrets.tavilyApiKey
-        fetchModels()
+        guard !isLoadingAPIKeys else { return }
+        isLoadingAPIKeys = true
+        Task { @MainActor in
+            let snapshot = await viewModel.reloadCredentials()
+            openAIKey = snapshot.values[.openAI] ?? ""
+            deepSeekKey = snapshot.values[.deepSeek] ?? ""
+            openCodeZenKey = snapshot.values[.openCodeZen] ?? ""
+            openCodeGoKey = snapshot.values[.openCodeGo] ?? ""
+            ollamaKey = snapshot.values[.ollama] ?? ""
+            groqKey = snapshot.values[.groq] ?? ""
+            tavilyKey = snapshot.values[.tavily] ?? ""
+            syncModelLists(from: snapshot)
+            isLoadingAPIKeys = false
+            fetchModels()
+        }
     }
-    
+
+    private func persistCredential(
+        _ provider: CredentialProvider,
+        value: String,
+        refreshModels: Bool = false
+    ) {
+        guard !isLoadingAPIKeys else { return }
+        Task { @MainActor in
+            await viewModel.updateCredential(value, for: provider)
+            if refreshModels {
+                _ = await viewModel.refreshModels(for: provider)
+            }
+            syncModelLists(from: viewModel.credentialSnapshot)
+        }
+    }
+
+    private func resetAPIKeys() {
+        Task { @MainActor in
+            isLoadingAPIKeys = true
+            let snapshot = await viewModel.resetCredentials()
+            openAIKey = snapshot.values[.openAI] ?? ""
+            deepSeekKey = snapshot.values[.deepSeek] ?? ""
+            openCodeZenKey = snapshot.values[.openCodeZen] ?? ""
+            openCodeGoKey = snapshot.values[.openCodeGo] ?? ""
+            ollamaKey = snapshot.values[.ollama] ?? ""
+            groqKey = snapshot.values[.groq] ?? ""
+            tavilyKey = snapshot.values[.tavily] ?? ""
+            syncModelLists(from: snapshot)
+            isLoadingAPIKeys = false
+        }
+    }
+
     private func fetchModels() {
-        let openAIKeyVal = Secrets.openAIApiKey
-        let deepSeekKeyVal = Secrets.deepSeekApiKey
-        let openCodeZenKeyVal = Secrets.openCodeZenApiKey
-        let openCodeGoKeyVal = Secrets.openCodeGoApiKey
-        let ollamaKeyVal = Secrets.ollamaApiKey
-        
-        if !openAIKeyVal.isEmpty {
-            Task {
-                let models = await DependencyContainer.shared.ollamaService.fetchAvailableModels(provider: "openai", apiKey: openAIKeyVal)
-                await MainActor.run {
-                    self.openaiModels = models
-                }
+        Task { @MainActor in
+            for provider in [CredentialProvider.openAI, .deepSeek, .openCodeZen, .openCodeGo, .ollama] {
+                _ = await viewModel.refreshModels(for: provider)
             }
-        } else {
-            self.openaiModels = []
-        }
-
-        if !deepSeekKeyVal.isEmpty {
-            Task {
-                let models = await DependencyContainer.shared.ollamaService.fetchAvailableModels(provider: "deepseek", apiKey: deepSeekKeyVal)
-                await MainActor.run {
-                    self.deepseekModels = models
-                }
-            }
-        } else {
-            self.deepseekModels = []
-        }
-
-        if !openCodeZenKeyVal.isEmpty {
-            Task {
-                let models = await DependencyContainer.shared.ollamaService.fetchAvailableModels(provider: "opencode_zen", apiKey: openCodeZenKeyVal)
-                await MainActor.run {
-                    self.openCodeZenModels = models
-                }
-            }
-        } else {
-            self.openCodeZenModels = []
-        }
-
-        if !openCodeGoKeyVal.isEmpty {
-            Task {
-                let models = await DependencyContainer.shared.ollamaService.fetchAvailableModels(provider: "opencode_go", apiKey: openCodeGoKeyVal)
-                await MainActor.run {
-                    self.openCodeGoModels = models
-                }
-            }
-        } else {
-            self.openCodeGoModels = []
-        }
-        
-        if !ollamaKeyVal.isEmpty {
-            Task {
-                let models = await DependencyContainer.shared.ollamaService.fetchAvailableModels(provider: "ollama", apiKey: ollamaKeyVal)
-                await MainActor.run {
-                    self.ollamaModels = models
-                }
-            }
-        } else {
-            self.ollamaModels = []
+            syncModelLists(from: viewModel.credentialSnapshot)
         }
     }
-    
+
+    private func syncModelLists(from snapshot: CredentialSettingsSnapshot) {
+        openaiModels = snapshot.models[.openAI] ?? []
+        deepseekModels = snapshot.models[.deepSeek] ?? []
+        openCodeZenModels = snapshot.models[.openCodeZen] ?? []
+        openCodeGoModels = snapshot.models[.openCodeGo] ?? []
+        ollamaModels = snapshot.models[.ollama] ?? []
+    }
+
     // MARK: - Hotkey Status Section
     @ViewBuilder
     private var hotkeyStatusSection: some View {
@@ -1337,19 +1323,10 @@ struct SettingsView: View {
     }
     
     private func refreshMemoryState() {
-        Task {
-            do {
-                let count = try await DependencyContainer.shared.vectorStore.countEmbeddings()
-                await MainActor.run {
-                    memoryChunkCount = count
-                    memoryStatus = count > 0 ? "Memory ready." : "No indexed memory yet."
-                }
-            } catch {
-                await MainActor.run {
-                    memoryChunkCount = 0
-                    memoryStatus = "Memory status unavailable: \(error.localizedDescription)"
-                }
-            }
+        Task { @MainActor in
+            await viewModel.refreshMemoryState()
+            memoryChunkCount = viewModel.memoryChunkCount
+            memoryStatus = viewModel.memoryStatus
         }
     }
 
