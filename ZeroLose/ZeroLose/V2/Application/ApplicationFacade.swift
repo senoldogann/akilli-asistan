@@ -1,3 +1,7 @@
+protocol ApplicationCommandSending: Sendable {
+    func send(_ command: ApplicationCommand) async throws
+}
+
 protocol RuntimeCommandControlling: Sendable {
     func submitUserGoal(_ text: String) async throws
     func sendChatMessage(_ text: String) async throws
@@ -67,3 +71,5 @@ actor ApplicationFacade {
         }
     }
 }
+
+extension ApplicationFacade: ApplicationCommandSending {}
