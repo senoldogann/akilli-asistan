@@ -8,16 +8,19 @@ struct V2NativeToolConfiguration: Sendable {
 actor V2NativeToolRuntime: ToolManagementControlling {
     private let registry: ToolRegistry
     private let toolFabric: ToolFabric
+    private let eventRecorder: RuntimeEventRecorder?
     private let initialDescriptors: [ToolDescriptor]
     private var didBootstrap = false
 
     init(
         registry: ToolRegistry,
         toolFabric: ToolFabric,
+        eventRecorder: RuntimeEventRecorder? = nil,
         initialDescriptors: [ToolDescriptor] = []
     ) {
         self.registry = registry
         self.toolFabric = toolFabric
+        self.eventRecorder = eventRecorder
         self.initialDescriptors = initialDescriptors
     }
 
@@ -43,6 +46,7 @@ actor V2NativeToolRuntime: ToolManagementControlling {
         let registryRevision = snapshot.revision
         let descriptorsByName = descriptorsByFunctionName
         let toolFabric = self.toolFabric
+        let eventRecorder = self.eventRecorder
         let executor: AgentToolExecutor = { call in
             guard let descriptor = descriptorsByName[call.name] else {
                 return Self.errorJSON(
@@ -83,12 +87,49 @@ actor V2NativeToolRuntime: ToolManagementControlling {
                 logicalOperationKey: logicalOperationKey
             )
 
+            if let eventRecorder {
+                try? await eventRecorder.recordTool(
+                    invocationID: invocation.invocationID,
+                    toolID: descriptor.id,
+                    state: .started,
+                    summary: "\(descriptor.id.rawValue) started",
+                    tainted: false
+                )
+            }
+
             do {
                 let receipt = try await toolFabric.execute(invocation)
+                if let eventRecorder {
+                    try? await eventRecorder.recordTool(
+                        invocationID: invocation.invocationID,
+                        toolID: descriptor.id,
+                        state: .completed,
+                        summary: "\(descriptor.id.rawValue) completed",
+                        tainted: receipt.resultTainted
+                    )
+                }
                 return Self.successJSON(receipt)
             } catch let error as ToolFabricError {
+                if let eventRecorder {
+                    try? await eventRecorder.recordTool(
+                        invocationID: invocation.invocationID,
+                        toolID: descriptor.id,
+                        state: .failed,
+                        summary: "\(descriptor.id.rawValue) denied or rejected",
+                        tainted: false
+                    )
+                }
                 return Self.toolFabricErrorJSON(error)
             } catch {
+                if let eventRecorder {
+                    try? await eventRecorder.recordTool(
+                        invocationID: invocation.invocationID,
+                        toolID: descriptor.id,
+                        state: .failed,
+                        summary: "\(descriptor.id.rawValue) execution failed",
+                        tainted: false
+                    )
+                }
                 return Self.errorJSON(
                     code: "tool_execution_failed",
                     detail: String(describing: error)
