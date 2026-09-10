@@ -429,7 +429,7 @@ extension AudioService: AVCaptureAudioDataOutputSampleBufferDelegate, SCStreamOu
                 self.lastTranscriptCache = cleanText
                 logger.info("🗣️ Transcript accepted (length: \(cleanText.count, privacy: .public))")
                 
-                // GhostViewModel'in gözlemlemesi için @Published özelliğini güncelle
+                // Publish the transcript for the V2 runtime observer
                 await MainActor.run {
                     lastVoiceLanguage = response.language
                     lastVoiceTranscript = cleanText

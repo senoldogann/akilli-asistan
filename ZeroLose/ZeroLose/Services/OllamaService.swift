@@ -329,6 +329,7 @@ actor OllamaService {
         messages: [ChatMessage],
         model: String? = nil,
         enableNativeTools: Bool = false,
+        nativeTools: [AgentFunctionTool] = [],
         toolExecutor: AgentToolExecutor? = nil
     ) async throws -> String {
         let selectedModel = resolvedModel(from: messages, explicitModel: model)
@@ -339,13 +340,13 @@ actor OllamaService {
         return try await withRetry {
             switch provider {
             case .openAI:
-                return try await self.generateOpenAI(messages: messages, model: selectedModel, reasoningEffort: selectedEffort, enableNativeTools: enableNativeTools, toolExecutor: toolExecutor)
+                return try await self.generateOpenAI(messages: messages, model: selectedModel, reasoningEffort: selectedEffort, enableNativeTools: enableNativeTools, nativeTools: nativeTools, toolExecutor: toolExecutor)
             case .deepSeek:
-                return try await self.generateDeepSeek(messages: messages, model: selectedModel, reasoningEffort: selectedEffort, enableNativeTools: enableNativeTools, toolExecutor: toolExecutor)
+                return try await self.generateDeepSeek(messages: messages, model: selectedModel, reasoningEffort: selectedEffort, enableNativeTools: enableNativeTools, nativeTools: nativeTools, toolExecutor: toolExecutor)
             case .openCodeZen:
-                return try await self.generateOpenCodeZen(messages: messages, model: selectedModel, reasoningEffort: selectedEffort, enableNativeTools: enableNativeTools, toolExecutor: toolExecutor)
+                return try await self.generateOpenCodeZen(messages: messages, model: selectedModel, reasoningEffort: selectedEffort, enableNativeTools: enableNativeTools, nativeTools: nativeTools, toolExecutor: toolExecutor)
             case .openCodeGo:
-                return try await self.generateOpenCodeGo(messages: messages, model: selectedModel, reasoningEffort: selectedEffort, enableNativeTools: enableNativeTools, toolExecutor: toolExecutor)
+                return try await self.generateOpenCodeGo(messages: messages, model: selectedModel, reasoningEffort: selectedEffort, enableNativeTools: enableNativeTools, nativeTools: nativeTools, toolExecutor: toolExecutor)
             case .ollamaCloud:
                 return try await self.generateOllama(messages: messages, model: selectedModel)
             }
@@ -356,6 +357,7 @@ actor OllamaService {
         messages: [ChatMessage],
         model: String? = nil,
         enableNativeTools: Bool = false,
+        nativeTools: [AgentFunctionTool] = [],
         toolExecutor: AgentToolExecutor? = nil,
         onPartialResponse: @escaping (String) -> Void,
         onPartialThinking: ((String) -> Void)? = nil
@@ -372,6 +374,7 @@ actor OllamaService {
                 onPartialResponse: onPartialResponse,
                 onPartialThinking: onPartialThinking,
                 enableNativeTools: enableNativeTools,
+                nativeTools: nativeTools,
                 toolExecutor: toolExecutor
             )
         case .deepSeek:
@@ -381,6 +384,7 @@ actor OllamaService {
                 onPartialResponse: onPartialResponse,
                 onPartialThinking: onPartialThinking,
                 enableNativeTools: enableNativeTools,
+                nativeTools: nativeTools,
                 toolExecutor: toolExecutor
             )
         case .openCodeZen:
@@ -390,6 +394,7 @@ actor OllamaService {
                 onPartialResponse: onPartialResponse,
                 onPartialThinking: onPartialThinking,
                 enableNativeTools: enableNativeTools,
+                nativeTools: nativeTools,
                 toolExecutor: toolExecutor
             )
         case .openCodeGo:
@@ -399,6 +404,7 @@ actor OllamaService {
                 onPartialResponse: onPartialResponse,
                 onPartialThinking: onPartialThinking,
                 enableNativeTools: enableNativeTools,
+                nativeTools: nativeTools,
                 toolExecutor: toolExecutor
             )
         case .ollamaCloud:
@@ -460,6 +466,7 @@ actor OllamaService {
         model: String,
         reasoningEffort: String? = nil,
         enableNativeTools: Bool = false,
+        nativeTools: [AgentFunctionTool] = [],
         toolExecutor: AgentToolExecutor? = nil
     ) async throws -> String {
         if Self.shouldUseResponsesAPI(for: model) {
@@ -472,13 +479,14 @@ actor OllamaService {
         }
         let effort = reasoningEffort ?? Self.selectedReasoningEffort(for: AIModelNames.currentProvider(), model: model)
 
-        if enableNativeTools, let toolExecutor {
+        if enableNativeTools, !nativeTools.isEmpty, let toolExecutor {
             do {
                 return try await generateWithNativeToolLoop(
                     model: model,
                     messages: messages,
                     reasoningEffort: effort,
                     thinking: nil,
+                    tools: nativeTools,
                     executor: toolExecutor,
                     send: { payload in
                         try await self.sendOpenAICompatibleRound(
@@ -513,6 +521,7 @@ actor OllamaService {
         onPartialResponse: @escaping (String) -> Void,
         onPartialThinking: ((String) -> Void)? = nil,
         enableNativeTools: Bool = false,
+        nativeTools: [AgentFunctionTool] = [],
         toolExecutor: AgentToolExecutor? = nil
     ) async throws {
         if Self.shouldUseResponsesAPI(for: model) {
@@ -526,13 +535,14 @@ actor OllamaService {
         }
         let effort = Self.selectedReasoningEffort(for: AIModelNames.currentProvider(), model: model)
 
-        if enableNativeTools, let toolExecutor {
+        if enableNativeTools, !nativeTools.isEmpty, let toolExecutor {
             do {
                 try await generateStreamingWithNativeToolLoop(
                     model: model,
                     messages: messages,
                     reasoningEffort: effort,
                     thinking: nil,
+                    tools: nativeTools,
                     executor: toolExecutor,
                     onPartialThinking: onPartialThinking,
                     stream: { payload in
@@ -692,6 +702,7 @@ actor OllamaService {
         onPartialResponse: @escaping (String) -> Void,
         onPartialThinking: ((String) -> Void)? = nil,
         enableNativeTools: Bool = false,
+        nativeTools: [AgentFunctionTool] = [],
         toolExecutor: AgentToolExecutor? = nil
     ) async throws {
         let apiKey = Secrets.deepSeekApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -700,13 +711,14 @@ actor OllamaService {
         }
         let effort = Self.selectedReasoningEffort(for: .deepSeek, model: model) ?? "high"
 
-        if enableNativeTools, let toolExecutor {
+        if enableNativeTools, !nativeTools.isEmpty, let toolExecutor {
             do {
                 try await generateStreamingWithNativeToolLoop(
                     model: model,
                     messages: messages,
                     reasoningEffort: effort,
                     thinking: ThinkingParam(type: "enabled"),
+                    tools: nativeTools,
                     executor: toolExecutor,
                     onPartialThinking: onPartialThinking,
                     stream: { payload in
@@ -747,6 +759,7 @@ actor OllamaService {
         model: String,
         reasoningEffort: String? = nil,
         enableNativeTools: Bool = false,
+        nativeTools: [AgentFunctionTool] = [],
         toolExecutor: AgentToolExecutor? = nil
     ) async throws -> String {
         let apiKey = Secrets.deepSeekApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -755,13 +768,14 @@ actor OllamaService {
         }
         let effort = reasoningEffort ?? Self.selectedReasoningEffort(for: .deepSeek, model: model) ?? "high"
 
-        if enableNativeTools, let toolExecutor {
+        if enableNativeTools, !nativeTools.isEmpty, let toolExecutor {
             do {
                 return try await generateWithNativeToolLoop(
                     model: model,
                     messages: messages,
                     reasoningEffort: effort,
                     thinking: ThinkingParam(type: "enabled"),
+                    tools: nativeTools,
                     executor: toolExecutor,
                     send: { payload in
                         try await self.sendOpenAICompatibleRound(
@@ -798,6 +812,7 @@ actor OllamaService {
         model: String,
         reasoningEffort: String? = nil,
         enableNativeTools: Bool = false,
+        nativeTools: [AgentFunctionTool] = [],
         toolExecutor: AgentToolExecutor? = nil
     ) async throws -> String {
         let apiKey = Secrets.openCodeZenApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -812,6 +827,7 @@ actor OllamaService {
             label: "OpenCode Zen",
             reasoningEffort: reasoningEffort,
             enableNativeTools: enableNativeTools,
+            nativeTools: nativeTools,
             toolExecutor: toolExecutor
         )
     }
@@ -821,6 +837,7 @@ actor OllamaService {
         model: String,
         reasoningEffort: String? = nil,
         enableNativeTools: Bool = false,
+        nativeTools: [AgentFunctionTool] = [],
         toolExecutor: AgentToolExecutor? = nil
     ) async throws -> String {
         let apiKey = Secrets.openCodeGoApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -835,6 +852,7 @@ actor OllamaService {
             label: "OpenCode Go",
             reasoningEffort: reasoningEffort,
             enableNativeTools: enableNativeTools,
+            nativeTools: nativeTools,
             toolExecutor: toolExecutor
         )
     }
@@ -845,6 +863,7 @@ actor OllamaService {
         onPartialResponse: @escaping (String) -> Void,
         onPartialThinking: ((String) -> Void)? = nil,
         enableNativeTools: Bool = false,
+        nativeTools: [AgentFunctionTool] = [],
         toolExecutor: AgentToolExecutor? = nil
     ) async throws {
         let apiKey = Secrets.openCodeZenApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -860,6 +879,7 @@ actor OllamaService {
             onPartialResponse: onPartialResponse,
             onPartialThinking: onPartialThinking,
             enableNativeTools: enableNativeTools,
+            nativeTools: nativeTools,
             toolExecutor: toolExecutor
         )
     }
@@ -870,6 +890,7 @@ actor OllamaService {
         onPartialResponse: @escaping (String) -> Void,
         onPartialThinking: ((String) -> Void)? = nil,
         enableNativeTools: Bool = false,
+        nativeTools: [AgentFunctionTool] = [],
         toolExecutor: AgentToolExecutor? = nil
     ) async throws {
         let apiKey = Secrets.openCodeGoApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -885,6 +906,7 @@ actor OllamaService {
             onPartialResponse: onPartialResponse,
             onPartialThinking: onPartialThinking,
             enableNativeTools: enableNativeTools,
+            nativeTools: nativeTools,
             toolExecutor: toolExecutor
         )
     }
@@ -898,17 +920,19 @@ actor OllamaService {
         label: String,
         reasoningEffort: String? = nil,
         enableNativeTools: Bool = false,
+        nativeTools: [AgentFunctionTool] = [],
         toolExecutor: AgentToolExecutor? = nil
     ) async throws -> String {
         let effort = reasoningEffort ?? Self.selectedReasoningEffort(for: AIModelNames.currentProvider(), model: model)
 
-        if enableNativeTools, let toolExecutor {
+        if enableNativeTools, !nativeTools.isEmpty, let toolExecutor {
             do {
                 return try await generateWithNativeToolLoop(
                     model: model,
                     messages: messages,
                     reasoningEffort: effort,
                     thinking: nil,
+                    tools: nativeTools,
                     executor: toolExecutor,
                     send: { payload in
                         try await self.sendOpenAICompatibleRound(
@@ -946,17 +970,19 @@ actor OllamaService {
         onPartialResponse: @escaping (String) -> Void,
         onPartialThinking: ((String) -> Void)? = nil,
         enableNativeTools: Bool = false,
+        nativeTools: [AgentFunctionTool] = [],
         toolExecutor: AgentToolExecutor? = nil
     ) async throws {
         let effort = Self.selectedReasoningEffort(for: AIModelNames.currentProvider(), model: model)
 
-        if enableNativeTools, let toolExecutor {
+        if enableNativeTools, !nativeTools.isEmpty, let toolExecutor {
             do {
                 try await generateStreamingWithNativeToolLoop(
                     model: model,
                     messages: messages,
                     reasoningEffort: effort,
                     thinking: nil,
+                    tools: nativeTools,
                     executor: toolExecutor,
                     onPartialThinking: onPartialThinking,
                     stream: { payload in
@@ -1124,6 +1150,7 @@ actor OllamaService {
         messages: [ChatMessage],
         reasoningEffort: String?,
         thinking: ThinkingParam?,
+        tools: [AgentFunctionTool],
         executor: AgentToolExecutor,
         send: (OpenAIChatCompletionRequest) async throws -> OpenAIChatCompletionResponse
     ) async throws -> String {
@@ -1133,7 +1160,7 @@ actor OllamaService {
                 model: model,
                 messages: openAIMessages,
                 stream: false,
-                tools: AgentCapabilityRegistry.structuredTools(),
+                tools: tools,
                 thinking: thinking,
                 reasoning_effort: reasoningEffort
             )
@@ -1169,6 +1196,7 @@ actor OllamaService {
         messages: [ChatMessage],
         reasoningEffort: String?,
         thinking: ThinkingParam?,
+        tools: [AgentFunctionTool],
         executor: AgentToolExecutor,
         onPartialThinking: ((String) -> Void)?,
         stream: (OpenAIChatCompletionRequest) async throws -> (text: String, toolCalls: [AgentToolCall])
@@ -1179,7 +1207,7 @@ actor OllamaService {
                 model: model,
                 messages: openAIMessages,
                 stream: true,
-                tools: AgentCapabilityRegistry.structuredTools(),
+                tools: tools,
                 thinking: thinking,
                 reasoning_effort: reasoningEffort
             )

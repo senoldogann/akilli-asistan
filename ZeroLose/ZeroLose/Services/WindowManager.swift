@@ -40,11 +40,6 @@ class WindowManager: NSObject, NSWindowDelegate {
     private let logger = Logger(subsystem: "com.zerolose", category: "WindowManager")
     private var stealthModeObserver: NSKeyValueObservation?
     
-    // Paylaşılan VM'i almak için kapsayıcıyı kullan
-    private var viewModel: GhostViewModel {
-        return DependencyContainer.shared.ghostViewModel
-    }
-    
     private override init() {
         super.init()
     }
@@ -84,8 +79,14 @@ class WindowManager: NSObject, NSWindowDelegate {
         effectView.layer?.cornerRadius = 20
         effectView.layer?.masksToBounds = true
 
-        let vm = DependencyContainer.shared.ghostViewModel
-        let hostingView = NSHostingView(rootView: ContentView(viewModel: vm))
+        let runtimeContainer = ZeroLoseRuntimeContainer.shared
+        let hostingView = NSHostingView(
+            rootView: ContentView(
+                viewModel: runtimeContainer.shellViewModel,
+                chatViewModel: runtimeContainer.chatViewModel,
+                settingsViewModel: runtimeContainer.settingsViewModel
+            )
+        )
         hostingView.translatesAutoresizingMaskIntoConstraints = false
 
         effectView.addSubview(hostingView)
@@ -362,7 +363,8 @@ class WindowManager: NSObject, NSWindowDelegate {
                 set: { [weak self] show in
                     if !show { self?.closeSettingsWindow() }
                 }
-            )
+            ),
+            viewModel: ZeroLoseRuntimeContainer.shared.settingsViewModel
         )
         
         // Ayarların arkasında gerçek bulanıklık katmanı olarak NSVisualEffectView

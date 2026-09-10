@@ -96,14 +96,26 @@ final class ZeroLoseTests: XCTestCase {
     }
 
     func testStructuredToolSchemasAreOpenAICompatible() throws {
-        let tools = AgentCapabilityRegistry.structuredTools()
-        XCTAssertFalse(tools.isEmpty)
-        XCTAssertEqual(tools.first?.type, "function")
-        XCTAssertEqual(tools.first?.function.name, "web_search")
-        let data = try JSONEncoder().encode(tools.first)
+        let tool = AgentFunctionTool(
+            type: "function",
+            function: .init(
+                name: "builtin.echo",
+                description: "Echo a bounded string",
+                parameters: .init(
+                    type: "object",
+                    properties: ["message": .string("Text to echo")],
+                    required: ["message"],
+                    additionalProperties: false
+                )
+            )
+        )
+
+        let data = try JSONEncoder().encode(tool)
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         XCTAssertEqual(object["type"] as? String, "function")
-        XCTAssertNotNil(object["function"] as? [String: Any])
+        let function = try XCTUnwrap(object["function"] as? [String: Any])
+        XCTAssertEqual(function["name"] as? String, "builtin.echo")
+        XCTAssertNotNil(function["parameters"] as? [String: Any])
     }
 
     func testNativeToolCallDecodingFromChatCompletionPayload() throws {
@@ -129,14 +141,6 @@ final class ZeroLoseTests: XCTestCase {
         XCTAssertEqual(calls.first?.arguments?["query"] as? String, "Swift 6")
     }
 
-    func testStructuredToolsCoverEveryCapability() {
-        let tools = AgentCapabilityRegistry.structuredTools()
-        let names = Set(tools.map { $0.function.name })
-        for capability in AgentCapabilityRegistry.all {
-            XCTAssertTrue(names.contains(capability.actionType), "Missing tool schema for \(capability.actionType)")
-        }
-    }
-
     func testAgentToolCallDecodesJSONObjectArguments() {
         let call = AgentToolCall(name: "web_search", argumentsJSON: "{\"query\":\"Swift 6\"}")
         XCTAssertEqual(call.arguments?["query"] as? String, "Swift 6")
@@ -153,12 +157,12 @@ final class ZeroLoseTests: XCTestCase {
         XCTAssertEqual(error.localizedDescription, "OpenAI Responses API Error (400): bad request")
     }
 
-    func testGhostViewModelUserDefaultsBoolUsesDefaultWhenKeyMissing() {
+    func testV2ShellRuntimeUserDefaultsBoolUsesDefaultWhenKeyMissing() {
         let key = "ZeroLoseTests.autoAnalyze.missing.\(UUID().uuidString)"
         UserDefaults.standard.removeObject(forKey: key)
 
-        XCTAssertTrue(GhostViewModel.userDefaultsBool(key, defaultValue: true))
-        XCTAssertFalse(GhostViewModel.userDefaultsBool(key, defaultValue: false))
+        XCTAssertTrue(V2ShellRuntimeController.userDefaultsBool(key, defaultValue: true))
+        XCTAssertFalse(V2ShellRuntimeController.userDefaultsBool(key, defaultValue: false))
     }
 
     func testInstantInterviewCacheDoesNotDisableForStrongRoleSignal() {

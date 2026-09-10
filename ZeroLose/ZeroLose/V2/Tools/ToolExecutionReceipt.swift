@@ -7,6 +7,7 @@ struct ToolExecutionReceipt: Sendable, Equatable {
     let completedAt: Date
     let providerReference: String?
     let resultProvenance: String?
+    let resultJSON: Data?
     let resultTainted: Bool
 
     init(
@@ -16,6 +17,7 @@ struct ToolExecutionReceipt: Sendable, Equatable {
         completedAt: Date,
         providerReference: String?,
         resultProvenance: String? = nil,
+        resultJSON: Data? = nil,
         resultTainted: Bool = false
     ) {
         self.invocationID = invocationID
@@ -24,6 +26,7 @@ struct ToolExecutionReceipt: Sendable, Equatable {
         self.completedAt = completedAt
         self.providerReference = providerReference
         self.resultProvenance = resultProvenance
+        self.resultJSON = resultJSON
         self.resultTainted = resultTainted
     }
 }

@@ -62,27 +62,3 @@ struct AgentFunctionTool: Encodable, Sendable, Equatable {
         }
     }
 }
-
-extension AgentCapabilityRegistry {
-    /// Emits schemas for native function calling. The legacy ACTION examples
-    /// remain in the prompt as a fallback for providers without native tools.
-    nonisolated static func structuredTools() -> [AgentFunctionTool] {
-        all.map { capability in
-            AgentFunctionTool(
-                type: "function",
-                function: .init(
-                    name: capability.actionType,
-                    description: "\(capability.summary) Kullan: \(capability.whenToUse)",
-                    parameters: .init(
-                        type: "object",
-                        properties: [
-                            "payload": .string("Tool-specific arguments for \(capability.actionType)")
-                        ],
-                        required: [],
-                        additionalProperties: true
-                    )
-                )
-            )
-        }
-    }
-}

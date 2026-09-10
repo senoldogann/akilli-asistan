@@ -92,6 +92,7 @@ final class MCPToolProviderTests: XCTestCase {
         XCTAssertEqual(receipt.providerReference, "provider-result-1")
         XCTAssertEqual(receipt.resultProvenance, "mcp:gmail:remote-result")
         XCTAssertTrue(receipt.resultTainted)
+        XCTAssertEqual(receipt.resultJSON, result.contentJSON)
     }
 }
 

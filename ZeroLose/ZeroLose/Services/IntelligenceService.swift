@@ -146,9 +146,9 @@ class IntelligenceService {
         query: String,
         imageData: Data? = nil,
         webSearchMode: WebSearchMode = .automatic,
-        allowAgentActions: Bool = false,
         processingMode: ProcessingMode = .automatic,
         detectedLanguage: String? = nil,
+        nativeTools: [AgentFunctionTool] = [],
         nativeToolExecutor: AgentToolExecutor? = nil,
         onStatusUpdate: @escaping (String) -> Void,
         onPartialResponse: @escaping (String) -> Void,
@@ -157,6 +157,7 @@ class IntelligenceService {
         let lowerQuery = query.lowercased()
         let responseProfile = responseProfile(for: lowerQuery)
         let forceAIReasoning = processingMode == .forceAIReasoning
+        let nativeToolsEnabled = nativeToolExecutor != nil && !nativeTools.isEmpty
         var finalLanguageCode = Self.supportedResponseLanguageCode(
             for: query,
             providedLanguageCode: detectedLanguage
@@ -178,10 +179,9 @@ class IntelligenceService {
         let capabilityDiscoveryIntent = Self.isCapabilityDiscoveryQuery(normalizedQueryForIntent)
         let compensationIntent = isCompensationIntent(normalizedQueryForIntent)
         let selfIntroIntent = isSelfIntroIntent(normalizedQueryForIntent)
-        // Kullanıcı bir eylem istiyorsa (site aç, uygulama çalıştır, terminal
-        // komutu, dosya sil, çöp kutusu boşalt vb.) önbellek/mülakat biyografisi
-        // fast-path'i eylemi yutmamalı. Modelin `[ACTION]` üretmesine izin ver.
-        let imperativeActionIntent = allowAgentActions && Self.isImperativeActionIntent(normalizedQueryForIntent)
+        // Structured V2 tools are authoritative when explicitly injected for this request.
+        // Imperative requests bypass conversational cache so the model can issue a native tool call.
+        let imperativeActionIntent = nativeToolsEnabled && Self.isImperativeActionIntent(normalizedQueryForIntent)
         let isCodingQuery = imageData == nil && Self.isCodingRelatedQuery(normalizedQueryForIntent)
         let isSelfContainedCodingQuery = imageData == nil && Self.isSelfContainedCodingDebugQuery(query)
         let activeRoleProfile = currentActiveRoleProfile()
@@ -596,53 +596,35 @@ class IntelligenceService {
             }
         }
 
-        let actionPolicy: String
-        if allowAgentActions {
-            actionPolicy = """
+        let toolPolicy: String
+        if nativeToolsEnabled {
+            toolPolicy = """
             6. OPERATIONAL RULES:
-               - SILENT EXECUTION: If performing action, output ONLY [ACTION: ...] tag.
-               - ACTION TYPES: Allowed types are "web_search", "applescript", "file",
-                 "shell", "screenshot", "audio", "clipboard", "system_status", "stop",
-                 or computer_* (computer_list, computer_status, computer_snapshot, computer_click,
-                 computer_type, computer_press, computer_scroll, computer_drag, computer_setvalue,
-                 computer_wait, computer_interact, computer_launch, computer_ocr, computer_clicktext,
-                 computer_clicklabel).
-               - Use "file" for listing/reading/creating/editing files or folders. JSON:
-                 {"type":"file","operation":"list|read|write|create|mkdir|move|replace","path":"...","content":"...","target":"...","find":"...","replace":"..."}
-               - Use "shell" for safe read-only shell commands (pwd, ls, find, rg, cat, git status).
-               - Use "applescript" for controlling apps / desktop (open, close, mute, screenshot).
-               - Use "web_search" to run a live web search when current/verified info is needed.
-               - Use "system_status" to report CPU/RAM/apps/volume.
-               - Use "screenshot" to capture and inspect the screen.
-               - Use "computer_*" for real screen control: list/snapshot an app, click by text
-                 (computer_clicklabel), type+Enter (computer_interact), scroll, drag, launch, set value.
-                 Always call computer_status first to check permissions, then computer_snapshot
-                 to see on-screen elements before acting. Mutation computer actions require approval.
-               - NEVER use "shell" for destructive actions (rm, sudo, dd).
-               - NO internal reasoning or hidden tags in final answer.
+               - Use only native structured tool calls exposed in this request.
+               - Never encode executable actions inside ordinary assistant text.
+               - Never claim a tool succeeded until its returned result is available.
+               - Mutation authority belongs to V2 PolicyKernel and ToolFabric, never to the model or provider.
+               - If no exposed tool can perform the requested operation, explain that limitation directly.
+               - Do not reveal internal reasoning or hidden control metadata.
             """
         } else {
-            actionPolicy = """
+            toolPolicy = """
             6. OPERATIONAL RULES:
-               - INFORMATION TOOLS: web_search, file-read (list/read/cat), safe shell,
-                 screenshot, audio, clipboard, and system_status are ALWAYS available.
-                 Use them freely to gather facts or inspect the machine.
-               - MUTATION TOOLS: write/create/move/delete files, or control the OS/apps,
-                 require the user's explicit request first. Only then emit the ACTION tag.
-               - If the user only asks a question, never emit a mutation ACTION tag.
-               - Never emit "shell" for dangerous commands (rm, sudo, dd, curl|sh).
-               - Return only natural-language answer text.
-               - NO internal reasoning or hidden tags in final answer.
+               - No execution tools are exposed for this request.
+               - Answer with natural-language text only.
+               - Do not fabricate tool use, command execution, or external side effects.
+               - Do not reveal internal reasoning or hidden control metadata.
             """
         }
 
         let responseStyleInstruction = responseStyleInstruction(for: responseProfile)
         let capabilityInstruction = capabilityDiscoveryIntent ? """
             - The user is asking what you can do in this application, not about their interview role.
-            - Answer directly about the actual capabilities listed below: chat, live web search, file reading, safe terminal inspection, screen/image analysis, clipboard, system status, and approved desktop/app automation.
+            - Answer directly about capabilities actually available in this application: chat, live web search, attachment/screen analysis, clipboard input, and voice input.
+            - Structured V2 tools may also be available when they are explicitly exposed for the current request.
             - Do not answer as an interview candidate, frontend developer, or employee. Do not invent a role, team, company, project, or experience.
             - Explain that web search is automatic for current/fresh/uncertain questions and can also be explicitly forced from the Web Search control.
-            - Mention that destructive actions and desktop mutations require confirmation according to the selected approval mode.
+            - Explain that mutation authority is enforced by V2 policy and tool boundaries, not by model text.
             """ : ""
         let codingInstruction = isCodingQuery
             ? """
@@ -671,7 +653,6 @@ class IntelligenceService {
         let includeRAGContext = !isCodingQuery && (responseProfile != .interviewConcise || max(strongestInterviewScore, strongestRoleScore) < 0.30)
         let ragContextBlock = includeRAGContext ? ragContext : ""
         let searchContextBlock = searchContext.isEmpty ? "" : "CONTEXT FROM SEARCH:\n\(searchContext)\n"
-        let automationContext = allowAgentActions ? AutomationLibrary.getPromptContext() : ""
         let webSearchStatusHint: String = {
             if webSearchAttempted && webSearchSucceeded {
                 return "[WEB SEARCH STATUS]\nLive web evidence retrieved successfully."
@@ -743,11 +724,7 @@ class IntelligenceService {
            - If fresh verification is required and web search is unavailable, clearly say verification is unavailable now and do not guess.
            - If uncertain, say so briefly and give the safest answer.
         
-        \(actionPolicy)
-        
-        \(automationContext)
-
-        \(AgentCapabilityRegistry.promptBlock())
+        \(toolPolicy)
         """
         
         // 3. MESAJ DİZİSİNİ OLUŞTUR
@@ -784,9 +761,7 @@ class IntelligenceService {
         // 4. MODEL ÇALIŞTIRMA (varsayılan olarak akış, yanıt zaten sağlam temelliyse tek atış)
         var model = (imageData != nil) ? AIModelNames.vision : AIModelNames.reasoning
         let isSlashCommand = query.starts(with: "/")
-        // Sistem komutları yalnızca İngilizce değil; kullanıcı Türkçe/Fince de
-        // yazabilir. "çöp kutusunu boşalt", "sesi kıs", "ekran görüntüsü al"
-        // gibi ifadeler de eylem hızlı yolunu (action fast path) tetiklemeli.
+        // Short imperative requests can use a lower-latency model when V2 tools are exposed.
         let systemCommandTokens = [
             "mute", "unmute", "volume", "trash", "empty", "pause", "play",
             "stop", "boşalt", "bosalt", "çöp", "cop", "ses", "sustur",
@@ -795,7 +770,7 @@ class IntelligenceService {
         ]
         let isSystemCommand = query.count < 40 && systemCommandTokens.contains { lowerQuery.contains($0) }
         let structuredOutputRequested = isStructuredOutputRequested(lowerQuery) || responseProfile == .detailedTable
-        let shouldUseActionFastPath = allowAgentActions && (isSlashCommand || isSystemCommand)
+        let shouldUseNativeToolFastPath = nativeToolsEnabled && (isSlashCommand || isSystemCommand)
         let strongestInterviewGroundingScore = interviewMatches.first?.score ?? 0
         let shouldUseFastInterviewFallback =
             !capabilityDiscoveryIntent &&
@@ -803,12 +778,12 @@ class IntelligenceService {
             responseProfile == .interviewConcise &&
             !isCodingQuery &&
             !isFollowUpQuery &&
-            !shouldUseActionFastPath &&
+            !shouldUseNativeToolFastPath &&
             searchDecision != .required
         let shouldUseSingleShotInterviewReply =
             !capabilityDiscoveryIntent &&
             shouldSkipRAGForInterview &&
-            !shouldUseActionFastPath &&
+            !shouldUseNativeToolFastPath &&
             strongestInterviewGroundingScore >= 0.16
 
         if shouldUseFastInterviewFallback {
@@ -819,34 +794,22 @@ class IntelligenceService {
             model = AIModelNames.coding
         }
         
-        if shouldUseActionFastPath {
+        if shouldUseNativeToolFastPath {
             model = AIModelNames.fast
-        }
-        
-        // Hızlı Model için Özel Prompt (Yalnızca Eylem). Geçmiş korunur: bir
-        // onay ("Onaylıyorum") geldiğinde modelin neyi onayladığını bilmesi
-        // gerekir, yoksa bağlam kaybolur ve "Hazırım." fallback'i döner.
-        if shouldUseActionFastPath && model == AIModelNames.fast {
-            let fastPrompt = "[ACTION_ONLY] Input: \"\(query)\". Output ONLY JSON format: [ACTION: {\"type\": \"applescript\", \"payload\": \"...\"}]"
-            // Geçmişi sistem + son kullanıcı mesajına ekleyerek koru.
-            let historyMessages = messages.filter { $0.role != "system" }
-            let retainedHistory = historyMessages.suffix(6)
-            messages = retainedHistory + [
-                OllamaService.ChatMessage(role: "user", content: fastPrompt, images: nil)
-            ]
         }
         
         do {
             var fullAnswer = ""
             var collectedThinking = ""
 
-            let useNativeTools = allowAgentActions && nativeToolExecutor != nil
+            let useNativeTools = nativeToolsEnabled
             if shouldUseSingleShotInterviewReply {
                 logger.info("Using single-shot interview-grounded reply path (score: \(strongestInterviewGroundingScore, privacy: .public))")
                 fullAnswer = try await ollamaService.generate(
                     messages: messages,
                     model: model,
                     enableNativeTools: useNativeTools,
+                    nativeTools: nativeTools,
                     toolExecutor: nativeToolExecutor
                 )
             } else {
@@ -854,6 +817,7 @@ class IntelligenceService {
                     messages: messages,
                     model: model,
                     enableNativeTools: useNativeTools,
+                    nativeTools: nativeTools,
                     toolExecutor: nativeToolExecutor,
                     onPartialResponse: { partialAnswer in
                         fullAnswer = partialAnswer
@@ -872,8 +836,7 @@ class IntelligenceService {
                 expectedLanguageCode: finalLanguageCode,
                 structuredOutputRequested: structuredOutputRequested,
                 responseProfile: responseProfile,
-                skipPostProcessing: imageData != nil || shouldUseActionFastPath,
-                allowAgentActions: allowAgentActions
+                skipPostProcessing: imageData != nil || shouldUseNativeToolFastPath
             )
             
             // Kodlama Sandbox'ı Otomatik Derleyici Düzeltme Döngüsü
@@ -958,9 +921,7 @@ class IntelligenceService {
         }
     }
 
-    /// Ajanın kendi kararıyla tetiklediği bir web aramasını çalıştırır.
-    /// `[ACTION: {"type": "web_search", "query": "..."}]` etiketi geldiğinde
-    /// çağrılır ve sonucu kullanıcıya aktarılmak üzere düz metne çevirir.
+    /// Runs a live web search and returns provider output as plain text.
     func performWebSearch(
         query: String,
         onProgress: (@Sendable (String) -> Void)? = nil
@@ -1417,10 +1378,8 @@ class IntelligenceService {
         return containsAnyToken(in: normalizedQuery, tokens: introTokens)
     }
 
-    /// Kullanıcının kendisine bir işlem yapmasını istediğini belirler. Bu niyet
-    /// algılanırsa önbellek/mülakat biyografisi fast-path'i atlanır; böylece
-    /// "codex sitesini aç", "Safari'yi çalıştır", "bu klasörü sil" gibi istekler
-    /// düz metin cevaba dönüşmeden model `[ACTION]` üretebilir.
+    /// Detects imperative requests so an exposed native V2 tool can be selected
+    /// without an unrelated cache/interview fast-path swallowing the request.
     nonisolated private static func isImperativeActionIntent(_ normalized: String) -> Bool {
         guard !normalized.isEmpty else { return false }
         let imperativeTokens = [
@@ -1602,11 +1561,9 @@ class IntelligenceService {
         expectedLanguageCode: String?,
         structuredOutputRequested: Bool,
         responseProfile: ResponseProfile,
-        skipPostProcessing: Bool,
-        allowAgentActions: Bool
+        skipPostProcessing: Bool
     ) async -> String {
-        let baseText = allowAgentActions ? answer : stripActionArtifacts(from: answer)
-        let sanitized = sanitizeCitationArtifacts(in: baseText)
+        let sanitized = sanitizeCitationArtifacts(in: answer)
         let trimmed = sanitized.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             let fallback: String
@@ -1615,10 +1572,9 @@ class IntelligenceService {
             case "tr", "turkish": fallback = "Hazırım. Sorun neyse sor, net cevap vereyim."
             default: fallback = "I'm ready. Ask your question concisely and I'll give a clear answer."
             }
-            return allowAgentActions ? answer : fallback
+            return fallback
         }
         guard !skipPostProcessing else { return trimmed }
-        guard !trimmed.contains("[ACTION:") else { return trimmed }
         
         let needsLanguageFix = isLanguageMismatch(trimmed, expectedLanguageCode: expectedLanguageCode)
         let needsCondense = shouldCondenseResponse(
@@ -1732,27 +1688,6 @@ class IntelligenceService {
         
         return sanitizeCitationArtifacts(in: rewritten)
             .trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-    
-    private func stripActionArtifacts(from text: String) -> String {
-        var cleaned = text
-        
-        cleaned = cleaned.replacingOccurrences(
-            of: #"(?s)\[ACTION:.*?\]"#,
-            with: "",
-            options: .regularExpression
-        )
-        
-        let jsonActionPattern = #"(?s)^\s*\{[\s\S]*"type"\s*:\s*"(applescript|shell|stop)"[\s\S]*"payload"\s*:\s*"[\s\S]*"\s*\}\s*$"#
-        if cleaned.range(of: jsonActionPattern, options: .regularExpression) != nil {
-            return ""
-        }
-        
-        if cleaned.contains("\"type\""), cleaned.contains("\"payload\""), (cleaned.contains("applescript") || cleaned.contains("shell")) {
-            return ""
-        }
-        
-        return cleaned
     }
     
     private func extractSwiftCodeBlocks(from text: String) -> [String] {

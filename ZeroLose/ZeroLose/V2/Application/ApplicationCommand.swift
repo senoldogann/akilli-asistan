@@ -1,0 +1,16 @@
+enum ApplicationCommand: Sendable {
+    case submitUserGoal(String)
+    case sendChatMessage(String)
+    case pauseGoal(GoalID)
+    case resumeGoal(GoalID)
+    case cancelGoal(GoalID)
+    case approveInvocation(InvocationID)
+    case denyInvocation(InvocationID)
+    case enableTool(ToolID)
+    case disableTool(ToolID)
+    case enableMCPServer(String)
+    case disableMCPServer(String)
+    case forgetMemoryEntry(String)
+    case pinMemoryEntry(String)
+    case changeAuthorityMode(AuthorityMode)
+}
