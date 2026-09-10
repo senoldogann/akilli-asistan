@@ -78,6 +78,53 @@ actor RecordingModelProvider: ModelProvider {
     }
 }
 
+nonisolated struct StubCLIExecutableLocator: CLIExecutableLocating {
+    let paths: [String: URL]
+
+    func executable(named name: String) -> URL? {
+        paths[name]
+    }
+}
+
+actor FixtureCLIProcessRunner: CLIProcessRunning {
+    let events: [CLIProcessEvent]
+    let terminalError: CLIProcessRunnerError?
+
+    private(set) var commands: [CLICommand] = []
+    private(set) var cancelled: [ModelSessionID] = []
+
+    init(
+        events: [CLIProcessEvent] = [],
+        terminalError: CLIProcessRunnerError? = nil
+    ) {
+        self.events = events
+        self.terminalError = terminalError
+    }
+
+    func run(
+        _ command: CLICommand
+    ) async -> AsyncThrowingStream<CLIProcessEvent, Error> {
+        commands.append(command)
+        let events = self.events
+        let terminalError = self.terminalError
+
+        return AsyncThrowingStream { continuation in
+            for event in events {
+                continuation.yield(event)
+            }
+            if let terminalError {
+                continuation.finish(throwing: terminalError)
+            } else {
+                continuation.finish()
+            }
+        }
+    }
+
+    func cancel(sessionID: ModelSessionID) async {
+        cancelled.append(sessionID)
+    }
+}
+
 extension ModelRequest {
     static func fixture(providerModel: String = "default") -> Self {
         ModelRequest(
