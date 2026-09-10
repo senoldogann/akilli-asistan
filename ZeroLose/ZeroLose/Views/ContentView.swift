@@ -267,15 +267,6 @@ struct ContentView: View {
     @ViewBuilder
     private var modalLayer: some View {
         Group {
-            if let activeAction = viewModel.activeAction {
-                VStack {
-                    ActionHUDView(action: activeAction)
-                        .padding(.top, 20)
-                    Spacer()
-                }
-                .zIndex(150)
-            }
-
             if isInterviewVaultPresented {
                 ZStack {
                     Color.black.opacity(windowOpacity * 0.5)
@@ -1114,30 +1105,6 @@ struct ContentView: View {
     @ViewBuilder
     private var trailingActions: some View {
         HStack(spacing: 2) {
-            Button(action: { viewModel.testComputerUseSnapshot() }) {
-                Image(systemName: "cursorarrow.click.2")
-                    .font(.system(size: 17, weight: .light))
-                    .foregroundStyle(Color.textSecondary)
-                    .frame(width: 34, height: 34)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.interactive)
-            .help("Computer Use: Ön plandaki uygulamayı oku")
-            .disabled(viewModel.isBusy)
-            .pointerCursor()
-
-            Button(action: { viewModel.verifyComputerUseEndToEnd() }) {
-                Image(systemName: "checkmark.seal")
-                    .font(.system(size: 17, weight: .light))
-                    .foregroundStyle(Color.textSecondary)
-                    .frame(width: 34, height: 34)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.interactive)
-            .help("Computer Use: Uçtan uca doğrula (izin + ağaç oku)")
-            .disabled(viewModel.isBusy)
-            .pointerCursor()
-
             Button(action: { viewModel.analyzeScreen() }) {
                 Image(systemName: "camera.viewfinder")
                     .font(.system(size: 17, weight: .light))

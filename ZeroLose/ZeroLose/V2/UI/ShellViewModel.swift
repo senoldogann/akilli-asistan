@@ -13,7 +13,6 @@ struct ShellProjectionSnapshot {
     let attachedFileData: Data?
     let attachedFileName: String?
     let isIndexing: Bool
-    let activeAction: String?
 
     static let empty = ShellProjectionSnapshot(
         messages: [],
@@ -26,8 +25,7 @@ struct ShellProjectionSnapshot {
         liveVoicePreview: "",
         attachedFileData: nil,
         attachedFileName: nil,
-        isIndexing: false,
-        activeAction: nil
+        isIndexing: false
     )
 }
 
@@ -42,8 +40,6 @@ protocol ShellFeatureControlling: AnyObject {
     func clearAttachment()
     func attachFile(from url: URL)
     func analyzeScreen()
-    func testComputerUseSnapshot()
-    func verifyComputerUseEndToEnd()
     @discardableResult func warmUpInterviewContext() -> String
 }
 
@@ -68,7 +64,6 @@ final class ShellViewModel {
     var attachedFileData: Data? { snapshot.attachedFileData }
     var attachedFileName: String? { snapshot.attachedFileName }
     var isIndexing: Bool { snapshot.isIndexing }
-    var activeAction: String? { snapshot.activeAction }
 
     func apply(_ snapshot: ShellProjectionSnapshot) {
         self.snapshot = snapshot
@@ -85,7 +80,5 @@ final class ShellViewModel {
     func clearAttachment() { controller.clearAttachment() }
     func attachFile(from url: URL) { controller.attachFile(from: url) }
     func analyzeScreen() { controller.analyzeScreen() }
-    func testComputerUseSnapshot() { controller.testComputerUseSnapshot() }
-    func verifyComputerUseEndToEnd() { controller.verifyComputerUseEndToEnd() }
     @discardableResult func warmUpInterviewContext() -> String { controller.warmUpInterviewContext() }
 }

@@ -92,21 +92,6 @@ struct ChatMessage: Identifiable, Sendable {
     }
 }
 
-/// İşlenmeyi bekleyen bir sorguyu temsil eder.
-enum PendingQuery: Sendable {
-    case text(
-        query: String,
-        source: String,
-        language: String? = nil,
-        webSearchMode: WebSearchMode = .automatic,
-        allowAgentActions: Bool = false,
-        processingMode: IntelligenceService.ProcessingMode = .automatic,
-        showUserMessage: Bool = true,
-        targetAssistantMessageID: UUID? = nil
-    )
-    case vision(data: Data, source: String, query: String?)
-}
-
 /// Giriş alanında gösterilen hafif bağlam penceresi kullanım tahmini.
 /// Her sağlayıcı tam token sayılarını sunmaz, bu yüzden UI görünür sohbetten
 /// deterministik bir tahmin türetir. Faturalama derecesinde bir token sayacı

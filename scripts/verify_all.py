@@ -15,6 +15,22 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 EXAMPILOT = ROOT / "ExamPilot"
 ZEROLOSE_PROJECT = ROOT / "ZeroLose" / "ZeroLose.xcodeproj"
+ZEROLOSE_SOURCE = ROOT / "ZeroLose" / "ZeroLose"
+
+FORBIDDEN_ZEROLOSE_EXECUTION_TOKENS = (
+    "[ACTION:",
+    "actionRegex",
+    "handleActions(",
+)
+
+OBSOLETE_ZEROLOSE_EXECUTION_SOURCES = (
+    "ViewModels/GhostViewModel.swift",
+    "Services/ZeroOperator.swift",
+    "Services/ComputerUseService.swift",
+    "Services/BrowserCDPService.swift",
+    "Services/AutomationLibrary.swift",
+    "V2/Legacy/AgentCapabilityRegistryAdapter.swift",
+)
 
 FORBIDDEN_PATHS = (
     ".agent",
@@ -117,6 +133,35 @@ def verify_layout() -> bool:
     return ok
 
 
+def verify_zerolose_legacy_demolition() -> bool:
+    if not ZEROLOSE_SOURCE.is_dir():
+        print("[INFO] ZeroLose source tree not present; skipping legacy demolition scan")
+        return True
+
+    ok = True
+    for relative in OBSOLETE_ZEROLOSE_EXECUTION_SOURCES:
+        path = ZEROLOSE_SOURCE / relative
+        if path.exists() or path.is_symlink():
+            print(
+                f"[FAIL] obsolete ZeroLose execution source still exists: {relative}",
+                file=sys.stderr,
+            )
+            ok = False
+
+    for path in ZEROLOSE_SOURCE.rglob("*.swift"):
+        content = path.read_text(encoding="utf-8", errors="replace")
+        for token in FORBIDDEN_ZEROLOSE_EXECUTION_TOKENS:
+            if token in content:
+                relative = path.relative_to(ROOT)
+                print(
+                    f"[FAIL] forbidden ZeroLose execution token {token!r} in {relative}",
+                    file=sys.stderr,
+                )
+                ok = False
+
+    return ok
+
+
 def verify_exampilot() -> bool:
     if not EXAMPILOT.is_dir():
         return False
@@ -170,6 +215,9 @@ def main() -> int:
 
     if not verify_layout():
         return fail("repository layout verification failed")
+
+    if not verify_zerolose_legacy_demolition():
+        return fail("ZeroLose legacy execution demolition verification failed")
 
     if not verify_exampilot():
         return fail("ExamPilot verification failed")

@@ -104,6 +104,7 @@ struct MCPToolProvider: ToolProviding {
             completedAt: completedAt,
             providerReference: result.providerReference,
             resultProvenance: result.provenance,
+            resultJSON: result.contentJSON,
             resultTainted: result.tainted
         )
     }
