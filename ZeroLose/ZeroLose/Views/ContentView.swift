@@ -47,6 +47,11 @@ struct ContentView: View {
     @Bindable var viewModel: ShellViewModel
     @Bindable var chatViewModel: ChatViewModel
     @Bindable var settingsViewModel: SettingsViewModel
+    @Bindable var taskRuntimeViewModel: TaskRuntimeViewModel
+    @Bindable var approvalViewModel: ApprovalViewModel
+    @Bindable var timelineProjection: TimelineProjection
+    var runtimeProjectionCoordinator: RuntimeProjectionCoordinator?
+    var runtimeProjectionInitializationError: String?
     @State private var inputText: String = ""
     @FocusState private var isInputFocused: Bool
     @State private var isNearBottom: Bool = true
@@ -55,6 +60,7 @@ struct ContentView: View {
     @State private var isMockInterviewPresented: Bool = false
     @State private var isDropTargeted: Bool = false
     @State private var isKeyboardDisguisePresented: Bool = false
+    @State private var isRuntimeDashboardPresented: Bool = false
     @State private var commandErrorMessage: String?
 
     // User Settings
@@ -182,6 +188,17 @@ struct ContentView: View {
                 // instead of requiring a view re-render to reveal them.
                 refreshModelCatalog()
             }
+            .task {
+                guard let coordinator = runtimeProjectionCoordinator else { return }
+                while !Task.isCancelled {
+                    await coordinator.refresh()
+                    do {
+                        try await Task.sleep(for: .seconds(1))
+                    } catch {
+                        return
+                    }
+                }
+            }
             .onDisappear { removeSlashKeyMonitor() }
     }
 
@@ -212,7 +229,9 @@ struct ContentView: View {
             headerBar
                 .padding(.horizontal, 16)
                 .padding(.top, 14)
-                .padding(.bottom, 10)
+                .padding(.bottom, 8)
+
+            runtimeStrip
 
             Divider()
                 .overlay(Color.glassStroke)
@@ -267,6 +286,31 @@ struct ContentView: View {
     @ViewBuilder
     private var modalLayer: some View {
         Group {
+            if isRuntimeDashboardPresented {
+                ZStack {
+                    Color.black.opacity(windowOpacity * 0.35)
+                        .ignoresSafeArea()
+                        .onTapGesture {
+                            withAnimation { isRuntimeDashboardPresented = false }
+                        }
+
+                    RuntimeDashboardView(
+                        taskRuntimeViewModel: taskRuntimeViewModel,
+                        approvalViewModel: approvalViewModel,
+                        timelineProjection: timelineProjection,
+                        authorityMode: settingsViewModel.authorityMode,
+                        projectionError: runtimeProjectionInitializationError ?? runtimeProjectionCoordinator?.lastError,
+                        onClose: {
+                            withAnimation { isRuntimeDashboardPresented = false }
+                        }
+                    )
+                    .padding(18)
+                    .shadow(color: .black.opacity(0.35), radius: 28, y: 10)
+                }
+                .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                .zIndex(120)
+            }
+
             if isInterviewVaultPresented {
                 ZStack {
                     Color.black.opacity(windowOpacity * 0.5)
@@ -378,6 +422,61 @@ struct ContentView: View {
             .shadow(color: .black.opacity(0.3), radius: 16, y: 8)
             .transition(.move(edge: .bottom).combined(with: .opacity))
         }
+    }
+
+    // MARK: - V2 Runtime Surface
+
+    private var runtimeStrip: some View {
+        Button {
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                isRuntimeDashboardPresented.toggle()
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "waveform.path.ecg")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(themeColor)
+
+                Text("Runtime")
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+
+                Text(settingsViewModel.authorityMode.rawValue)
+                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.secondary)
+
+                Text(taskRuntimeViewModel.statusText)
+                    .font(.system(size: 9, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+
+                Spacer(minLength: 4)
+
+                if approvalViewModel.pendingCount > 0 {
+                    Label("\(approvalViewModel.pendingCount)", systemImage: "checkmark.shield")
+                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.orange)
+                }
+
+                if runtimeProjectionInitializationError != nil || runtimeProjectionCoordinator?.lastError != nil {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.orange)
+                }
+
+                Image(systemName: isRuntimeDashboardPresented ? "chevron.up" : "chevron.down")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .liquidGlassSurface(tint: themeColor.opacity(0.08), cornerRadius: 10)
+        .padding(.horizontal, 14)
+        .padding(.bottom, 8)
+        .accessibilityIdentifier("v2.runtime.strip")
+        .help("Open V2 runtime dashboard")
     }
 
     // MARK: - Header Bar
