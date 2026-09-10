@@ -57,6 +57,7 @@ final class UIBoundaryTests: XCTestCase {
             at: root,
             includingPropertiesForKeys: nil
         ).filter { $0.pathExtension == "swift" }
+        let legacyActionToken = "[" + "ACTION:"
 
         XCTAssertFalse(files.isEmpty)
         for file in files {
@@ -70,7 +71,7 @@ final class UIBoundaryTests: XCTestCase {
                 "Secrets.",
                 "CGEvent",
                 "AXUIElement",
-                "[ACTION:"
+                legacyActionToken
             ] {
                 XCTAssertFalse(source.contains(forbidden), "\\(file.lastPathComponent) must not reference \\(forbidden)")
             }

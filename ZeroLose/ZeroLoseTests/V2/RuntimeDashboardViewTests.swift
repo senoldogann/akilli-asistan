@@ -23,6 +23,7 @@ final class RuntimeDashboardViewTests: XCTestCase {
 
     func testDashboardSourceHasNoExecutionOrCredentialBackdoor() throws {
         let source = try productionSource("V2/UI/RuntimeDashboardView.swift")
+        let legacyActionToken = "[" + "ACTION:"
         for forbidden in [
             "ToolFabric",
             "PolicyKernel",
@@ -31,7 +32,7 @@ final class RuntimeDashboardViewTests: XCTestCase {
             "ZeroOperator",
             "CGEvent",
             "AXUIElement",
-            "[ACTION:"
+            legacyActionToken
         ] {
             XCTAssertFalse(source.contains(forbidden), "Runtime dashboard must not reference \\(forbidden)")
         }
