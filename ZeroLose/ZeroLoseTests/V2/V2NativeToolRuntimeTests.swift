@@ -38,6 +38,102 @@ final class V2NativeToolRuntimeTests: XCTestCase {
         XCTAssertTrue(result.contains("pong"))
     }
 
+    func testToolExecutionRecordsStartedAndCompletedRuntimeEvents() async throws {
+        let databaseURL = temporaryDatabaseURL()
+        defer { try? FileManager.default.removeItem(at: databaseURL) }
+
+        let eventStore = try SQLiteEventStore(databaseURL: databaseURL)
+        let recorder = RuntimeEventRecorder(eventStore: eventStore, streamID: "runtime:test")
+        let registry = ToolRegistry()
+        let descriptor = Self.descriptor(id: "builtin.echo")
+        await registry.register(descriptor)
+
+        let provider = NativeRuntimeRecordingProvider(resultJSON: Data(#"{"value":"pong"}"#.utf8))
+        let fabric = ToolFabric(
+            registry: registry,
+            policy: DefaultPolicyKernel(),
+            credentialBroker: InMemoryCredentialBroker(),
+            providers: [provider],
+            authorityMode: .auto
+        )
+        let runtime = V2NativeToolRuntime(
+            registry: registry,
+            toolFabric: fabric,
+            eventRecorder: recorder
+        )
+
+        let configuration = await runtime.configuration()
+        guard let functionName = configuration.tools.first?.function.name else {
+            return XCTFail("Expected one model-visible V2 tool")
+        }
+
+        _ = await configuration.executor(
+            AgentToolCall(
+                id: "evented-call",
+                name: functionName,
+                argumentsJSON: #"{"value":"private-input-must-not-be-recorded"}"#
+            )
+        )
+
+        let events = try await eventStore.events(streamID: "runtime:test", after: 0)
+        let payloads = try events.map { try JSONDecoder().decode(RuntimeToolEventPayload.self, from: $0.payload) }
+
+        XCTAssertEqual(events.count, 2)
+        XCTAssertEqual(payloads.map(\.state), [.started, .completed])
+        XCTAssertEqual(payloads.map(\.invocationID.rawValue), ["evented-call", "evented-call"])
+        XCTAssertFalse(events.contains { event in
+            String(data: event.payload, encoding: .utf8)?.contains("private-input-must-not-be-recorded") == true
+        })
+    }
+
+    func testToolExecutionFailureRecordsFailedRuntimeEventWithoutErrorDetail() async throws {
+        let databaseURL = temporaryDatabaseURL()
+        defer { try? FileManager.default.removeItem(at: databaseURL) }
+
+        let eventStore = try SQLiteEventStore(databaseURL: databaseURL)
+        let recorder = RuntimeEventRecorder(eventStore: eventStore, streamID: "runtime:test")
+        let registry = ToolRegistry()
+        let descriptor = Self.descriptor(id: "builtin.echo")
+        await registry.register(descriptor)
+
+        let provider = NativeRuntimeFailingProvider()
+        let fabric = ToolFabric(
+            registry: registry,
+            policy: DefaultPolicyKernel(),
+            credentialBroker: InMemoryCredentialBroker(),
+            providers: [provider],
+            authorityMode: .auto
+        )
+        let runtime = V2NativeToolRuntime(
+            registry: registry,
+            toolFabric: fabric,
+            eventRecorder: recorder
+        )
+
+        let configuration = await runtime.configuration()
+        guard let functionName = configuration.tools.first?.function.name else {
+            return XCTFail("Expected one model-visible V2 tool")
+        }
+
+        let result = await configuration.executor(
+            AgentToolCall(
+                id: "failed-call",
+                name: functionName,
+                argumentsJSON: #"{"value":"sensitive-argument"}"#
+            )
+        )
+        XCTAssertTrue(result.contains("tool_execution_failed"))
+
+        let events = try await eventStore.events(streamID: "runtime:test", after: 0)
+        let payloads = try events.map { try JSONDecoder().decode(RuntimeToolEventPayload.self, from: $0.payload) }
+
+        XCTAssertEqual(payloads.map(\.state), [.started, .failed])
+        XCTAssertEqual(payloads.last?.summary, "builtin.echo execution failed")
+        let serialized = events.compactMap { String(data: $0.payload, encoding: .utf8) }.joined()
+        XCTAssertFalse(serialized.contains("sensitive-argument"))
+        XCTAssertFalse(serialized.contains("provider-secret-detail"))
+    }
+
     func testOldConfigurationFailsClosedAfterToolDisable() async throws {
         let registry = ToolRegistry()
         let descriptor = Self.descriptor(id: "builtin.echo")
@@ -113,6 +209,11 @@ final class V2NativeToolRuntimeTests: XCTestCase {
         XCTAssertEqual(configuration.tools.count, 1)
     }
 
+    private func temporaryDatabaseURL() -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("zerolose-v2-native-tool-events-\(UUID().uuidString).sqlite")
+    }
+
     private static func descriptor(id: String) -> ToolDescriptor {
         let input = Data(
             #"{"type":"object","properties":{"value":{"type":"string"}},"required":["value"],"additionalProperties":false}"#.utf8
@@ -161,5 +262,21 @@ private actor NativeRuntimeRecordingProvider: ToolProviding {
             resultJSON: resultJSON,
             resultTainted: false
         )
+    }
+}
+
+private enum NativeRuntimeProviderError: Error {
+    case failed
+}
+
+private actor NativeRuntimeFailingProvider: ToolProviding {
+    nonisolated let providerID = "builtin"
+
+    func execute(
+        descriptor: ToolDescriptor,
+        invocation: ToolInvocation,
+        credentialHandles: [CredentialHandle]
+    ) async throws -> ToolExecutionReceipt {
+        throw NativeRuntimeProviderError.failed
     }
 }

@@ -12,15 +12,57 @@ final class ZeroLoseRuntimeContainer {
     let approvalViewModel: ApprovalViewModel
     let toolManagementViewModel: ToolManagementViewModel
     let memoryInspectorViewModel: MemoryInspectorViewModel
+    let timelineProjection: TimelineProjection
+    let runtimeProjectionCoordinator: RuntimeProjectionCoordinator?
+    let runtimeProjectionInitializationError: String?
 
     private let runtimeController: V2ShellRuntimeController
     private let nativeToolRuntime: V2NativeToolRuntime
     private let settingsController: RuntimeSettingsDataController
+    private let eventStore: SQLiteEventStore?
+    private let eventRecorder: RuntimeEventRecorder?
 
     init(dependencies: DependencyContainer) {
         let initialAuthority = SettingsMigrationCoordinator.mapLegacyApprovalMode(
             UserDefaults.standard.string(forKey: "commandApprovalMode")
         )
+        let timelineProjection = TimelineProjection()
+        let applicationSupport = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first ?? FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support", isDirectory: true)
+        let runtimeDirectory = applicationSupport
+            .appendingPathComponent("ZeroLose/V2", isDirectory: true)
+
+        var eventStore: SQLiteEventStore?
+        var eventRecorder: RuntimeEventRecorder?
+        var runtimeProjectionCoordinator: RuntimeProjectionCoordinator?
+        var runtimeProjectionInitializationError: String?
+
+        do {
+            try FileManager.default.createDirectory(
+                at: runtimeDirectory,
+                withIntermediateDirectories: true
+            )
+            let store = try SQLiteEventStore(
+                databaseURL: runtimeDirectory.appendingPathComponent("runtime.sqlite3")
+            )
+            let recorder = RuntimeEventRecorder(
+                eventStore: store,
+                streamID: "runtime:main"
+            )
+            eventStore = store
+            eventRecorder = recorder
+            runtimeProjectionCoordinator = RuntimeProjectionCoordinator(
+                eventStore: store,
+                streamID: "runtime:main",
+                timeline: timelineProjection
+            )
+        } catch {
+            runtimeProjectionInitializationError = "Runtime activity unavailable"
+        }
+
         let registry = ToolRegistry()
         let credentialBroker = KeychainCredentialBrokerAdapter()
         let tavilyService = dependencies.tavilyService
@@ -44,6 +86,7 @@ final class ZeroLoseRuntimeContainer {
         let nativeToolRuntime = V2NativeToolRuntime(
             registry: registry,
             toolFabric: toolFabric,
+            eventRecorder: eventRecorder,
             initialDescriptors: V2BuiltinToolCatalog.descriptors
         )
         let runtimeController = V2ShellRuntimeController(
@@ -75,6 +118,11 @@ final class ZeroLoseRuntimeContainer {
         self.runtimeController = runtimeController
         self.nativeToolRuntime = nativeToolRuntime
         self.settingsController = settingsController
+        self.eventStore = eventStore
+        self.eventRecorder = eventRecorder
+        self.timelineProjection = timelineProjection
+        self.runtimeProjectionCoordinator = runtimeProjectionCoordinator
+        self.runtimeProjectionInitializationError = runtimeProjectionInitializationError
         self.facade = facade
         self.chatViewModel = ChatViewModel(commandSender: facade)
         self.shellViewModel = shellViewModel

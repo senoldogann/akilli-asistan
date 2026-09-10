@@ -84,7 +84,12 @@ class WindowManager: NSObject, NSWindowDelegate {
             rootView: ContentView(
                 viewModel: runtimeContainer.shellViewModel,
                 chatViewModel: runtimeContainer.chatViewModel,
-                settingsViewModel: runtimeContainer.settingsViewModel
+                settingsViewModel: runtimeContainer.settingsViewModel,
+                taskRuntimeViewModel: runtimeContainer.taskRuntimeViewModel,
+                approvalViewModel: runtimeContainer.approvalViewModel,
+                timelineProjection: runtimeContainer.timelineProjection,
+                runtimeProjectionCoordinator: runtimeContainer.runtimeProjectionCoordinator,
+                runtimeProjectionInitializationError: runtimeContainer.runtimeProjectionInitializationError
             )
         )
         hostingView.translatesAutoresizingMaskIntoConstraints = false

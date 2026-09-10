@@ -17,6 +17,10 @@ final class UIBoundaryTests: XCTestCase {
         }
         XCTAssertTrue(source.contains("ChatViewModel"))
         XCTAssertTrue(source.contains("SettingsViewModel"))
+        XCTAssertTrue(source.contains("TaskRuntimeViewModel"))
+        XCTAssertTrue(source.contains("ApprovalViewModel"))
+        XCTAssertTrue(source.contains("TimelineProjection"))
+        XCTAssertTrue(source.contains("RuntimeProjectionCoordinator"))
     }
 
     func testSettingsViewHasNoDirectCredentialModelOrRuntimeServiceAccess() throws {
@@ -38,6 +42,13 @@ final class UIBoundaryTests: XCTestCase {
         XCTAssertFalse(source.contains("ghostViewModel"))
         XCTAssertFalse(source.contains("GhostViewModel"))
         XCTAssertTrue(source.contains("ZeroLoseRuntimeContainer"))
+        XCTAssertTrue(source.contains("taskRuntimeViewModel: runtimeContainer.taskRuntimeViewModel"))
+        XCTAssertTrue(source.contains("approvalViewModel: runtimeContainer.approvalViewModel"))
+        XCTAssertTrue(source.contains("timelineProjection: runtimeContainer.timelineProjection"))
+        XCTAssertTrue(source.contains("runtimeProjectionCoordinator: runtimeContainer.runtimeProjectionCoordinator"))
+        XCTAssertTrue(source.contains("runtimeProjectionInitializationError: runtimeContainer.runtimeProjectionInitializationError"))
+        XCTAssertFalse(source.contains("eventStore: runtimeContainer"))
+        XCTAssertFalse(source.contains("eventRecorder: runtimeContainer"))
     }
 
     func testV2UISourcesDoNotReferenceExecutionKernelOrRawCredentials() throws {
@@ -46,6 +57,7 @@ final class UIBoundaryTests: XCTestCase {
             at: root,
             includingPropertiesForKeys: nil
         ).filter { $0.pathExtension == "swift" }
+        let legacyActionToken = "[" + "ACTION:"
 
         XCTAssertFalse(files.isEmpty)
         for file in files {
@@ -55,7 +67,11 @@ final class UIBoundaryTests: XCTestCase {
                 "PolicyKernel",
                 "CredentialHandle",
                 "ZeroOperator",
-                "ComputerUseService"
+                "ComputerUseService",
+                "Secrets.",
+                "CGEvent",
+                "AXUIElement",
+                legacyActionToken
             ] {
                 XCTAssertFalse(source.contains(forbidden), "\\(file.lastPathComponent) must not reference \\(forbidden)")
             }

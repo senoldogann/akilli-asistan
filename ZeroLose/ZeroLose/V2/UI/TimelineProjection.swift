@@ -8,6 +8,7 @@ struct VerificationProjectionPayload: Codable, Sendable, Equatable {
 
 enum TimelineItemState: String, Sendable, Equatable {
     case running
+    case executed
     case succeeded
     case failed
 }
@@ -27,12 +28,48 @@ final class TimelineProjection {
     func consume(_ event: RuntimeEvent) {
         switch event.eventKind {
         case .tool:
-            upsertRunning(event)
+            applyTool(event)
         case .verification:
             applyVerification(event)
         default:
             break
         }
+    }
+
+    private func applyTool(_ event: RuntimeEvent) {
+        guard let payload = try? JSONDecoder().decode(
+            RuntimeToolEventPayload.self,
+            from: event.payload
+        ) else {
+            upsertRunning(event)
+            return
+        }
+
+        let itemID = "tool:\(payload.invocationID.rawValue)"
+        let state: TimelineItemState
+        switch payload.state {
+        case .started:
+            state = .running
+        case .completed:
+            state = .executed
+        case .failed:
+            state = .failed
+        }
+
+        if let index = items.firstIndex(where: { $0.id == itemID }) {
+            items[index].state = state
+            items[index].summary = payload.summary
+            return
+        }
+
+        items.append(
+            TimelineItem(
+                id: itemID,
+                taskID: event.taskID,
+                state: state,
+                summary: payload.summary
+            )
+        )
     }
 
     private func upsertRunning(_ event: RuntimeEvent) {
