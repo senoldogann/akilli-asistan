@@ -1,16 +1,22 @@
 import Foundation
 @testable import ZeroLose
 
-actor RecordingModelProvider: ModelProvider {
+final class RecordingModelProvider: ModelProvider, Sendable {
     let id: ModelProviderID
     let displayName: String
     let capabilities: ModelCapabilities
 
     private let emittedEvents: [ModelEvent]
     private let terminalError: ProviderError?
+    private let state = RecordingModelProviderState()
 
-    private(set) var requestCount = 0
-    private(set) var cancelledSessions: [ModelSessionID] = []
+    var requestCount: Int {
+        get async { await state.requestCount }
+    }
+
+    var cancelledSessions: [ModelSessionID] {
+        get async { await state.cancelledSessions }
+    }
 
     init(
         id: String,
@@ -43,17 +49,21 @@ actor RecordingModelProvider: ModelProvider {
         ]
     }
 
-    nonisolated func stream(
+    func stream(
         _ request: ModelRequest
     ) -> AsyncThrowingStream<ModelEvent, Error> {
-        AsyncThrowingStream { continuation in
+        let emittedEvents = emittedEvents
+        let terminalError = terminalError
+        let state = state
+
+        return AsyncThrowingStream { continuation in
             Task {
-                await self.recordRequest()
-                if let error = await self.terminalErrorValue() {
-                    continuation.finish(throwing: error)
+                await state.recordRequest()
+                if let terminalError {
+                    continuation.finish(throwing: terminalError)
                     return
                 }
-                for event in await self.eventsValue() {
+                for event in emittedEvents {
                     continuation.yield(event)
                 }
                 continuation.finish()
@@ -62,19 +72,20 @@ actor RecordingModelProvider: ModelProvider {
     }
 
     func cancel(sessionID: ModelSessionID) async {
-        cancelledSessions.append(sessionID)
+        await state.record(cancelledSessionID: sessionID)
     }
+}
 
-    private func recordRequest() {
+private actor RecordingModelProviderState {
+    private(set) var requestCount = 0
+    private(set) var cancelledSessions: [ModelSessionID] = []
+
+    func recordRequest() {
         requestCount += 1
     }
 
-    private func eventsValue() -> [ModelEvent] {
-        emittedEvents
-    }
-
-    private func terminalErrorValue() -> ProviderError? {
-        terminalError
+    func record(cancelledSessionID: ModelSessionID) {
+        cancelledSessions.append(cancelledSessionID)
     }
 }
 
