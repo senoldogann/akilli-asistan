@@ -76,7 +76,8 @@ final class RequestCoordinatorTests: XCTestCase {
         }
 
         XCTAssertEqual(received, [.started, .textDelta("final "), .textDelta("answer"), .completed])
-        XCTAssertEqual(await order.snapshot(), ["context", "provider"])
+        let orderSnapshot = await order.snapshot()
+        XCTAssertEqual(orderSnapshot, ["context", "provider"])
 
         let requests = await provider.requests
         let request = try XCTUnwrap(requests.first)
@@ -123,7 +124,8 @@ final class RequestCoordinatorTests: XCTestCase {
         let stream = await coordinator.stream(.fixture())
         for try await _ in stream {}
 
-        let request = try XCTUnwrap(await provider.requests.first)
+        let requests = await provider.requests
+        let request = try XCTUnwrap(requests.first)
         XCTAssertEqual(request.tools.map(\.name), ["read.fs"])
     }
 
@@ -145,7 +147,8 @@ final class RequestCoordinatorTests: XCTestCase {
 
         await coordinator.cancel(sessionID: sessionID)
 
-        XCTAssertEqual(await provider.cancelledSessions, [sessionID])
+        let cancelledSessions = await provider.cancelledSessions
+        XCTAssertEqual(cancelledSessions, [sessionID])
     }
 
     func testProviderErrorIsSurfacedWithoutFallbackOrFinalAssistantPersistence() async throws {
@@ -183,8 +186,10 @@ final class RequestCoordinatorTests: XCTestCase {
         }
 
         XCTAssertEqual(thrown, expected)
-        XCTAssertEqual(await selected.requests.count, 1)
-        XCTAssertEqual(await fallback.requests.count, 0)
+        let selectedRequestCount = await selected.requests.count
+        let fallbackRequestCount = await fallback.requests.count
+        XCTAssertEqual(selectedRequestCount, 1)
+        XCTAssertEqual(fallbackRequestCount, 0)
         let saved = try await store.messages(conversationID: "c1")
         XCTAssertTrue(saved.filter { $0.role == .assistant }.isEmpty)
     }
@@ -254,8 +259,10 @@ final class RequestCoordinatorTests: XCTestCase {
         }
 
         XCTAssertEqual(thrown, .emptyUserText)
-        XCTAssertEqual(await provider.requests.count, 0)
-        XCTAssertEqual(try await store.count(), 0)
+        let providerRequestCount = await provider.requests.count
+        XCTAssertEqual(providerRequestCount, 0)
+        let storedCount = try await store.count()
+        XCTAssertEqual(storedCount, 0)
     }
 
     private func toolSchema(name: String) -> ModelToolSchema {
