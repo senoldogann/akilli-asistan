@@ -18,6 +18,7 @@ final class ZeroLoseRuntimeContainer {
 
     private let runtimeController: V2ShellRuntimeController
     private let nativeToolRuntime: V2NativeToolRuntime
+    private let modelProviderFabric: ModelProviderFabric
     private let settingsController: RuntimeSettingsDataController
     private let eventStore: SQLiteEventStore?
     private let eventRecorder: RuntimeEventRecorder?
@@ -65,6 +66,44 @@ final class ZeroLoseRuntimeContainer {
 
         let registry = ToolRegistry()
         let credentialBroker = KeychainCredentialBrokerAdapter()
+
+        let providerIDKey = "v2.modelProviderID"
+        let defaultModelIDKey = "v2.modelDefaultID"
+        let defaults = UserDefaults.standard
+        let storedProviderID = defaults
+            .string(forKey: providerIDKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let selectedProviderRawValue: String
+        if let storedProviderID, !storedProviderID.isEmpty {
+            selectedProviderRawValue = storedProviderID
+        } else {
+            selectedProviderRawValue = "codex"
+            defaults.set(selectedProviderRawValue, forKey: providerIDKey)
+        }
+        let selectedProviderID = ModelProviderID(rawValue: selectedProviderRawValue)
+
+        let storedDefaultModelID = defaults
+            .string(forKey: defaultModelIDKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if storedDefaultModelID?.isEmpty != false {
+            defaults.set("default", forKey: defaultModelIDKey)
+        }
+
+        let cliLocator = CLIExecutableLocator()
+        let cliRunner = CLIProcessRunner()
+        let codexProvider = CodexCLIProvider(locator: cliLocator, runner: cliRunner)
+        let claudeProvider = ClaudeCLIProvider(locator: cliLocator, runner: cliRunner)
+        let openCodeProvider = OpenCodeCLIProvider(locator: cliLocator, runner: cliRunner)
+        let antigravityProvider = AntigravityCLIProvider(locator: cliLocator, runner: cliRunner)
+        let openAIProvider = OpenAIAPIProvider(
+            credentials: credentialBroker,
+            transport: OpenAITransport()
+        )
+        let modelProviderFabric = ModelProviderFabric(
+            providers: [codexProvider, claudeProvider, openCodeProvider, antigravityProvider, openAIProvider],
+            selectedProviderID: selectedProviderID
+        )
+
         let tavilyService = dependencies.tavilyService
         let systemStatusService = dependencies.systemStatusService
         let builtinExecutor = V2BuiltinToolExecutor(
@@ -117,6 +156,7 @@ final class ZeroLoseRuntimeContainer {
 
         self.runtimeController = runtimeController
         self.nativeToolRuntime = nativeToolRuntime
+        self.modelProviderFabric = modelProviderFabric
         self.settingsController = settingsController
         self.eventStore = eventStore
         self.eventRecorder = eventRecorder
