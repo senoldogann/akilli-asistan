@@ -44,6 +44,14 @@ actor RequestCoordinator {
                 conversationID: request.conversationID
             )
 
+            let context = try await contextOrchestrator.buildContext(
+                for: ContextQuery(
+                    text: request.text,
+                    conversationID: request.conversationID,
+                    activeGoalID: request.activeGoalID
+                )
+            )
+
             let userMessage = ConversationMessage(
                 id: UUID().uuidString,
                 conversationID: request.conversationID,
@@ -54,14 +62,6 @@ actor RequestCoordinator {
                 verifiedSemanticTruth: false
             )
             try await conversationStore.save(userMessage)
-
-            let context = try await contextOrchestrator.buildContext(
-                for: ContextQuery(
-                    text: request.text,
-                    conversationID: request.conversationID,
-                    activeGoalID: request.activeGoalID
-                )
-            )
 
             var conversation: [ModelMessage] = []
             if let systemMessage = systemMessage(from: context) {
