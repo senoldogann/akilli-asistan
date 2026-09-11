@@ -86,12 +86,10 @@ nonisolated struct StubCLIExecutableLocator: CLIExecutableLocating {
     }
 }
 
-actor FixtureCLIProcessRunner: CLIProcessRunning {
+nonisolated struct FixtureCLIProcessRunner: CLIProcessRunning {
     let events: [CLIProcessEvent]
     let terminalError: CLIProcessRunnerError?
-
-    private(set) var commands: [CLICommand] = []
-    private(set) var cancelled: [ModelSessionID] = []
+    private let state: FixtureCLIProcessRunnerState
 
     init(
         events: [CLIProcessEvent] = [],
@@ -99,12 +97,21 @@ actor FixtureCLIProcessRunner: CLIProcessRunning {
     ) {
         self.events = events
         self.terminalError = terminalError
+        state = FixtureCLIProcessRunnerState()
+    }
+
+    var commands: [CLICommand] {
+        get async { await state.commands }
+    }
+
+    var cancelled: [ModelSessionID] {
+        get async { await state.cancelled }
     }
 
     func run(
         _ command: CLICommand
     ) async -> AsyncThrowingStream<CLIProcessEvent, Error> {
-        commands.append(command)
+        await state.record(command: command)
         let events = self.events
         let terminalError = self.terminalError
 
@@ -121,7 +128,20 @@ actor FixtureCLIProcessRunner: CLIProcessRunning {
     }
 
     func cancel(sessionID: ModelSessionID) async {
-        cancelled.append(sessionID)
+        await state.record(cancelledSessionID: sessionID)
+    }
+}
+
+private actor FixtureCLIProcessRunnerState {
+    private(set) var commands: [CLICommand] = []
+    private(set) var cancelled: [ModelSessionID] = []
+
+    func record(command: CLICommand) {
+        commands.append(command)
+    }
+
+    func record(cancelledSessionID: ModelSessionID) {
+        cancelled.append(cancelledSessionID)
     }
 }
 

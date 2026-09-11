@@ -1,8 +1,8 @@
 import Foundation
 
-nonisolated struct CodexCLIProvider: ModelProvider {
-    let id = ModelProviderID(rawValue: "codex")
-    let displayName = "Codex"
+nonisolated struct OpenCodeCLIProvider: ModelProvider {
+    let id = ModelProviderID(rawValue: "opencode")
+    let displayName = "OpenCode"
     let capabilities: ModelCapabilities = [.textStreaming, .reasoningControl]
 
     private let locator: any CLIExecutableLocating
@@ -23,7 +23,7 @@ nonisolated struct CodexCLIProvider: ModelProvider {
         ProviderStatus(
             providerID: id,
             displayName: displayName,
-            availability: locator.executable(named: "codex") == nil ? .notInstalled : .detected
+            availability: locator.executable(named: "opencode") == nil ? .notInstalled : .detected
         )
     }
 
@@ -36,14 +36,19 @@ nonisolated struct CodexCLIProvider: ModelProvider {
     ) -> AsyncThrowingStream<ModelEvent, Error> {
         AsyncThrowingStream { continuation in
             Task {
-                guard let executable = locator.executable(named: "codex") else {
+                guard let executable = locator.executable(named: "opencode") else {
                     continuation.finish(throwing: ProviderError.providerUnavailable(providerID: id))
                     return
                 }
 
                 let workspace = sessionWorkspace(for: request.sessionID)
+                let configURL = workspace.appendingPathComponent("zerolose-opencode.json")
                 do {
                     try createWorkspace(workspace)
+                    try OpenCodePermissionConfig.denyAllJSON().write(
+                        to: configURL,
+                        options: [.atomic]
+                    )
                 } catch {
                     continuation.finish(throwing: ProviderError.providerUnavailable(providerID: id))
                     return
@@ -52,15 +57,7 @@ nonisolated struct CodexCLIProvider: ModelProvider {
                     removeWorkspace(workspace)
                 }
 
-                var arguments = [
-                    "exec",
-                    "--json",
-                    "--sandbox",
-                    "read-only",
-                    "--skip-git-repo-check",
-                    "-C",
-                    workspace.path
-                ]
+                var arguments = ["run", "--format", "json"]
                 if !request.modelID.isEmpty, request.modelID != "default" {
                     arguments += ["--model", request.modelID]
                 }
@@ -72,10 +69,13 @@ nonisolated struct CodexCLIProvider: ModelProvider {
                     arguments: arguments,
                     workingDirectory: workspace,
                     timeoutSeconds: 300,
-                    environmentOverrides: [.noColor: "1"]
+                    environmentOverrides: [
+                        .openCodeConfig: configURL.path,
+                        .noColor: "1"
+                    ]
                 )
 
-                var parser = CodexJSONLParser()
+                var parser = OpenCodeJSONLParser()
                 do {
                     let processEvents = await runner.run(command)
                     for try await processEvent in processEvents {
@@ -130,7 +130,7 @@ nonisolated struct CodexCLIProvider: ModelProvider {
         return base
             .appendingPathComponent("ZeroLose", isDirectory: true)
             .appendingPathComponent("ProviderWorkspaces", isDirectory: true)
-            .appendingPathComponent("codex", isDirectory: true)
+            .appendingPathComponent("opencode", isDirectory: true)
             .appendingPathComponent(sessionID.rawValue, isDirectory: true)
     }
 
@@ -157,34 +157,7 @@ nonisolated struct CodexCLIProvider: ModelProvider {
     }
 }
 
-nonisolated enum CLIModelPromptRenderer {
-    static func render(_ request: ModelRequest) -> String {
-        var sections = [
-            "You are a reasoning-only model provider inside ZeroLose.",
-            "Do not execute tools or mutate the computer. Return reasoning/output only.",
-            "Conversation:"
-        ]
-        sections.append(
-            request.conversation
-                .map { "\($0.role.rawValue.uppercased()): \($0.content)" }
-                .joined(separator: "\n")
-        )
-
-        if !request.tools.isEmpty {
-            sections.append("Available canonical tools (descriptions only; do not execute them):")
-            sections.append(
-                request.tools.map { tool in
-                    let schema = String(data: tool.inputSchemaJSON, encoding: .utf8) ?? "{}"
-                    return "- \(tool.name): \(tool.description) input_schema=\(schema)"
-                }.joined(separator: "\n")
-            )
-        }
-
-        return sections.joined(separator: "\n\n")
-    }
-}
-
-private nonisolated struct CodexJSONLParser {
+private nonisolated struct OpenCodeJSONLParser {
     private var buffer = Data()
     private var emittedStarted = false
     private var emittedCompleted = false
@@ -220,33 +193,43 @@ private nonisolated struct CodexJSONLParser {
             let object = try JSONSerialization.jsonObject(with: line) as? [String: Any],
             let type = object["type"] as? String
         else {
-            throw ProviderError.malformedOutput(providerID: ModelProviderID(rawValue: "codex"))
+            throw ProviderError.malformedOutput(providerID: ModelProviderID(rawValue: "opencode"))
         }
 
         switch type {
-        case "thread.started", "turn.started":
+        case "step_start", "step-start":
             guard !emittedStarted else { return [] }
             emittedStarted = true
             return [.started]
 
-        case "item.completed":
-            guard
-                let item = object["item"] as? [String: Any],
-                item["type"] as? String == "agent_message",
-                let text = item["text"] as? String,
-                !text.isEmpty
-            else {
+        case "text":
+            guard let part = object["part"] as? [String: Any] else {
+                return []
+            }
+            if part["synthetic"] as? Bool == true {
+                return []
+            }
+            if
+                let metadata = part["metadata"] as? [String: Any],
+                metadata["compaction_continue"] as? Bool == true
+            {
+                return []
+            }
+            guard let text = part["text"] as? String, !text.isEmpty else {
                 return []
             }
             return [.textDelta(text)]
 
-        case "turn.completed":
+        case "step_finish", "step-finish":
             guard !emittedCompleted else { return [] }
             emittedCompleted = true
             return [.completed]
 
-        case "turn.failed", "error":
-            throw ProviderError.malformedOutput(providerID: ModelProviderID(rawValue: "codex"))
+        case "tool", "tool_use", "tool-use":
+            throw ProviderError.malformedOutput(providerID: ModelProviderID(rawValue: "opencode"))
+
+        case "error":
+            throw ProviderError.malformedOutput(providerID: ModelProviderID(rawValue: "opencode"))
 
         default:
             return []

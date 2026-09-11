@@ -120,7 +120,7 @@ nonisolated struct ClaudeCLIProvider: ModelProvider {
     }
 }
 
-private struct ClaudeJSONLParser {
+private nonisolated struct ClaudeJSONLParser {
     private var buffer = Data()
     private var emittedStarted = false
     private var emittedCompleted = false

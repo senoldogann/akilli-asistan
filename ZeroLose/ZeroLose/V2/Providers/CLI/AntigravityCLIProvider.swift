@@ -1,8 +1,8 @@
 import Foundation
 
-nonisolated struct CodexCLIProvider: ModelProvider {
-    let id = ModelProviderID(rawValue: "codex")
-    let displayName = "Codex"
+nonisolated struct AntigravityCLIProvider: ModelProvider {
+    let id = ModelProviderID(rawValue: "antigravity")
+    let displayName = "Antigravity"
     let capabilities: ModelCapabilities = [.textStreaming, .reasoningControl]
 
     private let locator: any CLIExecutableLocating
@@ -23,7 +23,7 @@ nonisolated struct CodexCLIProvider: ModelProvider {
         ProviderStatus(
             providerID: id,
             displayName: displayName,
-            availability: locator.executable(named: "codex") == nil ? .notInstalled : .detected
+            availability: locator.executable(named: "agy") == nil ? .notInstalled : .detected
         )
     }
 
@@ -36,7 +36,7 @@ nonisolated struct CodexCLIProvider: ModelProvider {
     ) -> AsyncThrowingStream<ModelEvent, Error> {
         AsyncThrowingStream { continuation in
             Task {
-                guard let executable = locator.executable(named: "codex") else {
+                guard let executable = locator.executable(named: "agy") else {
                     continuation.finish(throwing: ProviderError.providerUnavailable(providerID: id))
                     return
                 }
@@ -53,29 +53,28 @@ nonisolated struct CodexCLIProvider: ModelProvider {
                 }
 
                 var arguments = [
-                    "exec",
-                    "--json",
                     "--sandbox",
-                    "read-only",
-                    "--skip-git-repo-check",
-                    "-C",
-                    workspace.path
+                    "-p",
+                    CLIModelPromptRenderer.render(request),
+                    "--output-format",
+                    "stream-json",
+                    "--print-timeout",
+                    "5m"
                 ]
                 if !request.modelID.isEmpty, request.modelID != "default" {
                     arguments += ["--model", request.modelID]
                 }
-                arguments.append(CLIModelPromptRenderer.render(request))
 
                 let command = CLICommand(
                     sessionID: request.sessionID,
                     executable: executable,
                     arguments: arguments,
                     workingDirectory: workspace,
-                    timeoutSeconds: 300,
+                    timeoutSeconds: 310,
                     environmentOverrides: [.noColor: "1"]
                 )
 
-                var parser = CodexJSONLParser()
+                var parser = AntigravityJSONLParser()
                 do {
                     let processEvents = await runner.run(command)
                     for try await processEvent in processEvents {
@@ -130,7 +129,7 @@ nonisolated struct CodexCLIProvider: ModelProvider {
         return base
             .appendingPathComponent("ZeroLose", isDirectory: true)
             .appendingPathComponent("ProviderWorkspaces", isDirectory: true)
-            .appendingPathComponent("codex", isDirectory: true)
+            .appendingPathComponent("antigravity", isDirectory: true)
             .appendingPathComponent(sessionID.rawValue, isDirectory: true)
     }
 
@@ -157,34 +156,7 @@ nonisolated struct CodexCLIProvider: ModelProvider {
     }
 }
 
-nonisolated enum CLIModelPromptRenderer {
-    static func render(_ request: ModelRequest) -> String {
-        var sections = [
-            "You are a reasoning-only model provider inside ZeroLose.",
-            "Do not execute tools or mutate the computer. Return reasoning/output only.",
-            "Conversation:"
-        ]
-        sections.append(
-            request.conversation
-                .map { "\($0.role.rawValue.uppercased()): \($0.content)" }
-                .joined(separator: "\n")
-        )
-
-        if !request.tools.isEmpty {
-            sections.append("Available canonical tools (descriptions only; do not execute them):")
-            sections.append(
-                request.tools.map { tool in
-                    let schema = String(data: tool.inputSchemaJSON, encoding: .utf8) ?? "{}"
-                    return "- \(tool.name): \(tool.description) input_schema=\(schema)"
-                }.joined(separator: "\n")
-            )
-        }
-
-        return sections.joined(separator: "\n\n")
-    }
-}
-
-private nonisolated struct CodexJSONLParser {
+private nonisolated struct AntigravityJSONLParser {
     private var buffer = Data()
     private var emittedStarted = false
     private var emittedCompleted = false
@@ -218,35 +190,47 @@ private nonisolated struct CodexJSONLParser {
     private mutating func parseLine(_ line: Data) throws -> [ModelEvent] {
         guard
             let object = try JSONSerialization.jsonObject(with: line) as? [String: Any],
-            let type = object["type"] as? String
+            let event = object["event"] as? String
         else {
-            throw ProviderError.malformedOutput(providerID: ModelProviderID(rawValue: "codex"))
+            throw ProviderError.malformedOutput(providerID: ModelProviderID(rawValue: "antigravity"))
         }
 
-        switch type {
-        case "thread.started", "turn.started":
+        switch event {
+        case "init":
             guard !emittedStarted else { return [] }
             emittedStarted = true
             return [.started]
 
-        case "item.completed":
+        case "step_update":
             guard
-                let item = object["item"] as? [String: Any],
-                item["type"] as? String == "agent_message",
-                let text = item["text"] as? String,
+                let update = object["step_update"] as? [String: Any],
+                update["step_type"] as? String == "agent_response",
+                let text = update["text_delta"] as? String,
                 !text.isEmpty
             else {
                 return []
             }
             return [.textDelta(text)]
 
-        case "turn.completed":
-            guard !emittedCompleted else { return [] }
-            emittedCompleted = true
-            return [.completed]
+        case "result":
+            guard let result = object["result"] as? [String: Any] else {
+                throw ProviderError.malformedOutput(providerID: ModelProviderID(rawValue: "antigravity"))
+            }
+            let status = (result["status"] as? String)?.uppercased() ?? ""
+            if status == "SUCCESS" {
+                guard !emittedCompleted else { return [] }
+                emittedCompleted = true
+                return [.completed]
+            }
 
-        case "turn.failed", "error":
-            throw ProviderError.malformedOutput(providerID: ModelProviderID(rawValue: "codex"))
+            let message = (result["error"] as? String)?.lowercased() ?? ""
+            if message.contains("authentication required") || message.contains("login required") {
+                throw ProviderError.loginRequired(providerID: ModelProviderID(rawValue: "antigravity"))
+            }
+            if status == "CANCELED" || status == "INTERRUPTED" {
+                throw ProviderError.cancelled(providerID: ModelProviderID(rawValue: "antigravity"))
+            }
+            throw ProviderError.malformedOutput(providerID: ModelProviderID(rawValue: "antigravity"))
 
         default:
             return []
