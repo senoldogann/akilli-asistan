@@ -16,6 +16,33 @@ ROOT = Path(__file__).resolve().parent.parent
 EXAMPILOT = ROOT / "ExamPilot"
 ZEROLOSE_PROJECT = ROOT / "ZeroLose" / "ZeroLose.xcodeproj"
 ZEROLOSE_SOURCE = ROOT / "ZeroLose" / "ZeroLose"
+ZEROLOSE_PROVIDER_SOURCE = ZEROLOSE_SOURCE / "V2" / "Providers"
+
+FORBIDDEN_ZEROLOSE_PROVIDER_TOKENS = (
+    "OllamaService",
+    "fallbackProvider",
+    "providerFallback",
+    "retryProvider",
+    "alternateProvider",
+    "importOpenCodeKeysIfNeeded",
+    "opencode.ai/",
+    "/zen/go/",
+    ".codex/auth",
+    ".claude/",
+    ".config/opencode",
+    ".local/share/opencode",
+    "auth.json",
+    "credentials.json",
+    "/bin/sh",
+    "/bin/bash",
+    "/bin/zsh",
+    "/bin/fish",
+    "/bin/dash",
+    "/bin/ksh",
+    "/bin/csh",
+    "/bin/tcsh",
+    "/usr/bin/env",
+)
 
 FORBIDDEN_ZEROLOSE_EXECUTION_TOKENS = (
     "[ACTION:",
@@ -162,6 +189,26 @@ def verify_zerolose_legacy_demolition() -> bool:
     return ok
 
 
+def verify_zerolose_provider_fabric() -> bool:
+    if not ZEROLOSE_PROVIDER_SOURCE.is_dir():
+        print("[FAIL] ZeroLose V2 provider source tree is missing", file=sys.stderr)
+        return False
+
+    ok = True
+    for path in ZEROLOSE_PROVIDER_SOURCE.rglob("*.swift"):
+        content = path.read_text(encoding="utf-8", errors="replace")
+        for token in FORBIDDEN_ZEROLOSE_PROVIDER_TOKENS:
+            if token in content:
+                relative = path.relative_to(ROOT)
+                print(
+                    f"[FAIL] forbidden ZeroLose provider token {token!r} in {relative}",
+                    file=sys.stderr,
+                )
+                ok = False
+
+    return ok
+
+
 def verify_exampilot() -> bool:
     if not EXAMPILOT.is_dir():
         return False
@@ -218,6 +265,9 @@ def main() -> int:
 
     if not verify_zerolose_legacy_demolition():
         return fail("ZeroLose legacy execution demolition verification failed")
+
+    if not verify_zerolose_provider_fabric():
+        return fail("ZeroLose provider fabric verification failed")
 
     if not verify_exampilot():
         return fail("ExamPilot verification failed")
