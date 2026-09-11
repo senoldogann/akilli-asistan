@@ -26,6 +26,9 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
     private let chatHistoryService: ChatHistoryService
     private let nativeToolRuntime: V2NativeToolRuntime
     private let responseCacheService: ResponseCacheService
+    private let requestCoordinator: RequestCoordinator
+    private let attachmentContextProvider: any MutableAttachmentContextProviding
+    private let modelIDProvider: () -> String
 
     private weak var shellViewModel: ShellViewModel?
     private var activeTask: Task<Void, Never>?
@@ -37,8 +40,11 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
     private var liveVoicePreview = ""
     private var attachedFileData: Data?
     private var attachedFileName: String?
+    private var attachedExtractedText: String?
     private var isIndexing = false
     private var authorityMode: AuthorityMode
+    private var askConversationID = UUID().uuidString
+    private var activeAskSessionID: ModelSessionID?
     var onAuthorityModeChanged: ((AuthorityMode) -> Void)?
 
     init(
@@ -52,6 +58,9 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
         vectorStore: VectorStore,
         chatHistoryService: ChatHistoryService,
         nativeToolRuntime: V2NativeToolRuntime,
+        requestCoordinator: RequestCoordinator,
+        attachmentContextProvider: any MutableAttachmentContextProviding,
+        modelIDProvider: @escaping () -> String,
         initialAuthorityMode: AuthorityMode
     ) {
         self.intelligenceService = intelligenceService
@@ -65,6 +74,9 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
         self.chatHistoryService = chatHistoryService
         self.nativeToolRuntime = nativeToolRuntime
         self.responseCacheService = .shared
+        self.requestCoordinator = requestCoordinator
+        self.attachmentContextProvider = attachmentContextProvider
+        self.modelIDProvider = modelIDProvider
         self.authorityMode = initialAuthorityMode
         installObservations()
     }
@@ -83,7 +95,7 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
     }
 
     func sendChatMessage(_ text: String) async throws {
-        try await processText(text, source: "V2 Chat")
+        try await processAsk(text, source: "V2 Chat")
     }
 
     func pauseGoal(_ goalID: GoalID) async throws {
@@ -120,8 +132,17 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
     func clearHistory() {
         activeTask?.cancel()
         activeTask = nil
+        let previousConversationID = askConversationID
+        askConversationID = UUID().uuidString
+        activeAskSessionID = nil
         messages.removeAll()
         intelligenceService.clearHistory()
+        Task {
+            await attachmentContextProvider.clearAttachments(conversationID: previousConversationID)
+        }
+        attachedExtractedText = nil
+        attachedFileData = nil
+        attachedFileName = nil
         statusMessage = "History Cleared."
         publishSnapshot()
     }
@@ -149,6 +170,12 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
         guard isBusy else { return }
         activeTask?.cancel()
         activeTask = nil
+        if let sessionID = activeAskSessionID {
+            Task {
+                await requestCoordinator.cancel(sessionID: sessionID)
+            }
+        }
+        activeAskSessionID = nil
         isBusy = false
         statusMessage = "Interrupted"
 
@@ -170,6 +197,20 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
     }
 
     func submitQuery(_ text: String, webSearchMode: WebSearchMode) {
+        if attachedExtractedText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+            startTask { [weak self] in
+                guard let self else { return }
+                do {
+                    try await self.processAsk(text, source: "V2 Shell")
+                } catch is CancellationError {
+                    self.finishCancelledTask()
+                } catch {
+                    self.appendRuntimeError(error)
+                }
+            }
+            return
+        }
+
         let attachment = attachedFileData
         if let attachment {
             let source = attachedFileName ?? "Attachment"
@@ -186,7 +227,7 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
         startTask { [weak self] in
             guard let self else { return }
             do {
-                try await self.processText(text, source: "V2 Shell", webSearchMode: webSearchMode)
+                try await self.processAsk(text, source: "V2 Shell")
             } catch is CancellationError {
                 self.finishCancelledTask()
             } catch {
@@ -223,6 +264,11 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
     func clearAttachment() {
         attachedFileData = nil
         attachedFileName = nil
+        attachedExtractedText = nil
+        let conversationID = askConversationID
+        Task {
+            await attachmentContextProvider.clearAttachments(conversationID: conversationID)
+        }
         publishSnapshot()
     }
 
@@ -232,8 +278,16 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
             attachPDF(from: url)
         default:
             do {
-                attachedFileData = try Data(contentsOf: url)
+                let data = try Data(contentsOf: url)
+                attachedFileData = data
                 attachedFileName = url.lastPathComponent
+                if let text = String(data: data, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                   !text.isEmpty {
+                    attachedExtractedText = text
+                } else {
+                    attachedExtractedText = nil
+                }
                 statusMessage = "Attachment ready"
             } catch {
                 statusMessage = "Attachment failed: \(error.localizedDescription)"
@@ -347,6 +401,143 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
     }
 
     // MARK: - Processing
+
+    private func processAsk(_ text: String, source _: String) async throws {
+        let query = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return }
+        guard !isBusy else {
+            throw V2RuntimeCommandError.unsupportedCommand("concurrent-chat")
+        }
+
+        isBusy = true
+        statusMessage = "Thinking..."
+        messages.append(ChatMessage(text: query, isUser: true, type: .text))
+        let assistantID = UUID()
+        messages.append(
+            ChatMessage(
+                id: assistantID,
+                text: "Thinking...",
+                isUser: false,
+                type: .thinking,
+                relatedQuery: query
+            )
+        )
+        let assistantIndex = messages.count - 1
+        publishSnapshot()
+
+        let conversationID = askConversationID
+        let sessionID = ModelSessionID(rawValue: UUID().uuidString)
+        activeAskSessionID = sessionID
+        let hadAttachmentContext = await stageAttachmentContextIfNeeded(conversationID: conversationID)
+        if hadAttachmentContext {
+            attachedFileData = nil
+            attachedFileName = nil
+            attachedExtractedText = nil
+            publishSnapshot()
+        }
+
+        do {
+            let request = AskRequest(
+                sessionID: sessionID,
+                conversationID: conversationID,
+                text: query,
+                modelID: modelIDProvider(),
+                activeGoalID: nil
+            )
+            let stream = await requestCoordinator.stream(request)
+            var responseText = ""
+            var completed = false
+
+            for try await event in stream {
+                try Task.checkCancellation()
+                switch event {
+                case .started:
+                    statusMessage = "Thinking..."
+                    publishSnapshot()
+                case .textDelta(let delta):
+                    responseText += delta
+                    updateAssistantMessage(
+                        at: assistantIndex,
+                        id: assistantID,
+                        text: responseText,
+                        type: .thinking,
+                        origin: .aiGenerated,
+                        relatedQuery: query,
+                        thinking: nil
+                    )
+                case .toolCall:
+                    break
+                case .completed:
+                    completed = true
+                }
+            }
+
+            try Task.checkCancellation()
+            if completed {
+                updateAssistantMessage(
+                    at: assistantIndex,
+                    id: assistantID,
+                    text: responseText.isEmpty ? "[No response]" : responseText,
+                    type: .text,
+                    origin: .aiGenerated,
+                    relatedQuery: query,
+                    thinking: nil
+                )
+            }
+            await attachmentContextProvider.clearAttachments(conversationID: conversationID)
+            if activeAskSessionID == sessionID {
+                activeAskSessionID = nil
+            }
+            isBusy = false
+            statusMessage = "Ready"
+            activeTask = nil
+            publishSnapshot()
+        } catch {
+            await attachmentContextProvider.clearAttachments(conversationID: conversationID)
+            if activeAskSessionID == sessionID {
+                activeAskSessionID = nil
+            }
+            isBusy = false
+            activeTask = nil
+            let cancelled = error is CancellationError || Task.isCancelled || Self.isProviderCancellation(error)
+            statusMessage = cancelled ? "Stopped" : "Error"
+            if messages.indices.contains(assistantIndex) {
+                let existing = messages[assistantIndex]
+                messages[assistantIndex] = ChatMessage(
+                    id: existing.id,
+                    text: cancelled ? "[Stopped by user]" : "Error: \(error.localizedDescription)",
+                    isUser: false,
+                    type: cancelled ? .text : .error,
+                    assistantOrigin: cancelled ? existing.assistantOrigin : nil,
+                    relatedQuery: query
+                )
+            }
+            publishSnapshot()
+            throw error
+        }
+    }
+
+    private func stageAttachmentContextIfNeeded(conversationID: String) async -> Bool {
+        guard let extractedText = attachedExtractedText?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !extractedText.isEmpty else {
+            await attachmentContextProvider.clearAttachments(conversationID: conversationID)
+            return false
+        }
+
+        await attachmentContextProvider.replaceAttachments(
+            [
+                AttachmentContextSnapshot(
+                    id: UUID().uuidString,
+                    displayName: attachedFileName ?? "Attachment",
+                    extractedText: extractedText,
+                    recordedAt: Date()
+                )
+            ],
+            conversationID: conversationID
+        )
+        return true
+    }
 
     private func processText(
         _ text: String,
@@ -595,6 +786,11 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
             return
         }
 
+        attachedExtractedText = (0..<pdfDocument.pageCount)
+            .compactMap { pdfDocument.page(at: $0)?.string }
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
         if let page = pdfDocument.page(at: 0) {
             let rect = page.bounds(for: .mediaBox)
             let thumbnail = page.thumbnail(
@@ -694,6 +890,14 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
         case .model:
             return .aiGenerated
         }
+    }
+
+    private nonisolated static func isProviderCancellation(_ error: Error) -> Bool {
+        guard let providerError = error as? ProviderError else { return false }
+        if case .cancelled = providerError {
+            return true
+        }
+        return false
     }
 
     private nonisolated static func jpegData(from image: NSImage) -> Data? {

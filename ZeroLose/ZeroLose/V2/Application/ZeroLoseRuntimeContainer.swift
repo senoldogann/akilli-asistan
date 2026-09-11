@@ -64,6 +64,24 @@ final class ZeroLoseRuntimeContainer {
             runtimeProjectionInitializationError = "Runtime activity unavailable"
         }
 
+        let conversationStore: any ConversationStoring
+        do {
+            conversationStore = try SQLiteConversationStore(
+                databaseURL: runtimeDirectory.appendingPathComponent("conversation.sqlite3")
+            )
+        } catch {
+            conversationStore = TransientConversationStore()
+        }
+
+        let memoryStore: any MemoryStoring
+        do {
+            memoryStore = try SQLiteMemoryStore(
+                databaseURL: runtimeDirectory.appendingPathComponent("memory.sqlite3")
+            )
+        } catch {
+            memoryStore = TransientMemoryStore()
+        }
+
         let registry = ToolRegistry()
         let credentialBroker = KeychainCredentialBrokerAdapter()
 
@@ -104,6 +122,22 @@ final class ZeroLoseRuntimeContainer {
             selectedProviderID: selectedProviderID
         )
 
+        let attachmentContextBuffer = AttachmentContextBuffer()
+        let attachmentContextProvider: any AttachmentContextProviding = attachmentContextBuffer
+        let contextOrchestrator = ContextOrchestrator(
+            sources: [
+                ConversationContextSource(store: conversationStore),
+                MemoryContextSource(store: memoryStore),
+                AttachmentContextSource(provider: attachmentContextProvider)
+            ],
+            policy: ContextPolicy(maxCharacters: 16_000, minimumRelevance: 0.10)
+        )
+        let requestCoordinator = RequestCoordinator(
+            contextOrchestrator: contextOrchestrator,
+            providerFabric: modelProviderFabric,
+            conversationStore: conversationStore
+        )
+
         let tavilyService = dependencies.tavilyService
         let systemStatusService = dependencies.systemStatusService
         let builtinExecutor = V2BuiltinToolExecutor(
@@ -139,6 +173,14 @@ final class ZeroLoseRuntimeContainer {
             vectorStore: dependencies.vectorStore,
             chatHistoryService: dependencies.chatHistoryService,
             nativeToolRuntime: nativeToolRuntime,
+            requestCoordinator: requestCoordinator,
+            attachmentContextProvider: attachmentContextBuffer,
+            modelIDProvider: {
+                let configured = UserDefaults.standard
+                    .string(forKey: defaultModelIDKey)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return configured?.isEmpty == false ? configured! : "default"
+            },
             initialAuthorityMode: initialAuthority
         )
         let memoryController = UnavailableMemoryCommandController()
@@ -177,6 +219,58 @@ final class ZeroLoseRuntimeContainer {
             settingsViewModel?.apply(SettingsProjectionSnapshot(authorityMode: mode))
         }
         runtimeController.bind(to: shellViewModel)
+    }
+}
+
+private actor TransientConversationStore: ConversationStoring {
+    private var values: [String: ConversationMessage] = [:]
+
+    func save(_ message: ConversationMessage) async throws {
+        values[message.id] = message
+    }
+
+    func message(id: String) async throws -> ConversationMessage? {
+        values[id]
+    }
+
+    func messages(conversationID: String) async throws -> [ConversationMessage] {
+        values.values
+            .filter { $0.conversationID == conversationID }
+            .sorted { lhs, rhs in
+                if lhs.recordedAt == rhs.recordedAt {
+                    return lhs.id < rhs.id
+                }
+                return lhs.recordedAt < rhs.recordedAt
+            }
+    }
+
+    func count() async throws -> Int {
+        values.count
+    }
+}
+
+private actor TransientMemoryStore: MemoryStoring {
+    private var values: [String: MemoryRecord] = [:]
+
+    func save(_ record: MemoryRecord) async throws {
+        values[record.id] = record
+    }
+
+    func record(id: String) async throws -> MemoryRecord? {
+        values[id]
+    }
+
+    func semantic(id: String) async throws -> SemanticMemoryRecord? {
+        guard let record = values[id], case .semantic(let semantic) = record else {
+            return nil
+        }
+        return semantic
+    }
+
+    func records(scope: MemoryScope) async throws -> [MemoryRecord] {
+        values.values
+            .filter { $0.scope == scope }
+            .sorted { $0.id < $1.id }
     }
 }
 
