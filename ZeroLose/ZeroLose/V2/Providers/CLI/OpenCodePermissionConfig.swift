@@ -25,10 +25,7 @@ nonisolated enum OpenCodePermissionConfig {
             uniqueKeysWithValues: deniedPermissionClasses.map { ($0, "deny") }
         )
         return try JSONSerialization.data(
-            withJSONObject: [
-                "$schema": "https://opencode.ai/config.json",
-                "permission": permission
-            ],
+            withJSONObject: ["permission": permission],
             options: [.sortedKeys]
         )
     }

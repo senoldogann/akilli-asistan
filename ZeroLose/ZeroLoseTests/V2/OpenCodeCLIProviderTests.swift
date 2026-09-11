@@ -43,6 +43,7 @@ final class OpenCodeCLIProviderTests: XCTestCase {
             "skill", "question", "doom_loop"
         ])
 
+        XCTAssertNil(object["$schema"])
         XCTAssertEqual(Set(permissions.keys), expected)
         XCTAssertTrue(permissions.values.allSatisfy { $0 == "deny" })
     }
