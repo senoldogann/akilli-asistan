@@ -148,7 +148,7 @@ nonisolated struct ContextOrchestrator: Sendable {
             usedCharacters += truncated.content.count
         }
 
-        return ContextBundle(
+        return .init(
             items: selected,
             excluded: excluded,
             usedCharacters: usedCharacters
