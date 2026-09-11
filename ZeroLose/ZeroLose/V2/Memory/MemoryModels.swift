@@ -31,6 +31,15 @@ enum MemoryProvenance: String, Codable, Sendable {
     case derived
 }
 
+struct MemoryCandidate: Sendable, Equatable {
+    let content: String
+    let scope: MemoryScope
+    let provenance: MemoryProvenance
+    let confidence: Double
+    let tainted: Bool
+    let sourceEvidenceID: String?
+}
+
 struct EpisodicMemoryRecord: Codable, Sendable, Equatable {
     let id: String
     let scope: MemoryScope
