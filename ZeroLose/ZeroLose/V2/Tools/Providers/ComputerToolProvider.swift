@@ -7,6 +7,14 @@ enum ComputerToolProviderError: Error, Equatable {
 struct ComputerToolProvider: ToolProviding {
     let providerID = "computer"
 
+    private static let supportedActions: Set<String> = [
+        "pointer.click",
+        "keyboard.type",
+        "keyboard.press",
+        "scroll",
+        "wait",
+    ]
+
     private let gateway: ComputerMutationGating
 
     init(gateway: ComputerMutationGating) {
@@ -29,12 +37,13 @@ struct ComputerToolProvider: ToolProviding {
         }
 
         guard let metadata = try? JSONDecoder().decode(Metadata.self, from: invocation.argumentsJSON),
-              !metadata.observationID.isEmpty else {
+              !metadata.observationID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              metadata.observationID == metadata.observationID.trimmingCharacters(in: .whitespacesAndNewlines) else {
             throw ComputerToolProviderError.invalidArguments
         }
 
         let action = String(descriptor.id.rawValue.dropFirst("computer.".count))
-        guard !action.isEmpty else {
+        guard Self.supportedActions.contains(action) else {
             throw ComputerToolProviderError.invalidArguments
         }
 

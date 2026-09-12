@@ -69,6 +69,37 @@ final class ComputerToolProviderTests: XCTestCase {
         XCTAssertEqual(proposalCount, 0)
     }
 
+    func testComputerProviderRejectsUnsupportedActionBeforeGateway() async {
+        let gateway = RecordingComputerMutationGateway()
+        let provider = ComputerToolProvider(gateway: gateway)
+        let descriptor = ToolDescriptor.providerTest(
+            id: "computer.pointer.drag",
+            providerID: "computer",
+            effectClass: .reversibleLocalMutation,
+            declaredRisk: .reversibleLocalMutation
+        )
+        let invocation = ToolInvocation.providerTest(
+            toolID: descriptor.id.rawValue,
+            argumentsJSON: Data(#"{"stateVersion":42,"observationID":"obs-42"}"#.utf8)
+        )
+
+        do {
+            _ = try await provider.execute(
+                descriptor: descriptor,
+                invocation: invocation,
+                credentialHandles: []
+            )
+            XCTFail("Expected unsupported computer action to fail closed")
+        } catch let error as ComputerToolProviderError {
+            XCTAssertEqual(error, .invalidArguments)
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+
+        let proposalCount = await gateway.proposalCount
+        XCTAssertEqual(proposalCount, 0)
+    }
+
     func testBuiltinProviderDelegatesToInjectedExecutor() async throws {
         let executor = RecordingBuiltinExecutor()
         let provider = BuiltinToolProvider(executor: executor)
