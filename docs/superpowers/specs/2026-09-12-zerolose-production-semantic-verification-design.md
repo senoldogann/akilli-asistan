@@ -64,6 +64,8 @@ The initial design deliberately avoids generic free-form verification strings. T
 
 Before a computer mutation enters Tool Fabric, the runtime obtains one authoritative pre-action observation and binds its `stateVersion` and `observationID` into the invocation arguments. The same bound values are the ones later validated by `MacOSComputerMutationAdapter`. If the planner supplies either field, the runtime rejects the proposal rather than trusting or silently overwriting model-generated authority data.
 
+The observation provider separates **refresh** from **current** state. Refresh fuses live screen/accessibility identity, increments `stateVersion`, mints a new `observationID`, and stores that accepted token. Current state returns the last accepted token without minting a new version. `MacOSComputerMutationAdapter` compares the proposal against current state; it must not refresh while validating, otherwise every pre-bound token would become stale by construction. The executor performs an explicit refresh before binding and another explicit refresh after the physical action for verification.
+
 The planner-visible schema for computer tools therefore excludes runtime-owned freshness fields even though the registered execution descriptor still requires them after runtime binding. This keeps stale-state protection meaningful and makes the pre-action observation used for execution the same observation used as the verifier's "before" evidence.
 
 ## 5. Execution Artifact
@@ -278,14 +280,15 @@ Required cases:
 12. Unknown verification contract fails closed.
 13. Missing/incompatible planner expectation is rejected before execution.
 14. Planner-supplied `stateVersion` or `observationID` is rejected rather than trusted.
-15. Runtime binds freshness fields from the exact pre-action observation used for verification.
-16. Provider final text alone cannot verify.
-17. Goal does not complete when any task lacks verification evidence.
-18. Goal completion preserves taint when any contributing task evidence is tainted.
-19. Goal completes when every admitted task has valid verification evidence.
-20. Existing Emergency Stop and cancellation tests remain green.
-21. Architecture boundary tests continue to prevent direct physical-input authority outside the adapter path.
-22. Repository-wide `python3 scripts/verify_all.py` passes on the committed revision.
+15. Observation refresh mints a new token, while current-state reads do not advance the version.
+16. Runtime binds freshness fields from the exact pre-action observation used for verification.
+17. Provider final text alone cannot verify.
+18. Goal does not complete when any task lacks verification evidence.
+19. Goal completion preserves taint when any contributing task evidence is tainted.
+20. Goal completes when every admitted task has valid verification evidence.
+21. Existing Emergency Stop and cancellation tests remain green.
+22. Architecture boundary tests continue to prevent direct physical-input authority outside the adapter path.
+23. Repository-wide `python3 scripts/verify_all.py` passes on the committed revision.
 
 ## 15. Non-Goals
 
