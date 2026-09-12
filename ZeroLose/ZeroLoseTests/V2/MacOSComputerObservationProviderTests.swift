@@ -5,7 +5,7 @@ import XCTest
 
 @MainActor
 final class MacOSComputerObservationProviderTests: XCTestCase {
-    func testMatchingIdentityReturnsFreshMonotonicMutationStateAndPresentationMetadata() async throws {
+    func testCurrentStateDoesNotAdvanceAcceptedObservation() async throws {
         let sourceProvider = SequencedObservationSourceProvider(
             results: [
                 .success(sources(processID: 101, windowID: 11)),
@@ -17,9 +17,33 @@ final class MacOSComputerObservationProviderTests: XCTestCase {
             observationIDGenerator: { version in "obs-\(version)" }
         )
 
-        let first = try await provider.currentComputerMutationState()
+        let refreshed = try await provider.refreshComputerMutationState()
+        let refreshedMetadata = await provider.latestPresentationMetadata()
+        let current = try await provider.currentComputerMutationState()
+        let currentMetadata = await provider.latestPresentationMetadata()
+
+        XCTAssertEqual(refreshed, ComputerMutationState(stateVersion: 1, observationID: "obs-1"))
+        XCTAssertEqual(current, refreshed)
+        XCTAssertEqual(currentMetadata, refreshedMetadata)
+        let readCount = await sourceProvider.readCount
+        XCTAssertEqual(readCount, 1, "Reading current state must not mint a fresh observation")
+    }
+
+    func testExplicitRefreshAdvancesStateVersionAndObservationID() async throws {
+        let sourceProvider = SequencedObservationSourceProvider(
+            results: [
+                .success(sources(processID: 101, windowID: 11)),
+                .success(sources(processID: 202, windowID: 22)),
+            ]
+        )
+        let provider = MacOSComputerObservationProvider(
+            sourceProvider: sourceProvider,
+            observationIDGenerator: { version in "obs-\(version)" }
+        )
+
+        let first = try await provider.refreshComputerMutationState()
         let firstMetadata = await provider.latestPresentationMetadata()
-        let second = try await provider.currentComputerMutationState()
+        let second = try await provider.refreshComputerMutationState()
         let secondMetadata = await provider.latestPresentationMetadata()
 
         XCTAssertEqual(first, ComputerMutationState(stateVersion: 1, observationID: "obs-1"))
@@ -104,10 +128,17 @@ final class MacOSComputerObservationProviderTests: XCTestCase {
             observationIDGenerator: { version in "obs-\(version)" }
         )
 
-        let accepted = try await provider.currentComputerMutationState()
+        let accepted = try await provider.refreshComputerMutationState()
         XCTAssertEqual(accepted.stateVersion, 1)
 
-        await assertProviderError(.reobserve(.identityMismatch), provider: provider)
+        do {
+            _ = try await provider.refreshComputerMutationState()
+            XCTFail("Expected identity mismatch during explicit refresh")
+        } catch let error as MacOSComputerObservationProviderError {
+            XCTAssertEqual(error, .reobserve(.identityMismatch))
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
 
         let metadata = await provider.latestPresentationMetadata()
         XCTAssertNil(

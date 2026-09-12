@@ -32,7 +32,7 @@ final class ToolFabricComputerMutationGatewayTests: XCTestCase {
         )
 
         let invocations = await fabric.recordedInvocations
-        let stateReadCount = await stateProvider.readCount
+        let stateRefreshCount = await stateProvider.refreshCount
         let invocationIDs = Set(invocations.map(\.invocationID))
         let registryRevisions = invocations.map(\.registryRevision)
         let toolIDs = invocations.map { $0.toolID.rawValue }
@@ -41,7 +41,7 @@ final class ToolFabricComputerMutationGatewayTests: XCTestCase {
         XCTAssertEqual(receipts.count, 3)
         XCTAssertEqual(invocations.count, 3)
         XCTAssertEqual(invocationIDs.count, 3, "Every physical action needs a fresh invocation")
-        XCTAssertEqual(stateReadCount, 3, "Current computer state must be read before every action")
+        XCTAssertEqual(stateRefreshCount, 3, "Computer state must be explicitly refreshed before every action")
         XCTAssertEqual(registryRevisions, [2, 3, 4], "Registry must be re-snapshotted before every action")
         XCTAssertEqual(
             toolIDs,
@@ -72,22 +72,31 @@ private struct StateMetadata: Equatable {
     let observationID: String
 }
 
-private actor SequencedComputerMutationStateProvider: ComputerMutationStateProviding {
+private actor SequencedComputerMutationStateProvider: ComputerMutationStateRefreshing {
     private let states: [ComputerMutationState]
     private var index = 0
-    private(set) var readCount = 0
+    private var accepted: ComputerMutationState?
+    private(set) var refreshCount = 0
 
     init(states: [ComputerMutationState]) {
         self.states = states
     }
 
     func currentComputerMutationState() async throws -> ComputerMutationState {
+        guard let accepted else {
+            throw TestGatewayError.missingState
+        }
+        return accepted
+    }
+
+    func refreshComputerMutationState() async throws -> ComputerMutationState {
         guard index < states.count else {
             throw TestGatewayError.missingState
         }
         let state = states[index]
         index += 1
-        readCount += 1
+        refreshCount += 1
+        accepted = state
         return state
     }
 }

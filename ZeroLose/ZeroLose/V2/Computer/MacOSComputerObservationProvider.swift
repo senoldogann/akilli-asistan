@@ -38,12 +38,13 @@ enum MacOSComputerObservationProviderError: Error, Sendable, Equatable {
     case invalidObservation
 }
 
-actor MacOSComputerObservationProvider: ComputerMutationStateProviding {
+actor MacOSComputerObservationProvider: ComputerMutationStateRefreshing {
     private let sourceProvider: any MacOSComputerObservationSourceProviding
     private let engine: ComputerObservationEngine
     private let observationIDGenerator: @Sendable (UInt64) -> String
 
     private var acceptedStateVersion: UInt64 = 0
+    private var acceptedState: ComputerMutationState?
     private var presentationMetadata: MacOSComputerObservationPresentationMetadata?
 
     init(
@@ -59,6 +60,14 @@ actor MacOSComputerObservationProvider: ComputerMutationStateProviding {
     }
 
     func currentComputerMutationState() async throws -> ComputerMutationState {
+        if let acceptedState {
+            return acceptedState
+        }
+        return try await refreshComputerMutationState()
+    }
+
+    func refreshComputerMutationState() async throws -> ComputerMutationState {
+        acceptedState = nil
         presentationMetadata = nil
 
         let sources: MacOSComputerObservationSources
@@ -92,7 +101,12 @@ actor MacOSComputerObservationProvider: ComputerMutationStateProviding {
                 throw MacOSComputerObservationProviderError.invalidObservation
             }
 
+            let state = ComputerMutationState(
+                stateVersion: observation.stateVersion,
+                observationID: observation.observationID
+            )
             acceptedStateVersion = nextVersion
+            acceptedState = state
             presentationMetadata = MacOSComputerObservationPresentationMetadata(
                 observationID: observation.observationID,
                 stateVersion: observation.stateVersion,
@@ -103,10 +117,7 @@ actor MacOSComputerObservationProvider: ComputerMutationStateProviding {
                 confidence: observation.confidence
             )
 
-            return ComputerMutationState(
-                stateVersion: observation.stateVersion,
-                observationID: observation.observationID
-            )
+            return state
         }
     }
 
