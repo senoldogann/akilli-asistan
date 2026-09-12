@@ -45,6 +45,41 @@ final class ModelProviderFabricTests: XCTestCase {
         XCTAssertFalse(rendered.contains("credential"))
     }
 
+    func testSelectedModelCapabilityFollowsAuthoritativeProviderSelection() async {
+        let codexID = ModelProviderID(rawValue: "codex")
+        let openAIID = ModelProviderID(rawValue: "openai")
+        let codex = RecordingModelProvider(
+            id: "codex",
+            capabilities: [.textStreaming]
+        )
+        let openAI = RecordingModelProvider(
+            id: "openai",
+            capabilities: [.textStreaming, .jsonOutput]
+        )
+        let fabric = ModelProviderFabric(
+            providers: [codex, openAI],
+            selectedProviderID: codexID
+        )
+
+        let codexSupportsJSON = await fabric.selectedModelSupports(
+            .jsonOutput,
+            modelID: "default"
+        )
+        XCTAssertFalse(codexSupportsJSON)
+
+        await fabric.select(openAIID)
+        let openAISupportsJSON = await fabric.selectedModelSupports(
+            .jsonOutput,
+            modelID: "default"
+        )
+        let unknownModelSupportsJSON = await fabric.selectedModelSupports(
+            .jsonOutput,
+            modelID: "unknown-model"
+        )
+        XCTAssertTrue(openAISupportsJSON)
+        XCTAssertFalse(unknownModelSupportsJSON)
+    }
+
     func testSelectingProviderChangesAuthoritativeRoute() async throws {
         let codexID = ModelProviderID(rawValue: "codex")
         let claudeID = ModelProviderID(rawValue: "claude")

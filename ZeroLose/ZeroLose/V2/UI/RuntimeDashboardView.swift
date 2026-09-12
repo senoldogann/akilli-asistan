@@ -91,14 +91,13 @@ struct RuntimeDashboardView: View {
                     runCommand { try await taskRuntimeViewModel.cancel() }
                 }
                 .disabled(!taskRuntimeViewModel.canCancel)
+
+                Button("Emergency Stop") {
+                    runCommand { try await taskRuntimeViewModel.emergencyStop() }
+                }
+                .disabled(!taskRuntimeViewModel.canEmergencyStop)
             }
             .controlSize(.small)
-
-            if !taskRuntimeViewModel.hasActiveGoal {
-                Text("Autonomous runtime not configured")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
 
             if let commandErrorMessage {
                 Text(commandErrorMessage)

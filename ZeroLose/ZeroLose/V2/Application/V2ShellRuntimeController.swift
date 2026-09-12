@@ -8,6 +8,194 @@ enum V2RuntimeCommandError: Error, Equatable {
     case unsupportedCommand(String)
 }
 
+protocol AgentOrchestrating: Sendable {
+    func start(goal: GoalSnapshot) async throws -> AgentSessionSnapshot
+    func pause() async
+    func resume() async throws
+    func cancel() async
+    func emergencyStop() async
+    func snapshot() async -> AgentSessionSnapshot?
+    func isPaused() async -> Bool
+}
+
+extension AgentOrchestrator: AgentOrchestrating {}
+
+nonisolated final class AgentEmergencyStopState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stopped = false
+
+    var isStopped: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return stopped
+    }
+
+    func stop() {
+        lock.lock()
+        stopped = true
+        lock.unlock()
+    }
+
+    func reset() {
+        lock.lock()
+        stopped = false
+        lock.unlock()
+    }
+}
+
+nonisolated final class AgentMutationExecutionState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var activeCount = 0
+
+    var isActive: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return activeCount > 0
+    }
+
+    func begin() {
+        lock.lock()
+        activeCount += 1
+        lock.unlock()
+    }
+
+    func end() {
+        lock.lock()
+        activeCount = max(0, activeCount - 1)
+        lock.unlock()
+    }
+}
+
+actor AgentCommandRuntime {
+    private let orchestrator: any AgentOrchestrating
+    private let emergencyStopState: AgentEmergencyStopState
+    private let structuredPlanningAvailable: @Sendable () async -> Bool
+    private let mutationExecutionActive: @Sendable () async -> Bool
+    private var activeRun: Task<AgentSessionSnapshot, Error>?
+
+    init(
+        orchestrator: any AgentOrchestrating,
+        emergencyStopState: AgentEmergencyStopState,
+        structuredPlanningAvailable: @escaping @Sendable () async -> Bool = { true },
+        mutationExecutionActive: @escaping @Sendable () async -> Bool = { false }
+    ) {
+        self.orchestrator = orchestrator
+        self.emergencyStopState = emergencyStopState
+        self.structuredPlanningAvailable = structuredPlanningAvailable
+        self.mutationExecutionActive = mutationExecutionActive
+    }
+
+    func submitUserGoal(_ text: String) async throws -> AgentSessionSnapshot {
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else {
+            throw V2RuntimeCommandError.unsupportedCommand("agent-empty-goal")
+        }
+        if let existing = await orchestrator.snapshot(),
+           !Self.isTerminal(existing.lifecycle) {
+            throw V2RuntimeCommandError.unsupportedCommand("agent-session-already-active")
+        }
+        guard await structuredPlanningAvailable() else {
+            throw V2RuntimeCommandError.unsupportedCommand(
+                "agent-structured-planning-unavailable"
+            )
+        }
+
+        emergencyStopState.reset()
+        let goal = GoalSnapshot(
+            id: GoalID(rawValue: UUID().uuidString),
+            objective: normalized
+        )
+        let orchestrator = self.orchestrator
+        let run = Task {
+            try await orchestrator.start(goal: goal)
+        }
+        activeRun = run
+
+        for _ in 0..<100 {
+            if let session = await orchestrator.snapshot() {
+                return session
+            }
+            await Task.yield()
+        }
+
+        do {
+            let final = try await run.value
+            activeRun = nil
+            return final
+        } catch {
+            activeRun = nil
+            throw error
+        }
+    }
+
+    func pause(sessionID: AgentSessionID) async throws {
+        _ = try await requireActiveSession(sessionID)
+        await orchestrator.pause()
+    }
+
+    func resume(sessionID: AgentSessionID) async throws {
+        _ = try await requireActiveSession(sessionID)
+        try await orchestrator.resume()
+    }
+
+    func cancel(sessionID: AgentSessionID) async throws {
+        _ = try await requireActiveSession(sessionID)
+        await orchestrator.cancel()
+    }
+
+    func emergencyStop() async throws {
+        guard let session = await orchestrator.snapshot(),
+              !Self.isTerminal(session.lifecycle) else {
+            throw V2RuntimeCommandError.unsupportedCommand("agent-session-not-active")
+        }
+        emergencyStopState.stop()
+        await orchestrator.emergencyStop()
+    }
+
+    func snapshot() async -> (
+        session: AgentSessionSnapshot?,
+        isPaused: Bool,
+        mutationExecutionActive: Bool
+    ) {
+        (
+            await orchestrator.snapshot(),
+            await orchestrator.isPaused(),
+            await mutationExecutionActive()
+        )
+    }
+
+    func waitForCurrentRun() async -> AgentSessionSnapshot? {
+        guard let activeRun else {
+            return await orchestrator.snapshot()
+        }
+
+        defer { self.activeRun = nil }
+        do {
+            return try await activeRun.value
+        } catch {
+            return await orchestrator.snapshot()
+        }
+    }
+
+    private func requireActiveSession(_ sessionID: AgentSessionID) async throws -> AgentSessionSnapshot {
+        guard let session = await orchestrator.snapshot(),
+              session.id == sessionID,
+              !Self.isTerminal(session.lifecycle) else {
+            throw V2RuntimeCommandError.unsupportedCommand("agent-session-not-active")
+        }
+        return session
+    }
+
+    private static func isTerminal(_ lifecycle: AgentLifecycle) -> Bool {
+        switch lifecycle {
+        case .completed, .cancelled, .blocked, .failed, .manualResolutionRequired:
+            return true
+        case .created, .planning, .ready, .executing, .observing, .verifying:
+            return false
+        }
+    }
+}
+
 /// Main application runtime used by the SwiftUI shell after the V2 cutover.
 ///
 /// This controller intentionally owns no physical-input, shell, AppleScript, or
@@ -29,9 +217,11 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
     private let requestCoordinator: RequestCoordinator
     private let attachmentContextProvider: any MutableAttachmentContextProviding
     private let modelIDProvider: () -> String
+    private let agentRuntime: AgentCommandRuntime?
 
     private weak var shellViewModel: ShellViewModel?
     private var activeTask: Task<Void, Never>?
+    private var agentStateTask: Task<Void, Never>?
     private var messages: [ChatMessage] = []
     private var isBusy = false
     private var statusMessage = "Ready"
@@ -46,6 +236,7 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
     private var askConversationID = UUID().uuidString
     private var activeAskSessionID: ModelSessionID?
     var onAuthorityModeChanged: ((AuthorityMode) -> Void)?
+    var onAgentStateChanged: ((TaskRuntimeProjectionSnapshot) -> Void)?
 
     init(
         intelligenceService: IntelligenceService,
@@ -61,6 +252,7 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
         requestCoordinator: RequestCoordinator,
         attachmentContextProvider: any MutableAttachmentContextProviding,
         modelIDProvider: @escaping () -> String,
+        agentRuntime: AgentCommandRuntime? = nil,
         initialAuthorityMode: AuthorityMode
     ) {
         self.intelligenceService = intelligenceService
@@ -77,6 +269,7 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
         self.requestCoordinator = requestCoordinator
         self.attachmentContextProvider = attachmentContextProvider
         self.modelIDProvider = modelIDProvider
+        self.agentRuntime = agentRuntime
         self.authorityMode = initialAuthorityMode
         installObservations()
     }
@@ -91,7 +284,46 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
     func submitUserGoal(_ text: String) async throws {
         let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty else { return }
-        throw V2RuntimeCommandError.unsupportedCommand("autonomous-goal-runtime-not-configured")
+        guard let agentRuntime else {
+            throw V2RuntimeCommandError.unsupportedCommand("agent-runtime-unavailable")
+        }
+
+        _ = await nativeToolRuntime.configuration()
+        let session = try await agentRuntime.submitUserGoal(normalized)
+        let initialState = await agentRuntime.snapshot()
+        publishAgentState(
+            session: session,
+            isPaused: initialState.isPaused,
+            mutationExecutionActive: initialState.mutationExecutionActive
+        )
+        if session.lifecycle == .failed {
+            throw V2RuntimeCommandError.unsupportedCommand("agent-structured-planning-blocked")
+        }
+
+        guard !Self.isTerminalAgentLifecycle(session.lifecycle) else { return }
+        agentStateTask?.cancel()
+        agentStateTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                let state = await agentRuntime.snapshot()
+                guard let current = state.session else { break }
+                self.publishAgentState(
+                    session: current,
+                    isPaused: state.isPaused,
+                    mutationExecutionActive: state.mutationExecutionActive
+                )
+                if Self.isTerminalAgentLifecycle(current.lifecycle) {
+                    _ = await agentRuntime.waitForCurrentRun()
+                    break
+                }
+                do {
+                    try await Task.sleep(nanoseconds: 25_000_000)
+                } catch {
+                    break
+                }
+            }
+            self.agentStateTask = nil
+        }
     }
 
     func sendChatMessage(_ text: String) async throws {
@@ -99,15 +331,47 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
     }
 
     func pauseGoal(_ goalID: GoalID) async throws {
-        throw V2RuntimeCommandError.unsupportedCommand("pause:\(goalID.rawValue)")
+        throw V2RuntimeCommandError.unsupportedCommand("agent-session-id-required:pause:\(goalID.rawValue)")
     }
 
     func resumeGoal(_ goalID: GoalID) async throws {
-        throw V2RuntimeCommandError.unsupportedCommand("resume:\(goalID.rawValue)")
+        throw V2RuntimeCommandError.unsupportedCommand("agent-session-id-required:resume:\(goalID.rawValue)")
     }
 
     func cancelGoal(_ goalID: GoalID) async throws {
-        stopResponse()
+        throw V2RuntimeCommandError.unsupportedCommand("agent-session-id-required:cancel:\(goalID.rawValue)")
+    }
+
+    func pauseAgentSession(_ sessionID: AgentSessionID) async throws {
+        guard let agentRuntime else {
+            throw V2RuntimeCommandError.unsupportedCommand("agent-runtime-unavailable")
+        }
+        try await agentRuntime.pause(sessionID: sessionID)
+        await publishCurrentAgentState()
+    }
+
+    func resumeAgentSession(_ sessionID: AgentSessionID) async throws {
+        guard let agentRuntime else {
+            throw V2RuntimeCommandError.unsupportedCommand("agent-runtime-unavailable")
+        }
+        try await agentRuntime.resume(sessionID: sessionID)
+        await publishCurrentAgentState()
+    }
+
+    func cancelAgentSession(_ sessionID: AgentSessionID) async throws {
+        guard let agentRuntime else {
+            throw V2RuntimeCommandError.unsupportedCommand("agent-runtime-unavailable")
+        }
+        try await agentRuntime.cancel(sessionID: sessionID)
+        await publishCurrentAgentState()
+    }
+
+    func emergencyStop() async throws {
+        guard let agentRuntime else {
+            throw V2RuntimeCommandError.unsupportedCommand("agent-runtime-unavailable")
+        }
+        try await agentRuntime.emergencyStop()
+        await publishCurrentAgentState()
     }
 
     func approveInvocation(_ invocationID: InvocationID) async throws {
@@ -854,6 +1118,43 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
                 await self.processImage(data, source: "Auto Screenshot", query: nil)
             }
         }
+    }
+
+    private static func isTerminalAgentLifecycle(_ lifecycle: AgentLifecycle) -> Bool {
+        switch lifecycle {
+        case .completed, .cancelled, .blocked, .failed, .manualResolutionRequired:
+            return true
+        case .created, .planning, .ready, .executing, .observing, .verifying:
+            return false
+        }
+    }
+
+    private func publishCurrentAgentState() async {
+        guard let agentRuntime else { return }
+        let state = await agentRuntime.snapshot()
+        guard let session = state.session else { return }
+        publishAgentState(
+            session: session,
+            isPaused: state.isPaused,
+            mutationExecutionActive: state.mutationExecutionActive
+        )
+    }
+
+    private func publishAgentState(
+        session: AgentSessionSnapshot,
+        isPaused: Bool,
+        mutationExecutionActive: Bool
+    ) {
+        onAgentStateChanged?(
+            TaskRuntimeProjectionSnapshot(
+                goalID: session.goalID,
+                statusText: session.lifecycle.rawValue,
+                sessionID: session.id,
+                lifecycle: session.lifecycle,
+                isPaused: isPaused,
+                mutationCapableExecutionActive: mutationExecutionActive && !isPaused
+            )
+        )
     }
 
     private func publishSnapshot() {

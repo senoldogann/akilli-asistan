@@ -54,7 +54,16 @@ final class ViewModelProjectionTests: XCTestCase {
         let settings = SettingsViewModel(commandSender: sender)
 
         chat.apply(ChatProjectionSnapshot(messages: [ChatPresentation(id: "m1", text: "ready", isUser: false)]))
-        tasks.apply(TaskRuntimeProjectionSnapshot(goalID: GoalID(rawValue: "g1"), statusText: "Running"))
+        tasks.apply(
+            TaskRuntimeProjectionSnapshot(
+                goalID: GoalID(rawValue: "g1"),
+                statusText: "Running",
+                sessionID: AgentSessionID(rawValue: "s1"),
+                lifecycle: .executing,
+                isPaused: false,
+                mutationCapableExecutionActive: true
+            )
+        )
         approvals.apply(ApprovalProjectionSnapshot(pending: [ApprovalPresentation(invocationID: InvocationID(rawValue: "i1"), summary: "Send message")]))
         tools.apply(ToolManagementProjectionSnapshot(tools: [ToolPresentation(id: ToolID(rawValue: "tool.a"), enabled: true)]))
         memory.apply(MemoryProjectionSnapshot(entries: [MemoryPresentation(id: "mem1", summary: "Pinned fact", pinned: false)]))
@@ -72,7 +81,7 @@ final class ViewModelProjectionTests: XCTestCase {
             commands,
             [
                 "chat:hello",
-                "pause:g1",
+                "pause-session:s1",
                 "approve:i1",
                 "disable-tool:tool.a",
                 "pin:mem1",
@@ -145,6 +154,10 @@ private actor RecordingApplicationCommandSender: ApplicationCommandSending {
         case .pauseGoal(let id): commands.append("pause:\(id.rawValue)")
         case .resumeGoal(let id): commands.append("resume:\(id.rawValue)")
         case .cancelGoal(let id): commands.append("cancel:\(id.rawValue)")
+        case .pauseAgentSession(let id): commands.append("pause-session:\(id.rawValue)")
+        case .resumeAgentSession(let id): commands.append("resume-session:\(id.rawValue)")
+        case .cancelAgentSession(let id): commands.append("cancel-session:\(id.rawValue)")
+        case .emergencyStop: commands.append("emergency-stop")
         case .approveInvocation(let id): commands.append("approve:\(id.rawValue)")
         case .denyInvocation(let id): commands.append("deny:\(id.rawValue)")
         case .enableTool(let id): commands.append("enable-tool:\(id.rawValue)")

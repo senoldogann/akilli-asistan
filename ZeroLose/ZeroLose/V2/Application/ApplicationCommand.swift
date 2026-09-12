@@ -4,6 +4,10 @@ enum ApplicationCommand: Sendable {
     case pauseGoal(GoalID)
     case resumeGoal(GoalID)
     case cancelGoal(GoalID)
+    case pauseAgentSession(AgentSessionID)
+    case resumeAgentSession(AgentSessionID)
+    case cancelAgentSession(AgentSessionID)
+    case emergencyStop
     case approveInvocation(InvocationID)
     case denyInvocation(InvocationID)
     case enableTool(ToolID)

@@ -39,8 +39,10 @@ final class ZeroLoseRuntimeContainer {
             .appendingPathComponent("Library/Application Support", isDirectory: true)
         let runtimeDirectory = applicationSupport
             .appendingPathComponent("ZeroLose/V2", isDirectory: true)
+        let runtimeDatabaseURL = runtimeDirectory.appendingPathComponent("runtime.sqlite3")
 
         var eventStore: SQLiteEventStore?
+        var checkpointStore: SQLiteCheckpointStore?
         var eventRecorder: RuntimeEventRecorder?
         var runtimeProjectionCoordinator: RuntimeProjectionCoordinator?
         var runtimeProjectionInitializationError: String?
@@ -50,14 +52,14 @@ final class ZeroLoseRuntimeContainer {
                 at: runtimeDirectory,
                 withIntermediateDirectories: true
             )
-            let store = try SQLiteEventStore(
-                databaseURL: runtimeDirectory.appendingPathComponent("runtime.sqlite3")
-            )
+            let store = try SQLiteEventStore(databaseURL: runtimeDatabaseURL)
+            let checkpoints = try SQLiteCheckpointStore(databaseURL: runtimeDatabaseURL)
             let recorder = RuntimeEventRecorder(
                 eventStore: store,
                 streamID: "runtime:main"
             )
             eventStore = store
+            checkpointStore = checkpoints
             eventRecorder = recorder
             runtimeProjectionCoordinator = RuntimeProjectionCoordinator(
                 eventStore: store,
@@ -153,11 +155,13 @@ final class ZeroLoseRuntimeContainer {
             }
         )
         let builtinProvider = BuiltinToolProvider(executor: builtinExecutor)
+        let emergencyStopState = AgentEmergencyStopState()
+        let mutationExecutionState = AgentMutationExecutionState()
         let toolComposition = AgentComputerToolComposition.make(
             baseProviders: [builtinProvider],
             baseDescriptors: V2BuiltinToolCatalog.descriptors,
             observationSourceProvider: LiveMacOSComputerObservationSourceProvider.makeIfReady(),
-            shouldStop: { false }
+            shouldStop: { emergencyStopState.isStopped }
         )
         let toolFabric = ToolFabric(
             registry: registry,
@@ -172,6 +176,71 @@ final class ZeroLoseRuntimeContainer {
             eventRecorder: eventRecorder,
             initialDescriptors: toolComposition.descriptors
         )
+
+        let agentRuntime: AgentCommandRuntime?
+        if let eventStore, let checkpointStore {
+            let agentBudget = RuntimeBudget(
+                limits: RuntimeBudgetLimits(
+                    maxWallClockSeconds: 300,
+                    maxModelCalls: 20,
+                    maxToolCalls: 50,
+                    maxRecoveryAttempts: 3,
+                    maxExternalSpend: 100,
+                    maxParallelTasks: 2,
+                    deadline: nil
+                )
+            )
+            let descriptorMap = Dictionary(
+                uniqueKeysWithValues: toolComposition.descriptors.map { ($0.id, $0) }
+            )
+            let planningRegistry = ToolRegistrySnapshot(
+                revision: UInt64(toolComposition.descriptors.count),
+                descriptors: descriptorMap
+            )
+            let taskExecutor = AgentToolInvocationExecutor(
+                registry: registry,
+                toolFabric: toolFabric,
+                mutationExecutionState: mutationExecutionState
+            )
+            let taskRuntime = TaskRuntime(
+                executor: taskExecutor,
+                verifier: FailClosedAgentTaskVerifier(),
+                budget: agentBudget
+            )
+            let configuredAgentModelID = storedDefaultModelID?.isEmpty == false
+                ? storedDefaultModelID!
+                : "default"
+            let orchestrator = AgentOrchestrator(
+                planner: ModelPlanningAdapter(
+                    providerFabric: modelProviderFabric,
+                    modelID: configuredAgentModelID
+                ),
+                scheduler: Scheduler(maxParallelReads: 2),
+                taskRuntime: taskRuntime,
+                checkpointStore: checkpointStore,
+                eventStore: eventStore,
+                goalVerifier: FailClosedAgentGoalVerifier(),
+                budget: agentBudget,
+                planningContext: PlanningContext(
+                    retrievedContext: ContextBundle(items: [], excluded: [], usedCharacters: 0),
+                    registry: planningRegistry
+                )
+            )
+            agentRuntime = AgentCommandRuntime(
+                orchestrator: orchestrator,
+                emergencyStopState: emergencyStopState,
+                structuredPlanningAvailable: {
+                    await modelProviderFabric.selectedModelSupports(
+                        .jsonOutput,
+                        modelID: configuredAgentModelID
+                    )
+                },
+                mutationExecutionActive: { mutationExecutionState.isActive }
+            )
+        } else {
+            agentRuntime = nil
+        }
+
         let runtimeController = V2ShellRuntimeController(
             intelligenceService: dependencies.intelligenceService,
             visionService: dependencies.visionService,
@@ -191,6 +260,7 @@ final class ZeroLoseRuntimeContainer {
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 return configured?.isEmpty == false ? configured! : "default"
             },
+            agentRuntime: agentRuntime,
             initialAuthorityMode: initialAuthority
         )
         let memoryController = UnavailableMemoryCommandController()
@@ -219,7 +289,8 @@ final class ZeroLoseRuntimeContainer {
         self.chatViewModel = ChatViewModel(commandSender: facade)
         self.shellViewModel = shellViewModel
         self.settingsViewModel = settingsViewModel
-        self.taskRuntimeViewModel = TaskRuntimeViewModel(commandSender: facade)
+        let taskRuntimeViewModel = TaskRuntimeViewModel(commandSender: facade)
+        self.taskRuntimeViewModel = taskRuntimeViewModel
         self.approvalViewModel = ApprovalViewModel(commandSender: facade)
         self.toolManagementViewModel = ToolManagementViewModel(commandSender: facade)
         self.memoryInspectorViewModel = MemoryInspectorViewModel(commandSender: facade)
@@ -228,7 +299,75 @@ final class ZeroLoseRuntimeContainer {
         runtimeController.onAuthorityModeChanged = { [weak settingsViewModel] mode in
             settingsViewModel?.apply(SettingsProjectionSnapshot(authorityMode: mode))
         }
+        runtimeController.onAgentStateChanged = { [weak taskRuntimeViewModel] snapshot in
+            taskRuntimeViewModel?.apply(snapshot)
+        }
         runtimeController.bind(to: shellViewModel)
+    }
+}
+
+private enum AgentToolInvocationExecutorError: Error {
+    case missingPlannedInvocation
+    case descriptorUnavailable
+}
+
+private struct AgentToolInvocationExecutor: TaskInvocationExecuting {
+    let registry: ToolRegistry
+    let toolFabric: ToolFabric
+    let mutationExecutionState: AgentMutationExecutionState
+
+    func execute(
+        task: TaskNode,
+        budget: RuntimeBudget
+    ) async throws -> TaskExecutionResult {
+        guard let planned = task.plannedInvocation else {
+            throw AgentToolInvocationExecutorError.missingPlannedInvocation
+        }
+
+        let tracksMutation = task.concurrencyClass == .mutation
+        if tracksMutation {
+            mutationExecutionState.begin()
+        }
+        defer {
+            if tracksMutation {
+                mutationExecutionState.end()
+            }
+        }
+        let snapshot = await registry.snapshot()
+        guard let descriptor = snapshot.descriptors[planned.toolID], descriptor.enabled else {
+            throw AgentToolInvocationExecutorError.descriptorUnavailable
+        }
+
+        let invocation = ToolInvocation(
+            invocationID: InvocationID(rawValue: UUID().uuidString),
+            toolID: planned.toolID,
+            registryRevision: snapshot.revision,
+            descriptorRevision: descriptor.descriptorRevision,
+            schemaDigest: descriptor.schemaDigest,
+            argumentsJSON: planned.argumentsJSON,
+            logicalOperationKey: "agent-task:\(task.id.rawValue)"
+        )
+        return .toolReceipt(try await toolFabric.execute(invocation))
+    }
+
+    func cancelActiveInvocation() async {}
+}
+
+private struct FailClosedAgentTaskVerifier: TaskVerifying {
+    func verify(
+        task: TaskNode,
+        evidence: [VerificationEvidence]
+    ) async -> TaskVerificationResult {
+        .rejected(reason: "independent verification evidence unavailable")
+    }
+}
+
+private struct FailClosedAgentGoalVerifier: GoalVerifying {
+    func verify(
+        goal: GoalSnapshot,
+        graph: TaskGraphSnapshot
+    ) async throws -> GoalVerificationResult {
+        GoalVerificationResult(completed: false, evidence: nil)
     }
 }
 

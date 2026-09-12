@@ -1,3 +1,5 @@
+import Foundation
+
 actor ModelProviderFabric {
     private let providers: [ModelProviderID: any ModelProvider]
     private var selectedProviderID: ModelProviderID
@@ -23,6 +25,34 @@ actor ModelProviderFabric {
             throw ProviderError.providerUnavailable(providerID: selectedProviderID)
         }
         return provider.stream(request)
+    }
+
+    func selectedModelSupports(
+        _ capability: ModelCapabilities,
+        modelID: String
+    ) async -> Bool {
+        guard let provider = providers[selectedProviderID],
+              provider.capabilities.contains(capability),
+              let models = try? await provider.discoverModels(),
+              !models.isEmpty else {
+            return false
+        }
+
+        let normalizedModelID = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if normalizedModelID.isEmpty || normalizedModelID == "default" {
+            guard models.count == 1, let model = models.first else {
+                return false
+            }
+            return model.providerID == provider.id
+                && model.capabilities.contains(capability)
+        }
+
+        guard let model = models.first(where: {
+            $0.id == normalizedModelID && $0.providerID == provider.id
+        }) else {
+            return false
+        }
+        return model.capabilities.contains(capability)
     }
 
     func selectedStatus() async -> ProviderStatus {

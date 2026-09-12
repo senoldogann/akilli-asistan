@@ -14,11 +14,14 @@ final class RuntimeDashboardViewTests: XCTestCase {
         XCTAssertTrue(source.contains("taskRuntimeViewModel.pause()"))
         XCTAssertTrue(source.contains("taskRuntimeViewModel.resume()"))
         XCTAssertTrue(source.contains("taskRuntimeViewModel.cancel()"))
+        XCTAssertTrue(source.contains("taskRuntimeViewModel.emergencyStop()"))
         XCTAssertTrue(source.contains("approvalViewModel.approve("))
         XCTAssertTrue(source.contains("approvalViewModel.deny("))
         XCTAssertTrue(source.contains(".disabled(!taskRuntimeViewModel.canPause)"))
         XCTAssertTrue(source.contains(".disabled(!taskRuntimeViewModel.canResume)"))
         XCTAssertTrue(source.contains(".disabled(!taskRuntimeViewModel.canCancel)"))
+        XCTAssertTrue(source.contains(".disabled(!taskRuntimeViewModel.canEmergencyStop)"))
+        XCTAssertFalse(source.contains("Autonomous runtime not configured"))
     }
 
     func testDashboardSourceHasNoExecutionOrCredentialBackdoor() throws {

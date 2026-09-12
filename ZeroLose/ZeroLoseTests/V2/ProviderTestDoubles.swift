@@ -25,11 +25,12 @@ final class RecordingModelProvider: ModelProvider, Sendable {
     init(
         id: String,
         events: [ModelEvent] = [.completed],
-        error: ProviderError? = nil
+        error: ProviderError? = nil,
+        capabilities: ModelCapabilities = [.textStreaming]
     ) {
         self.id = ModelProviderID(rawValue: id)
         displayName = id.capitalized
-        capabilities = [.textStreaming]
+        self.capabilities = capabilities
         emittedEvents = events
         terminalError = error
     }
