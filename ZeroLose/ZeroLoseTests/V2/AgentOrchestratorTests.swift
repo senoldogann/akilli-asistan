@@ -367,7 +367,7 @@ private actor BlockingAgentTaskExecutor: TaskInvocationExecuting {
 private struct FixedTaskVerifier: TaskVerifying {
     let result: TaskVerificationResult
 
-    func verify(task: TaskNode, evidence: [VerificationEvidence]) async -> TaskVerificationResult {
+    func verify(task: TaskNode, executionResult: TaskExecutionResult) async -> TaskVerificationResult {
         result
     }
 }

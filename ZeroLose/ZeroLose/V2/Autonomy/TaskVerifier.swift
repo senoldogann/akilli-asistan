@@ -8,6 +8,6 @@ enum TaskVerificationResult: Sendable, Equatable {
 protocol TaskVerifying: Sendable {
     func verify(
         task: TaskNode,
-        evidence: [VerificationEvidence]
+        executionResult: TaskExecutionResult
     ) async -> TaskVerificationResult
 }

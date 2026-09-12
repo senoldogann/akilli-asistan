@@ -357,7 +357,7 @@ private actor RecordingRestartPhysicalExecutor: TaskInvocationExecuting {
 }
 
 private struct RestartTaskVerifier: TaskVerifying {
-    func verify(task: TaskNode, evidence: [VerificationEvidence]) async -> TaskVerificationResult {
+    func verify(task: TaskNode, executionResult: TaskExecutionResult) async -> TaskVerificationResult {
         .rejected(reason: "unused during restore")
     }
 }

@@ -356,7 +356,7 @@ private struct AgentToolInvocationExecutor: TaskInvocationExecuting {
 private struct FailClosedAgentTaskVerifier: TaskVerifying {
     func verify(
         task: TaskNode,
-        evidence: [VerificationEvidence]
+        executionResult: TaskExecutionResult
     ) async -> TaskVerificationResult {
         .rejected(reason: "independent verification evidence unavailable")
     }

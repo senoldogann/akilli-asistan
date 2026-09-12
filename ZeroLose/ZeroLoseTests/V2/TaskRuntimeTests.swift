@@ -38,6 +38,27 @@ final class TaskRuntimeTests: XCTestCase {
         XCTAssertTrue(result.verificationEvidence.isEmpty)
     }
 
+    func testTaskRuntimePassesOriginalExecutionResultToVerifier() async throws {
+        let receipt = ToolExecutionReceipt(
+            invocationID: InvocationID(rawValue: "inv-recorded"),
+            toolID: ToolID(rawValue: "tool-recorded"),
+            startedAt: Date(timeIntervalSince1970: 10),
+            completedAt: Date(timeIntervalSince1970: 11),
+            providerReference: nil
+        )
+        let verifier = RecordingTaskVerifier()
+        let runtime = TaskRuntime(
+            executor: StubTaskInvocationExecutor(result: .toolReceipt(receipt)),
+            verifier: verifier,
+            budget: generousBudget()
+        )
+
+        _ = try await runtime.run(readyTask())
+
+        let receivedToolID = await verifier.receivedToolID
+        XCTAssertEqual(receivedToolID, ToolID(rawValue: "tool-recorded"))
+    }
+
     func testVerifierEvidenceIsRequiredForTaskSuccess() async throws {
         let verifiedEvidence = VerificationEvidence(
             evidenceID: "verified-1",
@@ -284,8 +305,25 @@ private actor BlockingTaskInvocationExecutor: TaskInvocationExecuting {
     }
 }
 
+private actor RecordingTaskVerifier: TaskVerifying {
+    private(set) var receivedToolID: ToolID?
+
+    func verify(
+        task: TaskNode,
+        executionResult: TaskExecutionResult
+    ) async -> TaskVerificationResult {
+        if case .toolReceipt(let receipt) = executionResult {
+            receivedToolID = receipt.toolID
+        }
+        return .rejected(reason: "recorded")
+    }
+}
+
 private struct RejectingTaskVerifier: TaskVerifying {
-    func verify(task: TaskNode, evidence: [VerificationEvidence]) async -> TaskVerificationResult {
+    func verify(
+        task: TaskNode,
+        executionResult: TaskExecutionResult
+    ) async -> TaskVerificationResult {
         .rejected(reason: "No independent verification evidence")
     }
 }
@@ -293,7 +331,10 @@ private struct RejectingTaskVerifier: TaskVerifying {
 private struct AcceptingTaskVerifier: TaskVerifying {
     let evidence: VerificationEvidence
 
-    func verify(task: TaskNode, evidence: [VerificationEvidence]) async -> TaskVerificationResult {
+    func verify(
+        task: TaskNode,
+        executionResult: TaskExecutionResult
+    ) async -> TaskVerificationResult {
         .verified(self.evidence)
     }
 }
