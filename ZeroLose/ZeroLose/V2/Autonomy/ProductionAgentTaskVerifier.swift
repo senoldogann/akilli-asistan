@@ -1,10 +1,9 @@
-import ExamPilotCore
 import Foundation
 
 struct ProductionAgentTaskVerifier: TaskVerifying, @unchecked Sendable {
-    private let outcomeVerifier: any OutcomeVerifying
+    private let outcomeVerifier: any AgentComputerOutcomeVerifying
 
-    init(outcomeVerifier: any OutcomeVerifying = OutcomeVerifier()) {
+    init(outcomeVerifier: any AgentComputerOutcomeVerifying = ExamPilotAgentComputerOutcomeVerifier()) {
         self.outcomeVerifier = outcomeVerifier
     }
 
@@ -89,28 +88,13 @@ struct ProductionAgentTaskVerifier: TaskVerifying, @unchecked Sendable {
             return .rejected(reason: "computer verification state is stale or ambiguous")
         }
 
-        let expected: ExpectedOutcomeKind
-        switch artifact.expectation {
-        case .computerNone:
-            expected = .none
-        case .computerAnswerMutation:
-            expected = .answerMutation
-        case .computerViewportChange:
-            expected = .viewportChange
-        case .computerNavigation:
-            expected = .navigation
-        case .readResult:
-            return .rejected(reason: "read expectation is incompatible with computer verification")
-        }
-
-        let result = outcomeVerifier.verify(
-            expected: expected,
-            before: before.image,
-            after: after.image,
-            uiStable: computer.uiStable
-        )
-
-        guard case .success = result else {
+        guard artifact.expectation != .readResult,
+              outcomeVerifier.verify(
+                expectation: artifact.expectation,
+                before: before.image,
+                after: after.image,
+                uiStable: computer.uiStable
+              ) else {
             return .rejected(reason: "semantic computer outcome not verified")
         }
 

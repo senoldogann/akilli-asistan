@@ -1,5 +1,46 @@
 @preconcurrency import ExamPilotCore
+import CoreGraphics
 import Foundation
+
+
+struct ExamPilotAgentComputerOutcomeVerifier: AgentComputerOutcomeVerifying, @unchecked Sendable {
+    private let verifier: OutcomeVerifier
+
+    init(verifier: OutcomeVerifier = OutcomeVerifier()) {
+        self.verifier = verifier
+    }
+
+    func verify(
+        expectation: VerificationExpectation,
+        before: CGImage,
+        after: CGImage,
+        uiStable: Bool
+    ) -> Bool {
+        let expected: ExpectedOutcomeKind
+        switch expectation {
+        case .computerNone:
+            expected = .none
+        case .computerAnswerMutation:
+            expected = .answerMutation
+        case .computerViewportChange:
+            expected = .viewportChange
+        case .computerNavigation:
+            expected = .navigation
+        case .readResult:
+            return false
+        }
+
+        if case .success = verifier.verify(
+            expected: expected,
+            before: before,
+            after: after,
+            uiStable: uiStable
+        ) {
+            return true
+        }
+        return false
+    }
+}
 
 enum MacOSComputerMutationAdapterError: Error, Equatable {
     case invalidArguments

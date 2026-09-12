@@ -200,11 +200,16 @@ final class ZeroLoseRuntimeContainer {
             let taskExecutor = AgentToolInvocationExecutor(
                 registry: registry,
                 toolFabric: toolFabric,
-                mutationExecutionState: mutationExecutionState
+                mutationExecutionState: mutationExecutionState,
+                computerStateProvider: toolComposition.observationProvider,
+                computerCapturer: toolComposition.observationProvider == nil
+                    ? nil
+                    : ScreenCaptureKitComputerVerificationCapturer(),
+                shouldStop: { emergencyStopState.isStopped }
             )
             let taskRuntime = TaskRuntime(
                 executor: taskExecutor,
-                verifier: FailClosedAgentTaskVerifier(),
+                verifier: ProductionAgentTaskVerifier(),
                 budget: agentBudget
             )
             let configuredAgentModelID = storedDefaultModelID?.isEmpty == false
@@ -219,7 +224,7 @@ final class ZeroLoseRuntimeContainer {
                 taskRuntime: taskRuntime,
                 checkpointStore: checkpointStore,
                 eventStore: eventStore,
-                goalVerifier: FailClosedAgentGoalVerifier(),
+                goalVerifier: ProductionAgentGoalVerifier(),
                 budget: agentBudget,
                 planningContext: PlanningContext(
                     retrievedContext: ContextBundle(items: [], excluded: [], usedCharacters: 0),
@@ -306,27 +311,10 @@ final class ZeroLoseRuntimeContainer {
     }
 }
 
-private struct FailClosedAgentTaskVerifier: TaskVerifying {
-    func verify(
-        task: TaskNode,
-        executionResult: TaskExecutionResult
-    ) async -> TaskVerificationResult {
-        .rejected(reason: "independent verification evidence unavailable")
-    }
-}
-
-private struct FailClosedAgentGoalVerifier: GoalVerifying {
-    func verify(
-        goal: GoalSnapshot,
-        graph: TaskGraphSnapshot
-    ) async throws -> GoalVerificationResult {
-        GoalVerificationResult(completed: false, evidence: nil)
-    }
-}
-
 struct AgentComputerToolComposition {
     let providers: [any ToolProviding]
     let descriptors: [ToolDescriptor]
+    let observationProvider: MacOSComputerObservationProvider?
 
     static func make(
         baseProviders: [any ToolProviding],
@@ -337,7 +325,8 @@ struct AgentComputerToolComposition {
         guard let observationSourceProvider else {
             return AgentComputerToolComposition(
                 providers: baseProviders,
-                descriptors: baseDescriptors
+                descriptors: baseDescriptors,
+                observationProvider: nil
             )
         }
 
@@ -352,7 +341,8 @@ struct AgentComputerToolComposition {
 
         return AgentComputerToolComposition(
             providers: baseProviders + [computerProvider],
-            descriptors: baseDescriptors + V2ComputerToolCatalog.descriptors
+            descriptors: baseDescriptors + V2ComputerToolCatalog.descriptors,
+            observationProvider: observationProvider
         )
     }
 }

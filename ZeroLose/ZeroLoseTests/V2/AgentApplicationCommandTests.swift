@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 @testable import ZeroLose
 
@@ -109,6 +110,83 @@ final class AgentApplicationCommandTests: XCTestCase {
         XCTAssertTrue(calls.isEmpty)
     }
 
+    func testReadOnlyAgentTaskCanReachCompletedWithProductionVerifiers() async throws {
+        let descriptor = productionReadDescriptor()
+        let registry = ToolRegistry()
+        await registry.register(descriptor)
+        let fabric = ToolFabric(
+            registry: registry,
+            policy: DefaultPolicyKernel(),
+            credentialBroker: InMemoryCredentialBroker(),
+            providers: [ProductionReadToolProvider()],
+            authorityMode: .autonomous
+        )
+        let budget = productionBudget(maxRecoveryAttempts: 0)
+        let taskRuntime = TaskRuntime(
+            executor: AgentToolInvocationExecutor(
+                registry: registry,
+                toolFabric: fabric,
+                mutationExecutionState: AgentMutationExecutionState(),
+                settle: {}
+            ),
+            verifier: ProductionAgentTaskVerifier(),
+            budget: budget
+        )
+        let orchestrator = AgentOrchestrator(
+            planner: StaticProductionPlanner(task: productionReadTask()),
+            scheduler: Scheduler(maxParallelReads: 1),
+            taskRuntime: taskRuntime,
+            checkpointStore: ProductionCheckpointStore(),
+            eventStore: ProductionEventStore(),
+            goalVerifier: ProductionAgentGoalVerifier(),
+            budget: budget,
+            planningContext: productionPlanningContext(descriptor: descriptor)
+        )
+
+        let result = try await orchestrator.start(
+            goal: GoalSnapshot(id: GoalID(rawValue: "production-read-goal"), objective: "Read status")
+        )
+
+        XCTAssertEqual(result.lifecycle, .completed)
+        XCTAssertNotNil(result.verificationEvidenceID)
+    }
+
+    func testBareReceiptCannotReachCompletedWithProductionVerifiers() async throws {
+        let descriptor = productionReadDescriptor()
+        let receipt = ToolExecutionReceipt(
+            invocationID: InvocationID(rawValue: "bare-receipt"),
+            toolID: descriptor.id,
+            startedAt: Date(timeIntervalSince1970: 1),
+            completedAt: Date(timeIntervalSince1970: 2),
+            providerReference: nil,
+            resultProvenance: "test:bare",
+            resultJSON: Data(#"{"status":"ok"}"#.utf8)
+        )
+        let budget = productionBudget(maxRecoveryAttempts: 0)
+        let taskRuntime = TaskRuntime(
+            executor: BareReceiptTaskExecutor(receipt: receipt),
+            verifier: ProductionAgentTaskVerifier(),
+            budget: budget
+        )
+        let orchestrator = AgentOrchestrator(
+            planner: StaticProductionPlanner(task: productionReadTask()),
+            scheduler: Scheduler(maxParallelReads: 1),
+            taskRuntime: taskRuntime,
+            checkpointStore: ProductionCheckpointStore(),
+            eventStore: ProductionEventStore(),
+            goalVerifier: ProductionAgentGoalVerifier(),
+            budget: budget,
+            planningContext: productionPlanningContext(descriptor: descriptor)
+        )
+
+        let result = try await orchestrator.start(
+            goal: GoalSnapshot(id: GoalID(rawValue: "production-read-goal"), objective: "Read status")
+        )
+
+        XCTAssertEqual(result.lifecycle, .failed)
+        XCTAssertNil(result.verificationEvidenceID)
+    }
+
     func testTaskRuntimeViewModelEnablesOnlyValidAgentControls() async throws {
         let sender = RecordingAgentApplicationCommandSender()
         let viewModel = TaskRuntimeViewModel(commandSender: sender)
@@ -181,6 +259,141 @@ final class AgentApplicationCommandTests: XCTestCase {
                 .resume(sessionID)
             ]
         )
+    }
+    private func productionReadDescriptor() -> ToolDescriptor {
+        ToolDescriptor(
+            id: ToolID(rawValue: "builtin.system_status"),
+            providerID: "production-read",
+            provenance: "test:production-read",
+            descriptorRevision: 1,
+            schemaDigest: "sha256:production-read",
+            inputSchemaJSON: Data(#"{"type":"object"}"#.utf8),
+            outputSchemaJSON: Data(#"{"type":"object"}"#.utf8),
+            effectClass: .read,
+            declaredRisk: .readOnly,
+            requiredCredentialScopes: [],
+            idempotency: .none,
+            concurrencyClass: .read,
+            verificationContract: VerificationContract(kind: "read-result"),
+            enabled: true
+        )
+    }
+
+    private func productionReadTask() -> TaskNode {
+        TaskNode(
+            id: TaskID(rawValue: "production-read-task"),
+            title: "Read status",
+            concurrencyClass: .read,
+            plannedInvocation: PlannedToolInvocation(
+                toolID: ToolID(rawValue: "builtin.system_status"),
+                argumentsJSON: Data("{}".utf8),
+                verificationExpectation: .readResult
+            )
+        )
+    }
+
+    private func productionPlanningContext(descriptor: ToolDescriptor) -> PlanningContext {
+        PlanningContext(
+            retrievedContext: ContextBundle(items: [], excluded: [], usedCharacters: 0),
+            registry: ToolRegistrySnapshot(
+                revision: 1,
+                descriptors: [descriptor.id: descriptor]
+            )
+        )
+    }
+
+    private func productionBudget(maxRecoveryAttempts: Int) -> RuntimeBudget {
+        RuntimeBudget(
+            limits: RuntimeBudgetLimits(
+                maxWallClockSeconds: 60,
+                maxModelCalls: 2,
+                maxToolCalls: 2,
+                maxRecoveryAttempts: maxRecoveryAttempts,
+                maxExternalSpend: 0,
+                maxParallelTasks: 1,
+                deadline: nil
+            )
+        )
+    }
+}
+
+private actor StaticProductionPlanner: Planning {
+    private let task: TaskNode
+
+    init(task: TaskNode) {
+        self.task = task
+    }
+
+    func propose(
+        goal: GoalSnapshot,
+        graph: TaskGraphSnapshot,
+        budgets: RuntimeBudgetSnapshot,
+        context: PlanningContext
+    ) async throws -> PlanningProposal {
+        PlanningProposal(
+            addTasks: graph.tasks.isEmpty ? [task] : [],
+            addDependencies: [],
+            markBlocked: []
+        )
+    }
+}
+
+private struct ProductionReadToolProvider: ToolProviding {
+    let providerID = "production-read"
+
+    func execute(
+        descriptor: ToolDescriptor,
+        invocation: ToolInvocation,
+        credentialHandles: [CredentialHandle]
+    ) async throws -> ToolExecutionReceipt {
+        ToolExecutionReceipt(
+            invocationID: invocation.invocationID,
+            toolID: descriptor.id,
+            startedAt: Date(timeIntervalSince1970: 1),
+            completedAt: Date(timeIntervalSince1970: 2),
+            providerReference: nil,
+            resultProvenance: "production-read:system-status",
+            resultJSON: Data(#"{"status":"ok"}"#.utf8),
+            resultTainted: false
+        )
+    }
+}
+
+private actor BareReceiptTaskExecutor: TaskInvocationExecuting {
+    private let receipt: ToolExecutionReceipt
+
+    init(receipt: ToolExecutionReceipt) {
+        self.receipt = receipt
+    }
+
+    func execute(task: TaskNode, budget: RuntimeBudget) async throws -> TaskExecutionResult {
+        .toolReceipt(receipt)
+    }
+
+    func cancelActiveInvocation() async {}
+}
+
+private actor ProductionEventStore: EventStoring {
+    private var events: [RuntimeEvent] = []
+
+    func append(_ event: RuntimeEvent) async throws {
+        events.append(event)
+    }
+
+    func events(streamID: String, after sequence: UInt64) async throws -> [RuntimeEvent] {
+        events.filter { $0.streamID == streamID && $0.sequence > sequence }
+    }
+}
+
+private actor ProductionCheckpointStore: CheckpointStoring {
+    private var checkpoints: [RuntimeCheckpoint] = []
+
+    func save(_ checkpoint: RuntimeCheckpoint) async throws {
+        checkpoints.append(checkpoint)
+    }
+
+    func latest(streamID: String) async throws -> RuntimeCheckpoint? {
+        checkpoints.last { $0.streamID == streamID }
     }
 }
 

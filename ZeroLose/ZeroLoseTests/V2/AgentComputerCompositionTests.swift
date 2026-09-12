@@ -31,6 +31,7 @@ final class AgentComputerCompositionTests: XCTestCase {
                 "computer.wait",
             ])
         )
+        XCTAssertNotNil(composition.observationProvider)
     }
 
     func testUnavailableObservationReadinessOmitsComputerMutationToolsButKeepsReadOnlyCapabilities() {
@@ -45,6 +46,24 @@ final class AgentComputerCompositionTests: XCTestCase {
 
         XCTAssertEqual(composition.providers.map(\.providerID), ["composition-readonly"])
         XCTAssertEqual(composition.descriptors.map { $0.id.rawValue }, ["composition.readonly"])
+        XCTAssertNil(composition.observationProvider)
+    }
+
+    func testProductionCompositionExposesSharedObservationAuthority() async throws {
+        let composition = AgentComputerToolComposition.make(
+            baseProviders: [CompositionReadOnlyProvider()],
+            baseDescriptors: [makeReadOnlyDescriptor()],
+            observationSourceProvider: CompositionObservationSourceProvider(),
+            shouldStop: { false }
+        )
+
+        let provider = try XCTUnwrap(composition.observationProvider)
+        let refreshed = try await provider.refreshComputerMutationState()
+        let current = try await provider.currentComputerMutationState()
+
+        XCTAssertEqual(current, refreshed)
+        let metadata = await provider.latestPresentationMetadata()
+        XCTAssertEqual(metadata?.stateVersion, refreshed.stateVersion)
     }
 
     func testRegistryPolicyComputerProviderAndMutationAdapterExecuteApprovedClick() async throws {

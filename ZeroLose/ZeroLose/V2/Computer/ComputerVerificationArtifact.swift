@@ -17,6 +17,15 @@ struct ComputerVerificationArtifact: @unchecked Sendable {
     let uiStable: Bool
 }
 
+protocol AgentComputerOutcomeVerifying: Sendable {
+    func verify(
+        expectation: VerificationExpectation,
+        before: CGImage,
+        after: CGImage,
+        uiStable: Bool
+    ) -> Bool
+}
+
 struct ToolVerificationArtifact: @unchecked Sendable {
     let receipt: ToolExecutionReceipt
     let descriptor: ToolDescriptor

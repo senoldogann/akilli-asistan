@@ -40,4 +40,19 @@ final class ArchitectureBoundaryTests: XCTestCase {
         XCTAssertGreaterThan(inspectedSourceCount, 0, "Expected to inspect ZeroLose production Swift sources")
         XCTAssertTrue(allowedImportFound, "Expected \(allowedRelativePath) to own the ExamPilotCore import")
     }
+    func testProductionContainerContainsNoFailClosedAgentVerifierPlaceholder() throws {
+        let testFileURL = URL(fileURLWithPath: #filePath)
+        let zeroLoseDirectory = testFileURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let containerURL = zeroLoseDirectory
+            .appendingPathComponent("ZeroLose/V2/Application/ZeroLoseRuntimeContainer.swift")
+        let source = try String(contentsOf: containerURL, encoding: .utf8)
+
+        XCTAssertFalse(source.contains("FailClosedAgentTaskVerifier"))
+        XCTAssertFalse(source.contains("FailClosedAgentGoalVerifier"))
+        XCTAssertFalse(source.contains("shouldStop: { false }"))
+    }
+
 }
