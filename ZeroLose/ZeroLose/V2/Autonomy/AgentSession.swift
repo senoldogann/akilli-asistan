@@ -2,7 +2,7 @@ nonisolated struct AgentSessionID: Hashable, Codable, Sendable {
     let rawValue: String
 }
 
-nonisolated struct AgentSessionSnapshot: Sendable, Equatable {
+nonisolated struct AgentSessionSnapshot: Codable, Sendable, Equatable {
     let id: AgentSessionID
     let goalID: GoalID
     private(set) var lifecycle: AgentLifecycle

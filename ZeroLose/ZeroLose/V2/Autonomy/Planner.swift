@@ -5,7 +5,7 @@ struct GoalSnapshot: Sendable, Equatable {
     let objective: String
 }
 
-struct RuntimeBudgetSnapshot: Sendable, Equatable {
+struct RuntimeBudgetSnapshot: Codable, Sendable, Equatable {
     let remainingModelCalls: Int
     let remainingToolCalls: Int
     let remainingRecoveryAttempts: Int
