@@ -306,53 +306,6 @@ final class ZeroLoseRuntimeContainer {
     }
 }
 
-private enum AgentToolInvocationExecutorError: Error {
-    case missingPlannedInvocation
-    case descriptorUnavailable
-}
-
-private struct AgentToolInvocationExecutor: TaskInvocationExecuting {
-    let registry: ToolRegistry
-    let toolFabric: ToolFabric
-    let mutationExecutionState: AgentMutationExecutionState
-
-    func execute(
-        task: TaskNode,
-        budget: RuntimeBudget
-    ) async throws -> TaskExecutionResult {
-        guard let planned = task.plannedInvocation else {
-            throw AgentToolInvocationExecutorError.missingPlannedInvocation
-        }
-
-        let tracksMutation = task.concurrencyClass == .mutation
-        if tracksMutation {
-            mutationExecutionState.begin()
-        }
-        defer {
-            if tracksMutation {
-                mutationExecutionState.end()
-            }
-        }
-        let snapshot = await registry.snapshot()
-        guard let descriptor = snapshot.descriptors[planned.toolID], descriptor.enabled else {
-            throw AgentToolInvocationExecutorError.descriptorUnavailable
-        }
-
-        let invocation = ToolInvocation(
-            invocationID: InvocationID(rawValue: UUID().uuidString),
-            toolID: planned.toolID,
-            registryRevision: snapshot.revision,
-            descriptorRevision: descriptor.descriptorRevision,
-            schemaDigest: descriptor.schemaDigest,
-            argumentsJSON: planned.argumentsJSON,
-            logicalOperationKey: "agent-task:\(task.id.rawValue)"
-        )
-        return .toolReceipt(try await toolFabric.execute(invocation))
-    }
-
-    func cancelActiveInvocation() async {}
-}
-
 private struct FailClosedAgentTaskVerifier: TaskVerifying {
     func verify(
         task: TaskNode,
