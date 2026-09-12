@@ -114,6 +114,17 @@ struct ModelPlanningAdapter: Planning, Sendable {
                 throw PlanningError.invalidProposal
             }
 
+            guard task.verificationExpectation.isCompatible(
+                toolID: toolID,
+                verificationContract: descriptor.verificationContract
+            ),
+            !Self.containsReservedComputerFreshnessKeys(
+                task.arguments,
+                descriptor: descriptor
+            ) else {
+                throw PlanningError.invalidProposal
+            }
+
             let argumentsJSON: Data
             do {
                 argumentsJSON = try JSONEncoder().encode(task.arguments)
@@ -132,7 +143,8 @@ struct ModelPlanningAdapter: Planning, Sendable {
                     concurrencyClass: concurrencyClass,
                     plannedInvocation: PlannedToolInvocation(
                         toolID: toolID,
-                        argumentsJSON: argumentsJSON
+                        argumentsJSON: argumentsJSON,
+                        verificationExpectation: task.verificationExpectation
                     )
                 )
             )
@@ -193,10 +205,51 @@ struct ModelPlanningAdapter: Planning, Sendable {
         }
     }
 
+    private static func containsReservedComputerFreshnessKeys(
+        _ arguments: PlanningJSONValue,
+        descriptor: ToolDescriptor
+    ) -> Bool {
+        guard descriptor.verificationContract.kind == "fresh-computer-observation",
+              case .object(let object) = arguments else {
+            return false
+        }
+        return object["stateVersion"] != nil || object["observationID"] != nil
+    }
+
+    private static func plannerVisibleSchema(for descriptor: ToolDescriptor) -> String {
+        guard descriptor.verificationContract.kind == "fresh-computer-observation" else {
+            return String(data: descriptor.inputSchemaJSON, encoding: .utf8) ?? "{}"
+        }
+        guard var object = try? JSONSerialization.jsonObject(
+            with: descriptor.inputSchemaJSON
+        ) as? [String: Any] else {
+            return "{}"
+        }
+
+        if var properties = object["properties"] as? [String: Any] {
+            properties.removeValue(forKey: "stateVersion")
+            properties.removeValue(forKey: "observationID")
+            object["properties"] = properties
+        }
+        if let required = object["required"] as? [String] {
+            object["required"] = required.filter {
+                $0 != "stateVersion" && $0 != "observationID"
+            }
+        }
+
+        guard let data = try? JSONSerialization.data(
+            withJSONObject: object,
+            options: [.sortedKeys]
+        ) else {
+            return "{}"
+        }
+        return String(data: data, encoding: .utf8) ?? "{}"
+    }
+
     private static let systemPrompt = """
     Return one JSON object only. The schema is:
-    {"tasks":[{"id":"string","dependencies":["task-id"],"toolID":"enabled-tool-id","arguments":{}}]}
-    Use only enabled tool IDs provided by the user message. Do not execute tools and do not include prose.
+    {"tasks":[{"id":"string","dependencies":["task-id"],"toolID":"enabled-tool-id","arguments":{},"verificationExpectation":"supported-expectation"}]}
+    Use only enabled tool IDs and verification expectations provided by the user message. Do not execute tools and do not include prose.
     """
 
     private static func userPrompt(
@@ -209,8 +262,14 @@ struct ModelPlanningAdapter: Planning, Sendable {
             .filter(\.enabled)
             .sorted { $0.id.rawValue < $1.id.rawValue }
             .map { descriptor in
-                let schema = String(data: descriptor.inputSchemaJSON, encoding: .utf8) ?? "{}"
-                return "- \(descriptor.id.rawValue): \(schema)"
+                let schema = Self.plannerVisibleSchema(for: descriptor)
+                let expectations = VerificationExpectation.supported(
+                    toolID: descriptor.id,
+                    verificationContract: descriptor.verificationContract
+                )
+                .map(\.rawValue)
+                .joined(separator: ",")
+                return "- \(descriptor.id.rawValue) [contract=\(descriptor.verificationContract.kind); verificationExpectations=\(expectations)]: \(schema)"
             }
             .joined(separator: "\n")
         let retrievedContext = context.retrievedContext.items
@@ -244,6 +303,7 @@ private struct ModelPlanTask: Decodable {
     let dependencies: [String]
     let toolID: String
     let arguments: PlanningJSONValue
+    let verificationExpectation: VerificationExpectation
 }
 
 private enum PlanningJSONValue: Codable, Sendable, Equatable {

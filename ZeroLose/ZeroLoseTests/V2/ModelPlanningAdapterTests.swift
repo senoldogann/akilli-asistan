@@ -10,7 +10,7 @@ final class ModelPlanningAdapterTests: XCTestCase {
             events: [
                 .started,
                 .textDelta(
-                    #"{"tasks":[{"id":"inspect","dependencies":[],"toolID":"builtin.system_status","arguments":{}},{"id":"verify","dependencies":["inspect"],"toolID":"builtin.system_status","arguments":{"detail":"summary"}}]}"#
+                    #"{"tasks":[{"id":"inspect","dependencies":[],"toolID":"builtin.system_status","arguments":{},"verificationExpectation":"readResult"},{"id":"verify","dependencies":["inspect"],"toolID":"builtin.system_status","arguments":{"detail":"summary"},"verificationExpectation":"readResult"}]}"#
                 ),
                 .completed
             ]
@@ -35,6 +35,10 @@ final class ModelPlanningAdapterTests: XCTestCase {
             ["builtin.system_status", "builtin.system_status"]
         )
         XCTAssertEqual(
+            proposal.addTasks.map { $0.plannedInvocation?.verificationExpectation },
+            [.readResult, .readResult]
+        )
+        XCTAssertEqual(
             try jsonObject(proposal.addTasks[1].plannedInvocation?.argumentsJSON),
             ["detail": "summary"]
         )
@@ -50,7 +54,7 @@ final class ModelPlanningAdapterTests: XCTestCase {
 
     func testUnknownToolFailsClosed() async throws {
         let adapter = makeAdapter(
-            json: #"{"tasks":[{"id":"inspect","dependencies":[],"toolID":"builtin.unknown","arguments":{}}]}"#
+            json: #"{"tasks":[{"id":"inspect","dependencies":[],"toolID":"builtin.unknown","arguments":{},"verificationExpectation":"readResult"}]}"#
         )
 
         await assertInvalidProposal(adapter, context: context(enabledToolIDs: ["builtin.system_status"]))
@@ -58,7 +62,7 @@ final class ModelPlanningAdapterTests: XCTestCase {
 
     func testCyclicDependenciesFailClosed() async throws {
         let adapter = makeAdapter(
-            json: #"{"tasks":[{"id":"a","dependencies":["b"],"toolID":"builtin.system_status","arguments":{}},{"id":"b","dependencies":["a"],"toolID":"builtin.system_status","arguments":{}}]}"#
+            json: #"{"tasks":[{"id":"a","dependencies":["b"],"toolID":"builtin.system_status","arguments":{},"verificationExpectation":"readResult"},{"id":"b","dependencies":["a"],"toolID":"builtin.system_status","arguments":{},"verificationExpectation":"readResult"}]}"#
         )
 
         await assertInvalidProposal(adapter, context: context(enabledToolIDs: ["builtin.system_status"]))
@@ -66,10 +70,66 @@ final class ModelPlanningAdapterTests: XCTestCase {
 
     func testMissingTaskIDFailsClosed() async throws {
         let adapter = makeAdapter(
-            json: #"{"tasks":[{"dependencies":[],"toolID":"builtin.system_status","arguments":{}}]}"#
+            json: #"{"tasks":[{"dependencies":[],"toolID":"builtin.system_status","arguments":{},"verificationExpectation":"readResult"}]}"#
         )
 
         await assertInvalidProposal(adapter, context: context(enabledToolIDs: ["builtin.system_status"]))
+    }
+
+    func testMissingVerificationExpectationFailsClosed() async throws {
+        let adapter = makeAdapter(
+            json: #"{"tasks":[{"id":"inspect","dependencies":[],"toolID":"builtin.system_status","arguments":{}}]}"#
+        )
+
+        await assertInvalidProposal(adapter, context: context(enabledToolIDs: ["builtin.system_status"]))
+    }
+
+    func testIncompatibleVerificationExpectationFailsClosed() async throws {
+        let adapter = makeAdapter(
+            json: #"{"tasks":[{"id":"inspect","dependencies":[],"toolID":"builtin.system_status","arguments":{},"verificationExpectation":"computerViewportChange"}]}"#
+        )
+
+        await assertInvalidProposal(adapter, context: context(enabledToolIDs: ["builtin.system_status"]))
+    }
+
+    func testPlannerSuppliedComputerFreshnessFailsClosed() async throws {
+        let adapter = makeAdapter(
+            json: #"{"tasks":[{"id":"scroll","dependencies":[],"toolID":"computer.scroll","arguments":{"amount":400,"stateVersion":9,"observationID":"model-made"},"verificationExpectation":"computerViewportChange"}]}"#
+        )
+
+        await assertInvalidProposal(adapter, context: context(descriptors: [computerScrollDescriptor()]))
+    }
+
+    func testComputerPlannerPromptOmitsRuntimeOwnedFreshnessFields() async throws {
+        let provider = RecordingModelProvider(
+            id: "planner",
+            events: [
+                .textDelta(
+                    #"{"tasks":[{"id":"scroll","dependencies":[],"toolID":"computer.scroll","arguments":{"amount":400},"verificationExpectation":"computerViewportChange"}]}"#
+                ),
+                .completed
+            ]
+        )
+        let fabric = ModelProviderFabric(
+            providers: [provider],
+            selectedProviderID: ModelProviderID(rawValue: "planner")
+        )
+        let adapter = ModelPlanningAdapter(providerFabric: fabric, modelID: "planner-model")
+
+        _ = try await adapter.propose(
+            goal: goal(),
+            graph: emptyGraph(),
+            budgets: budget(),
+            context: context(descriptors: [computerScrollDescriptor()])
+        )
+
+        let request = await provider.lastRequest
+        let userPrompt = request?.conversation.first(where: { $0.role == .user })?.content ?? ""
+        XCTAssertTrue(userPrompt.contains("\"amount\""))
+        XCTAssertFalse(userPrompt.contains("stateVersion"))
+        XCTAssertFalse(userPrompt.contains("observationID"))
+        XCTAssertTrue(userPrompt.contains("fresh-computer-observation"))
+        XCTAssertTrue(userPrompt.contains("computerViewportChange"))
     }
 
     func testFreeFormTextFailsClosed() async throws {
@@ -135,6 +195,37 @@ final class ModelPlanningAdapterTests: XCTestCase {
         return PlanningContext(
             retrievedContext: ContextBundle(items: [], excluded: [], usedCharacters: 0),
             registry: ToolRegistrySnapshot(revision: 1, descriptors: descriptors)
+        )
+    }
+
+    private func context(descriptors: [ToolDescriptor]) -> PlanningContext {
+        PlanningContext(
+            retrievedContext: ContextBundle(items: [], excluded: [], usedCharacters: 0),
+            registry: ToolRegistrySnapshot(
+                revision: 1,
+                descriptors: Dictionary(uniqueKeysWithValues: descriptors.map { ($0.id, $0) })
+            )
+        )
+    }
+
+    private func computerScrollDescriptor() -> ToolDescriptor {
+        ToolDescriptor(
+            id: ToolID(rawValue: "computer.scroll"),
+            providerID: "computer",
+            provenance: "test",
+            descriptorRevision: 1,
+            schemaDigest: "sha256:test-scroll",
+            inputSchemaJSON: Data(
+                #"{"type":"object","properties":{"stateVersion":{"type":"integer"},"observationID":{"type":"string"},"amount":{"type":"integer"}},"required":["stateVersion","observationID","amount"],"additionalProperties":false}"#.utf8
+            ),
+            outputSchemaJSON: nil,
+            effectClass: .reversibleLocalMutation,
+            declaredRisk: .reversibleLocalMutation,
+            requiredCredentialScopes: [],
+            idempotency: .logicalOperationKeyRequired,
+            concurrencyClass: .mutation,
+            verificationContract: VerificationContract(kind: "fresh-computer-observation"),
+            enabled: true
         )
     }
 

@@ -3,6 +3,17 @@ import Foundation
 struct PlannedToolInvocation: Codable, Equatable, Sendable {
     let toolID: ToolID
     let argumentsJSON: Data
+    let verificationExpectation: VerificationExpectation?
+
+    init(
+        toolID: ToolID,
+        argumentsJSON: Data,
+        verificationExpectation: VerificationExpectation? = nil
+    ) {
+        self.toolID = toolID
+        self.argumentsJSON = argumentsJSON
+        self.verificationExpectation = verificationExpectation
+    }
 }
 
 struct TaskNode: Codable, Equatable, Sendable {
