@@ -58,6 +58,14 @@ The planner must emit an expectation compatible with the selected descriptor's `
 
 The initial design deliberately avoids generic free-form verification strings. The execution/runtime boundary uses a closed enum so unsupported semantics cannot silently become successful.
 
+### 4.2 Runtime-owned computer freshness binding
+
+`stateVersion` and `observationID` are runtime authority data, not model intent. The planner may choose the computer action arguments and expected semantic outcome, but it must not invent freshness tokens.
+
+Before a computer mutation enters Tool Fabric, the runtime obtains one authoritative pre-action observation and binds its `stateVersion` and `observationID` into the invocation arguments. The same bound values are the ones later validated by `MacOSComputerMutationAdapter`. If the planner supplies either field, the runtime rejects the proposal rather than trusting or silently overwriting model-generated authority data.
+
+The planner-visible schema for computer tools therefore excludes runtime-owned freshness fields even though the registered execution descriptor still requires them after runtime binding. This keeps stale-state protection meaningful and makes the pre-action observation used for execution the same observation used as the verifier's "before" evidence.
+
 ## 5. Execution Artifact
 
 ### 5.1 Task execution output
@@ -181,11 +189,11 @@ The runtime must not infer a success expectation from the tool name after execut
 
 For a mutation task, the flow is:
 
-1. Planner emits a planned tool invocation with typed expected outcome.
+1. Planner emits a planned tool invocation with action arguments and typed expected outcome, but without runtime-owned freshness fields.
 2. Orchestrator admits and schedules the task.
-3. `AgentToolInvocationExecutor` resolves the descriptor and Tool Fabric invocation.
-4. Before physical mutation, the authoritative computer observation provider obtains verification-ready pre-action evidence.
-5. Tool Fabric/Policy Kernel/ComputerMutationGating execute the approved mutation through `MacOSComputerMutationAdapter`.
+3. `AgentToolInvocationExecutor` resolves the descriptor and obtains one authoritative pre-action observation/capture.
+4. Runtime binding injects that observation's `stateVersion` and `observationID` into the computer invocation arguments.
+5. Tool Fabric/Policy Kernel/ComputerMutationGating execute the approved mutation through `MacOSComputerMutationAdapter`, which validates the same bound freshness values against current authoritative state.
 6. A fresh post-action observation is captured after bounded settling/stability handling.
 7. Executor returns the receipt plus pre/post verification artifact.
 8. `ProductionAgentTaskVerifier` validates identity/freshness/contract and calls ExamPilot `OutcomeVerifier`.
@@ -245,6 +253,7 @@ The implementation should keep responsibilities separated:
 - `Application/ZeroLoseRuntimeContainer.swift` — composition only; remove fail-closed verifier placeholders after production verifier wiring exists.
 - `Computer/MacOSComputerObservationProvider.swift` — expose bounded authoritative observation identity/state for verification.
 - `Computer/MacOSComputerVerificationCapture.swift` — capture the exact observed macOS window with ScreenCaptureKit and return transient `CGImage` verification material.
+- `Computer/ComputerInvocationFreshnessBinder.swift` — inject runtime-owned observation freshness fields into planner-produced computer arguments before Tool Fabric execution.
 - Tests mirror each production responsibility instead of concentrating all behavior in container tests.
 
 `ZeroLoseRuntimeContainer.swift` must not become the implementation home for verifier logic.
@@ -268,13 +277,15 @@ Required cases:
 11. Read-result contract verifies a valid read receipt without copying raw result text.
 12. Unknown verification contract fails closed.
 13. Missing/incompatible planner expectation is rejected before execution.
-14. Provider final text alone cannot verify.
-15. Goal does not complete when any task lacks verification evidence.
-16. Goal completion preserves taint when any contributing task evidence is tainted.
-17. Goal completes when every admitted task has valid verification evidence.
-18. Existing Emergency Stop and cancellation tests remain green.
-19. Architecture boundary tests continue to prevent direct physical-input authority outside the adapter path.
-20. Repository-wide `python3 scripts/verify_all.py` passes on the committed revision.
+14. Planner-supplied `stateVersion` or `observationID` is rejected rather than trusted.
+15. Runtime binds freshness fields from the exact pre-action observation used for verification.
+16. Provider final text alone cannot verify.
+17. Goal does not complete when any task lacks verification evidence.
+18. Goal completion preserves taint when any contributing task evidence is tainted.
+19. Goal completes when every admitted task has valid verification evidence.
+20. Existing Emergency Stop and cancellation tests remain green.
+21. Architecture boundary tests continue to prevent direct physical-input authority outside the adapter path.
+22. Repository-wide `python3 scripts/verify_all.py` passes on the committed revision.
 
 ## 15. Non-Goals
 
@@ -300,6 +311,7 @@ The design is implemented only when:
 - computer mutations require independent pre/post semantic verification through the existing ExamPilot `OutcomeVerifier`;
 - read-only results use an explicit supported verification contract;
 - planner expectations are typed and validated before execution;
+- computer freshness tokens are runtime-owned and bound from the verifier's authoritative pre-action observation;
 - goal completion derives only from verified task evidence;
 - unknown or unavailable verification paths remain fail-closed;
 - screenshots remain transient and are not persisted in runtime evidence/events/checkpoints;
