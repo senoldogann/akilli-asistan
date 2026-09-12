@@ -11,6 +11,9 @@ enum AgentOrchestratorError: Error, Sendable, Equatable {
     case sessionAlreadyActive
     case invalidPlanningProposal
     case noRunnableTasks
+    case restoreUnavailable
+    case invalidRestoredState
+    case manualResolutionRequired
 }
 
 actor AgentOrchestrator {
@@ -22,6 +25,7 @@ actor AgentOrchestrator {
     private let goalVerifier: any GoalVerifying
     private let budget: RuntimeBudget
     private let planningContext: PlanningContext
+    private let restoreCoordinator: (any AutonomousSessionRestoring)?
 
     private var currentGoal: GoalSnapshot?
     private var graph: TaskGraph?
@@ -39,7 +43,8 @@ actor AgentOrchestrator {
         eventStore: any EventStoring,
         goalVerifier: any GoalVerifying,
         budget: RuntimeBudget,
-        planningContext: PlanningContext
+        planningContext: PlanningContext,
+        restoreCoordinator: (any AutonomousSessionRestoring)? = nil
     ) {
         self.planner = planner
         self.scheduler = scheduler
@@ -49,6 +54,63 @@ actor AgentOrchestrator {
         self.goalVerifier = goalVerifier
         self.budget = budget
         self.planningContext = planningContext
+        self.restoreCoordinator = restoreCoordinator
+    }
+
+    func restore(sessionID: AgentSessionID) async throws -> AgentSessionSnapshot {
+        if let session, !Self.isTerminal(session.lifecycle) {
+            throw AgentOrchestratorError.sessionAlreadyActive
+        }
+        guard let restoreCoordinator else {
+            throw AgentOrchestratorError.restoreUnavailable
+        }
+
+        pauseRequested = true
+        cancellationRequested = false
+        emergencyStopRequested = false
+
+        let result = try await restoreCoordinator.restoreSession(
+            streamID: "agent:\(sessionID.rawValue)"
+        )
+        let restoredSession = try JSONDecoder().decode(
+            AgentSessionSnapshot.self,
+            from: result.checkpoint.lifecycleSnapshot
+        )
+        let restoredGraph = try JSONDecoder().decode(
+            TaskGraphSnapshot.self,
+            from: result.checkpoint.taskGraphSnapshot
+        )
+        _ = try JSONDecoder().decode(
+            RuntimeBudgetSnapshot.self,
+            from: result.checkpoint.budgetSnapshot
+        )
+
+        guard restoredSession.id == sessionID,
+              restoredGraph.goalID == restoredSession.goalID,
+              result.checkpoint.streamID == "agent:\(sessionID.rawValue)" else {
+            throw AgentOrchestratorError.invalidRestoredState
+        }
+
+        currentGoal = nil
+        graph = nil
+        eventSequence = max(
+            result.checkpoint.eventSequence,
+            result.replayedEventSequences.max() ?? result.checkpoint.eventSequence
+        )
+
+        switch result.disposition {
+        case .readyToResume:
+            session = restoredSession
+        case .manualResolutionRequired:
+            session = AgentSessionSnapshot(
+                id: restoredSession.id,
+                goalID: restoredSession.goalID,
+                lifecycle: .manualResolutionRequired,
+                verificationEvidenceID: restoredSession.verificationEvidenceID
+            )
+        }
+
+        return try requireSession()
     }
 
     func start(goal: GoalSnapshot) async throws -> AgentSessionSnapshot {
@@ -267,7 +329,10 @@ actor AgentOrchestrator {
         pauseRequested = true
     }
 
-    func resume() {
+    func resume() throws {
+        if session?.lifecycle == .manualResolutionRequired {
+            throw AgentOrchestratorError.manualResolutionRequired
+        }
         pauseRequested = false
     }
 
