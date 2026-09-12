@@ -2,7 +2,7 @@ import Foundation
 import XCTest
 
 final class ArchitectureBoundaryTests: XCTestCase {
-    func testZeroLoseSourcesDoNotImportExamPilotCore() throws {
+    func testZeroLoseSourcesImportExamPilotCoreOnlyInMacOSMutationAdapter() throws {
         let sourceRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -18,15 +18,26 @@ final class ArchitectureBoundaryTests: XCTestCase {
         )
 
         var inspectedSourceCount = 0
+        var allowedImportFound = false
+        let allowedRelativePath = "V2/Computer/MacOSComputerMutationAdapter.swift"
+
         for case let fileURL as URL in enumerator where fileURL.pathExtension == "swift" {
             let contents = try String(contentsOf: fileURL, encoding: .utf8)
+            let relativePath = String(fileURL.path.dropFirst(sourceRoot.path.count + 1))
             inspectedSourceCount += 1
+
+            if relativePath == allowedRelativePath {
+                allowedImportFound = contents.contains("import ExamPilotCore")
+                continue
+            }
+
             XCTAssertFalse(
                 contents.contains("import ExamPilotCore"),
-                "ZeroLose production source must not import ExamPilotCore: \(fileURL.path)"
+                "ExamPilotCore must remain isolated to \(allowedRelativePath): \(relativePath)"
             )
         }
 
         XCTAssertGreaterThan(inspectedSourceCount, 0, "Expected to inspect ZeroLose production Swift sources")
+        XCTAssertTrue(allowedImportFound, "Expected \(allowedRelativePath) to own the ExamPilotCore import")
     }
 }

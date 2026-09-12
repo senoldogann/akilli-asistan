@@ -1,3 +1,7 @@
+import ApplicationServices
+import ComputerAgentMacOS
+import CoreGraphics
+import CryptoKit
 import Foundation
 
 @MainActor
@@ -149,18 +153,24 @@ final class ZeroLoseRuntimeContainer {
             }
         )
         let builtinProvider = BuiltinToolProvider(executor: builtinExecutor)
+        let toolComposition = AgentComputerToolComposition.make(
+            baseProviders: [builtinProvider],
+            baseDescriptors: V2BuiltinToolCatalog.descriptors,
+            observationSourceProvider: LiveMacOSComputerObservationSourceProvider.makeIfReady(),
+            shouldStop: { false }
+        )
         let toolFabric = ToolFabric(
             registry: registry,
             policy: DefaultPolicyKernel(),
             credentialBroker: credentialBroker,
-            providers: [builtinProvider],
+            providers: toolComposition.providers,
             authorityMode: initialAuthority
         )
         let nativeToolRuntime = V2NativeToolRuntime(
             registry: registry,
             toolFabric: toolFabric,
             eventRecorder: eventRecorder,
-            initialDescriptors: V2BuiltinToolCatalog.descriptors
+            initialDescriptors: toolComposition.descriptors
         )
         let runtimeController = V2ShellRuntimeController(
             intelligenceService: dependencies.intelligenceService,
@@ -219,6 +229,272 @@ final class ZeroLoseRuntimeContainer {
             settingsViewModel?.apply(SettingsProjectionSnapshot(authorityMode: mode))
         }
         runtimeController.bind(to: shellViewModel)
+    }
+}
+
+struct AgentComputerToolComposition {
+    let providers: [any ToolProviding]
+    let descriptors: [ToolDescriptor]
+
+    static func make(
+        baseProviders: [any ToolProviding],
+        baseDescriptors: [ToolDescriptor],
+        observationSourceProvider: (any MacOSComputerObservationSourceProviding)?,
+        shouldStop: @escaping () -> Bool
+    ) -> AgentComputerToolComposition {
+        guard let observationSourceProvider else {
+            return AgentComputerToolComposition(
+                providers: baseProviders,
+                descriptors: baseDescriptors
+            )
+        }
+
+        let observationProvider = MacOSComputerObservationProvider(
+            sourceProvider: observationSourceProvider
+        )
+        let mutationAdapter = MacOSComputerMutationAdapter(
+            stateProvider: observationProvider,
+            shouldStop: shouldStop
+        )
+        let computerProvider = ComputerToolProvider(gateway: mutationAdapter)
+
+        return AgentComputerToolComposition(
+            providers: baseProviders + [computerProvider],
+            descriptors: baseDescriptors + V2ComputerToolCatalog.descriptors
+        )
+    }
+}
+
+enum V2ComputerToolCatalog {
+    static let descriptors: [ToolDescriptor] = [
+        makeDescriptor(
+            id: "computer.pointer.click",
+            inputSchemaJSON: Data(
+                #"{"type":"object","properties":{"stateVersion":{"type":"integer","minimum":0},"observationID":{"type":"string","minLength":1},"x":{"type":"number"},"y":{"type":"number"}},"required":["stateVersion","observationID","x","y"],"additionalProperties":false}"#.utf8
+            )
+        ),
+        makeDescriptor(
+            id: "computer.keyboard.type",
+            inputSchemaJSON: Data(
+                #"{"type":"object","properties":{"stateVersion":{"type":"integer","minimum":0},"observationID":{"type":"string","minLength":1},"text":{"type":"string"}},"required":["stateVersion","observationID","text"],"additionalProperties":false}"#.utf8
+            )
+        ),
+        makeDescriptor(
+            id: "computer.keyboard.press",
+            inputSchemaJSON: Data(
+                #"{"type":"object","properties":{"stateVersion":{"type":"integer","minimum":0},"observationID":{"type":"string","minLength":1},"key":{"type":"string","minLength":1}},"required":["stateVersion","observationID","key"],"additionalProperties":false}"#.utf8
+            )
+        ),
+        makeDescriptor(
+            id: "computer.scroll",
+            inputSchemaJSON: Data(
+                #"{"type":"object","properties":{"stateVersion":{"type":"integer","minimum":0},"observationID":{"type":"string","minLength":1},"amount":{"type":"integer","minimum":-1400,"maximum":1400}},"required":["stateVersion","observationID","amount"],"additionalProperties":false}"#.utf8
+            )
+        ),
+        makeDescriptor(
+            id: "computer.wait",
+            inputSchemaJSON: Data(
+                #"{"type":"object","properties":{"stateVersion":{"type":"integer","minimum":0},"observationID":{"type":"string","minLength":1},"milliseconds":{"type":"integer","minimum":0,"maximum":5000}},"required":["stateVersion","observationID","milliseconds"],"additionalProperties":false}"#.utf8
+            )
+        ),
+    ]
+
+    private static func makeDescriptor(
+        id: String,
+        inputSchemaJSON: Data
+    ) -> ToolDescriptor {
+        ToolDescriptor(
+            id: ToolID(rawValue: id),
+            providerID: "computer",
+            provenance: "zerolose:v2:computer:macos",
+            descriptorRevision: 1,
+            schemaDigest: digest(inputSchemaJSON),
+            inputSchemaJSON: inputSchemaJSON,
+            outputSchemaJSON: nil,
+            effectClass: .reversibleLocalMutation,
+            declaredRisk: .reversibleLocalMutation,
+            requiredCredentialScopes: [],
+            idempotency: .logicalOperationKeyRequired,
+            concurrencyClass: .mutation,
+            verificationContract: VerificationContract(kind: "fresh-computer-observation"),
+            enabled: true
+        )
+    }
+
+    private static func digest(_ input: Data) -> String {
+        let hash = SHA256.hash(data: input)
+        return "sha256:" + hash.map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+private enum LiveMacOSComputerObservationSourceError: Error {
+    case unavailable
+}
+
+private struct LiveMacOSComputerObservationSourceProvider: MacOSComputerObservationSourceProviding {
+    private struct WindowCandidate {
+        let processID: Int32
+        let windowID: UInt32
+        let frame: CGRect
+    }
+
+    private struct ObservationSnapshot {
+        let screen: WindowCandidate
+        let accessibility: WindowCandidate
+    }
+
+    static func makeIfReady() -> LiveMacOSComputerObservationSourceProvider? {
+        guard CGPreflightScreenCaptureAccess(),
+              AXIsProcessTrusted(),
+              let snapshot = try? currentSnapshot(),
+              snapshot.screen.processID == snapshot.accessibility.processID,
+              snapshot.screen.windowID == snapshot.accessibility.windowID else {
+            return nil
+        }
+        return LiveMacOSComputerObservationSourceProvider()
+    }
+
+    func currentObservationSources() async throws -> MacOSComputerObservationSources {
+        guard CGPreflightScreenCaptureAccess(), AXIsProcessTrusted() else {
+            throw LiveMacOSComputerObservationSourceError.unavailable
+        }
+
+        let snapshot = try Self.currentSnapshot()
+        return MacOSComputerObservationSources(
+            screen: ComputerObservationSource(
+                processID: snapshot.screen.processID,
+                windowID: snapshot.screen.windowID,
+                provenance: "macos:screen-window",
+                tainted: false,
+                confidence: 1.0
+            ),
+            accessibility: ComputerObservationSource(
+                processID: snapshot.accessibility.processID,
+                windowID: snapshot.accessibility.windowID,
+                provenance: "macos:accessibility-focus",
+                tainted: false,
+                confidence: 1.0
+            )
+        )
+    }
+
+    private static func currentSnapshot() throws -> ObservationSnapshot {
+        let candidates = windowCandidates()
+        guard let screen = candidates.first,
+              let accessibilityContext = focusedAccessibilityContext(),
+              let accessibility = candidates.first(where: {
+                  $0.processID == accessibilityContext.processID
+                      && framesMatch($0.frame, accessibilityContext.frame)
+              }) else {
+            throw LiveMacOSComputerObservationSourceError.unavailable
+        }
+
+        return ObservationSnapshot(
+            screen: screen,
+            accessibility: accessibility
+        )
+    }
+
+    private static func windowCandidates() -> [WindowCandidate] {
+        guard let rawWindows = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly, .excludeDesktopElements],
+            kCGNullWindowID
+        ) as? [[String: Any]] else {
+            return []
+        }
+
+        return rawWindows.compactMap { info in
+            guard let layer = info[kCGWindowLayer as String] as? NSNumber,
+                  layer.intValue == 0,
+                  let ownerPID = info[kCGWindowOwnerPID as String] as? NSNumber,
+                  let windowNumber = info[kCGWindowNumber as String] as? NSNumber,
+                  let bounds = info[kCGWindowBounds as String] as? [String: Any],
+                  let x = bounds["X"] as? NSNumber,
+                  let y = bounds["Y"] as? NSNumber,
+                  let width = bounds["Width"] as? NSNumber,
+                  let height = bounds["Height"] as? NSNumber,
+                  width.doubleValue > 1,
+                  height.doubleValue > 1 else {
+                return nil
+            }
+
+            let frame = CGRect(
+                x: x.doubleValue,
+                y: y.doubleValue,
+                width: width.doubleValue,
+                height: height.doubleValue
+            )
+
+            return WindowCandidate(
+                processID: ownerPID.int32Value,
+                windowID: windowNumber.uint32Value,
+                frame: frame
+            )
+        }
+    }
+
+    private static func focusedAccessibilityContext() -> (processID: Int32, frame: CGRect)? {
+        let systemWide = AXUIElementCreateSystemWide()
+        guard let application = attribute(
+            systemWide,
+            kAXFocusedApplicationAttribute as CFString
+        ) as! AXUIElement? else {
+            return nil
+        }
+
+        var processID: pid_t = 0
+        guard AXUIElementGetPid(application, &processID) == .success,
+              let focusedWindow = attribute(
+                  application,
+                  kAXFocusedWindowAttribute as CFString
+              ) as! AXUIElement?,
+              let frame = frame(of: focusedWindow) else {
+            return nil
+        }
+
+        return (Int32(processID), frame)
+    }
+
+    private static func frame(of element: AXUIElement) -> CGRect? {
+        guard let positionValue = attribute(
+            element,
+            kAXPositionAttribute as CFString
+        ) as! AXValue?,
+        let sizeValue = attribute(
+            element,
+            kAXSizeAttribute as CFString
+        ) as! AXValue?,
+        AXValueGetType(positionValue) == .cgPoint,
+        AXValueGetType(sizeValue) == .cgSize else {
+            return nil
+        }
+
+        var origin = CGPoint.zero
+        var size = CGSize.zero
+        guard AXValueGetValue(positionValue, .cgPoint, &origin),
+              AXValueGetValue(sizeValue, .cgSize, &size),
+              size.width > 1,
+              size.height > 1 else {
+            return nil
+        }
+        return CGRect(origin: origin, size: size)
+    }
+
+    private static func attribute(
+        _ element: AXUIElement,
+        _ name: CFString
+    ) -> CFTypeRef? {
+        var value: CFTypeRef?
+        let error = AXUIElementCopyAttributeValue(element, name, &value)
+        return error == .success ? value : nil
+    }
+
+    private static func framesMatch(_ lhs: CGRect, _ rhs: CGRect) -> Bool {
+        let tolerance: CGFloat = 2
+        return abs(lhs.minX - rhs.minX) <= tolerance
+            && abs(lhs.minY - rhs.minY) <= tolerance
+            && abs(lhs.width - rhs.width) <= tolerance
+            && abs(lhs.height - rhs.height) <= tolerance
     }
 }
 
