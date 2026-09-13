@@ -107,6 +107,15 @@ actor CLIProcessRunner: CLIProcessRunning {
         process.currentDirectoryURL = command.workingDirectory
         process.standardOutput = stdout
         process.standardError = stderr
+        // Never inherit the app's stdin: an agent CLI that decides to read
+        // "additional input from stdin" (codex does exactly this) would otherwise
+        // block on a pipe that nobody ever closes, and the turn would hang until
+        // the timeout with no explanation. A null device gives it immediate EOF.
+        process.standardInput = FileHandle.nullDevice
+        // Never inherit the app's stdin: an agent CLI that decides to read
+        // "additional input from stdin" (codex does exactly this) would otherwise
+        // block on a pipe that nobody ever closes, and the turn would hang until
+        // the timeout with no explanation. A null device gives it immediate EOF.
 
         var environment = Self.sanitizedEnvironment(baseEnvironment)
         for (key, value) in command.environmentOverrides {

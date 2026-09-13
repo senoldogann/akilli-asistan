@@ -121,4 +121,37 @@ final class OpenCodeCLIProviderTests: XCTestCase {
             )
         }
     }
+
+    /// Captured from a real `opencode run --format json` failure. The provider's own
+    /// message and its reference must reach the user instead of "error 7".
+    func testOpenCodeServerErrorIsSurfacedWithItsReference() async throws {
+        let fixture = #"{"type":"error","timestamp":1789328075602,"sessionID":"ses_abc","error":{"name":"UnknownError","data":{"message":"Unexpected server error. Check server logs for details.","ref":"err_9be6afa7"}}}"# + "\n"
+        let runner = FixtureCLIProcessRunner(events: [
+            .stdout(Data(fixture.utf8)),
+            .exited(1)
+        ])
+        let provider = OpenCodeCLIProvider(
+            locator: StubCLIExecutableLocator(paths: [
+                "opencode": URL(fileURLWithPath: "/opt/homebrew/bin/opencode")
+            ]),
+            runner: runner,
+            workspaceRoot: URL(fileURLWithPath: "/tmp/opencode-error", isDirectory: true)
+        )
+
+        var thrown: ProviderError?
+        do {
+            for try await _ in provider.stream(.fixture()) {}
+            XCTFail("Expected the OpenCode stream to fail")
+        } catch let error as ProviderError {
+            thrown = error
+        }
+
+        let error = try XCTUnwrap(thrown)
+        XCTAssertTrue(
+            error.localizedDescription.contains("Unexpected server error"),
+            "The provider's own reason must be shown, not an enum index"
+        )
+        XCTAssertTrue(error.localizedDescription.contains("err_9be6afa7"))
+        XCTAssertFalse(error.localizedDescription.contains("error 7"))
+    }
 }

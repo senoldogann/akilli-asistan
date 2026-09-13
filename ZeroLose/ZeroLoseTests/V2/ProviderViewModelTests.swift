@@ -211,18 +211,25 @@ final class ProviderViewModelTests: XCTestCase {
 private actor ProviderViewModelSelectionStore: ProviderSelectionPersisting {
     private var providerID: String?
     private var modelID: String?
+    private var reasoningEffort: String?
 
-    init(providerID: String?, modelID: String?) {
+    init(providerID: String?, modelID: String?, reasoningEffort: String? = nil) {
         self.providerID = providerID
         self.modelID = modelID
+        self.reasoningEffort = reasoningEffort
     }
 
     func loadProviderID() async -> String? { providerID }
     func loadModelID() async -> String? { modelID }
+    func loadReasoningEffort() async -> String? { reasoningEffort }
 
     func save(providerID: String, modelID: String) async {
         self.providerID = providerID
         self.modelID = modelID
+    }
+
+    func saveReasoningEffort(_ effort: String?) async {
+        reasoningEffort = effort
     }
 }
 
