@@ -11,6 +11,7 @@ final class ZeroLoseRuntimeContainer {
     let facade: ApplicationFacade
     let chatViewModel: ChatViewModel
     let shellViewModel: ShellViewModel
+    let providerViewModel: ProviderViewModel
     let settingsViewModel: SettingsViewModel
     let taskRuntimeViewModel: TaskRuntimeViewModel
     let approvalViewModel: ApprovalViewModel
@@ -92,27 +93,7 @@ final class ZeroLoseRuntimeContainer {
         let registry = ToolRegistry()
         let credentialBroker = KeychainCredentialBrokerAdapter()
 
-        let providerIDKey = "v2.modelProviderID"
-        let defaultModelIDKey = "v2.modelDefaultID"
         let defaults = UserDefaults.standard
-        let storedProviderID = defaults
-            .string(forKey: providerIDKey)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let selectedProviderRawValue: String
-        if let storedProviderID, !storedProviderID.isEmpty {
-            selectedProviderRawValue = storedProviderID
-        } else {
-            selectedProviderRawValue = "codex"
-            defaults.set(selectedProviderRawValue, forKey: providerIDKey)
-        }
-        let selectedProviderID = ModelProviderID(rawValue: selectedProviderRawValue)
-
-        let storedDefaultModelID = defaults
-            .string(forKey: defaultModelIDKey)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if storedDefaultModelID?.isEmpty != false {
-            defaults.set("default", forKey: defaultModelIDKey)
-        }
 
         let cliLocator = CLIExecutableLocator()
         let cliRunner = CLIProcessRunner()
@@ -126,11 +107,18 @@ final class ZeroLoseRuntimeContainer {
         )
         let modelProviderFabric = ModelProviderFabric(
             providers: [codexProvider, claudeProvider, openCodeProvider, antigravityProvider, openAIProvider],
-            selectedProviderID: selectedProviderID
+            selectedProviderID: ModelProviderID(rawValue: "codex")
         )
         let providerControlPlane = ProviderControlPlane(
             fabric: modelProviderFabric,
             persistence: UserDefaultsProviderSelectionStore(defaults: defaults)
+        )
+        let providerSettingsController = ProviderSettingsController(
+            openAIKeyStore: credentialBroker
+        )
+        let providerViewModel = ProviderViewModel(
+            controlPlane: providerControlPlane,
+            settingsController: providerSettingsController
         )
 
         let attachmentContextBuffer = AttachmentContextBuffer()
@@ -307,6 +295,7 @@ final class ZeroLoseRuntimeContainer {
         self.facade = facade
         self.chatViewModel = ChatViewModel(commandSender: facade)
         self.shellViewModel = shellViewModel
+        self.providerViewModel = providerViewModel
         self.settingsViewModel = settingsViewModel
         let taskRuntimeViewModel = TaskRuntimeViewModel(commandSender: facade)
         self.taskRuntimeViewModel = taskRuntimeViewModel
@@ -322,6 +311,9 @@ final class ZeroLoseRuntimeContainer {
             taskRuntimeViewModel?.apply(snapshot)
         }
         runtimeController.bind(to: shellViewModel)
+        Task {
+            await providerViewModel.refresh()
+        }
     }
 }
 
