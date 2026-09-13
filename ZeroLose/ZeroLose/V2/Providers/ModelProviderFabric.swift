@@ -62,7 +62,19 @@ actor ModelProviderFabric {
         _ capability: ModelCapabilities,
         modelID: String
     ) async -> Bool {
-        guard let provider = providers[selectedProviderID],
+        await modelSupports(
+            capability,
+            modelID: modelID,
+            using: selectedProviderID
+        )
+    }
+
+    func modelSupports(
+        _ capability: ModelCapabilities,
+        modelID: String,
+        using providerID: ModelProviderID
+    ) async -> Bool {
+        guard let provider = providers[providerID],
               provider.capabilities.contains(capability),
               let models = try? await provider.discoverModels(),
               !models.isEmpty else {

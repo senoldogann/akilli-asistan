@@ -217,34 +217,45 @@ final class ZeroLoseRuntimeContainer {
                 verifier: ProductionAgentTaskVerifier(),
                 budget: agentBudget
             )
-            let configuredAgentModelID = storedDefaultModelID?.isEmpty == false
-                ? storedDefaultModelID!
-                : "default"
-            let orchestrator = AgentOrchestrator(
-                planner: ModelPlanningAdapter(
-                    providerFabric: modelProviderFabric,
-                    modelID: configuredAgentModelID
-                ),
-                scheduler: Scheduler(maxParallelReads: 2),
-                taskRuntime: taskRuntime,
-                checkpointStore: checkpointStore,
-                eventStore: eventStore,
-                goalVerifier: ProductionAgentGoalVerifier(),
-                budget: agentBudget,
-                planningContext: PlanningContext(
-                    retrievedContext: ContextBundle(items: [], excluded: [], usedCharacters: 0),
-                    registry: planningRegistry
-                )
+            let scheduler = Scheduler(maxParallelReads: 2)
+            let goalVerifier = ProductionAgentGoalVerifier()
+            let planningContext = PlanningContext(
+                retrievedContext: ContextBundle(items: [], excluded: [], usedCharacters: 0),
+                registry: planningRegistry
             )
-            agentRuntime = AgentCommandRuntime(
-                orchestrator: orchestrator,
-                emergencyStopState: emergencyStopState,
-                structuredPlanningAvailable: {
-                    await modelProviderFabric.selectedModelSupports(
+            let orchestratorBuilder = ClosureAgentOrchestratorBuilder { selection in
+                let status = await modelProviderFabric.status(for: selection.providerID)
+                guard status.availability == .ready || status.availability == .detected,
+                      await modelProviderFabric.modelSupports(
                         .jsonOutput,
-                        modelID: configuredAgentModelID
+                        modelID: selection.modelID,
+                        using: selection.providerID
+                      ) else {
+                    throw V2RuntimeCommandError.unsupportedCommand(
+                        "agent-structured-planning-unavailable"
                     )
+                }
+
+                return AgentOrchestrator(
+                    planner: ModelPlanningAdapter(
+                        providerFabric: modelProviderFabric,
+                        selection: selection
+                    ),
+                    scheduler: scheduler,
+                    taskRuntime: taskRuntime,
+                    checkpointStore: checkpointStore,
+                    eventStore: eventStore,
+                    goalVerifier: goalVerifier,
+                    budget: agentBudget,
+                    planningContext: planningContext
+                )
+            }
+            agentRuntime = AgentCommandRuntime(
+                orchestratorBuilder: orchestratorBuilder,
+                selectionProvider: {
+                    await providerControlPlane.currentSelection()
                 },
+                emergencyStopState: emergencyStopState,
                 mutationExecutionActive: { mutationExecutionState.isActive }
             )
         } else {

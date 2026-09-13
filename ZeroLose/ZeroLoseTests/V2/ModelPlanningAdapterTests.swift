@@ -19,7 +19,14 @@ final class ModelPlanningAdapterTests: XCTestCase {
             providers: [provider],
             selectedProviderID: ModelProviderID(rawValue: "planner")
         )
-        let adapter = ModelPlanningAdapter(providerFabric: fabric, modelID: "planner-model")
+        let adapter = ModelPlanningAdapter(
+            providerFabric: fabric,
+            selection: ProviderSelectionSnapshot(
+                providerID: provider.id,
+                modelID: "planner-model",
+                revision: 0
+            )
+        )
 
         let proposal = try await adapter.propose(
             goal: goal(),
@@ -50,6 +57,48 @@ final class ModelPlanningAdapterTests: XCTestCase {
         let lastRequest = await provider.lastRequest
         XCTAssertEqual(lastRequest?.responseMode, .json)
         XCTAssertEqual(lastRequest?.modelID, "planner-model")
+    }
+
+    func testPlannerUsesBoundProviderAndModelAfterFabricSelectionChanges() async throws {
+        let first = RecordingModelProvider(
+            id: "first",
+            events: [
+                .textDelta(#"{"tasks":[]}"#),
+                .completed
+            ],
+            capabilities: [.textStreaming, .jsonOutput]
+        )
+        let second = RecordingModelProvider(
+            id: "second",
+            events: [
+                .textDelta(#"{"tasks":[]}"#),
+                .completed
+            ],
+            capabilities: [.textStreaming, .jsonOutput]
+        )
+        let fabric = ModelProviderFabric(
+            providers: [first, second],
+            selectedProviderID: first.id
+        )
+        let selection = ProviderSelectionSnapshot(
+            providerID: first.id,
+            modelID: "bound-planner-model",
+            revision: 7
+        )
+        let adapter = ModelPlanningAdapter(providerFabric: fabric, selection: selection)
+
+        await fabric.select(second.id)
+        _ = try await adapter.propose(
+            goal: goal(),
+            graph: emptyGraph(),
+            budgets: budget(),
+            context: context(enabledToolIDs: ["builtin.system_status"])
+        )
+
+        let firstRequest = await first.lastRequest
+        let secondCount = await second.requestCount
+        XCTAssertEqual(firstRequest?.modelID, "bound-planner-model")
+        XCTAssertEqual(secondCount, 0)
     }
 
     func testUnknownToolFailsClosed() async throws {
@@ -114,7 +163,14 @@ final class ModelPlanningAdapterTests: XCTestCase {
             providers: [provider],
             selectedProviderID: ModelProviderID(rawValue: "planner")
         )
-        let adapter = ModelPlanningAdapter(providerFabric: fabric, modelID: "planner-model")
+        let adapter = ModelPlanningAdapter(
+            providerFabric: fabric,
+            selection: ProviderSelectionSnapshot(
+                providerID: provider.id,
+                modelID: "planner-model",
+                revision: 0
+            )
+        )
 
         _ = try await adapter.propose(
             goal: goal(),
@@ -166,7 +222,14 @@ final class ModelPlanningAdapterTests: XCTestCase {
             providers: [provider],
             selectedProviderID: ModelProviderID(rawValue: "planner")
         )
-        return ModelPlanningAdapter(providerFabric: fabric, modelID: "planner-model")
+        return ModelPlanningAdapter(
+            providerFabric: fabric,
+            selection: ProviderSelectionSnapshot(
+                providerID: provider.id,
+                modelID: "planner-model",
+                revision: 0
+            )
+        )
     }
 
     private func goal() -> GoalSnapshot {

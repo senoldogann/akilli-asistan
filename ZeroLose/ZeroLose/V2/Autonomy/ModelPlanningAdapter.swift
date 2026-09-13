@@ -2,11 +2,14 @@ import Foundation
 
 struct ModelPlanningAdapter: Planning, Sendable {
     private let providerFabric: ModelProviderFabric
-    private let modelID: String
+    private let selection: ProviderSelectionSnapshot
 
-    init(providerFabric: ModelProviderFabric, modelID: String) {
+    init(
+        providerFabric: ModelProviderFabric,
+        selection: ProviderSelectionSnapshot
+    ) {
         self.providerFabric = providerFabric
-        self.modelID = modelID
+        self.selection = selection
     }
 
     func propose(
@@ -29,12 +32,15 @@ struct ModelPlanningAdapter: Planning, Sendable {
                     )
                 )
             ],
-            modelID: modelID,
+            modelID: selection.modelID,
             tools: [],
             responseMode: .json
         )
 
-        let stream = try await providerFabric.stream(request)
+        let stream = try await providerFabric.stream(
+            request,
+            using: selection.providerID
+        )
         var output = ""
         var completed = false
 

@@ -93,6 +93,20 @@ final class ProviderCompositionTests: XCTestCase {
             )
         }
     }
+
+    func testAgentCompositionCapturesProviderSelectionPerRun() throws {
+        let source = try providerCompositionProductionSource(
+            "V2/Application/ZeroLoseRuntimeContainer.swift"
+        )
+
+        XCTAssertTrue(source.contains("ClosureAgentOrchestratorBuilder"))
+        XCTAssertTrue(source.contains("selection: selection"))
+        XCTAssertTrue(source.contains("modelID: selection.modelID"))
+        XCTAssertTrue(source.contains("using: selection.providerID"))
+        XCTAssertTrue(source.contains("providerControlPlane.currentSelection()"))
+        XCTAssertFalse(source.contains("configuredAgentModelID"))
+        XCTAssertFalse(source.contains("structuredPlanningAvailable:"))
+    }
 }
 
 private func providerCompositionProductionSource(_ relativePath: String) throws -> String {

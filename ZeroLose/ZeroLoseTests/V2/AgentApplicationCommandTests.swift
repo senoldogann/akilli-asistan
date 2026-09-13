@@ -7,8 +7,11 @@ final class AgentApplicationCommandTests: XCTestCase {
     func testAgentCommandRuntimeRoutesAuthoritativeSessionControlsAndEmergencyStop() async throws {
         let orchestrator = RecordingAgentOrchestrator(session: nil)
         let stopState = AgentEmergencyStopState()
+        let selectionSource = MutableProviderSelectionSource(.fixture(provider: "codex", model: "gpt-a"))
+        let builder = RecordingAgentOrchestratorBuilder(orchestrators: [orchestrator])
         let runtime = AgentCommandRuntime(
-            orchestrator: orchestrator,
+            orchestratorBuilder: builder,
+            selectionProvider: { await selectionSource.current() },
             emergencyStopState: stopState
         )
 
@@ -34,8 +37,11 @@ final class AgentApplicationCommandTests: XCTestCase {
 
     func testSubmitUserGoalPublishesActiveSessionBeforeRunCompletes() async throws {
         let orchestrator = BlockingAgentOrchestrator()
+        let selectionSource = MutableProviderSelectionSource(.fixture(provider: "codex", model: "gpt-a"))
+        let builder = RecordingAgentOrchestratorBuilder(orchestrators: [orchestrator])
         let runtime = AgentCommandRuntime(
-            orchestrator: orchestrator,
+            orchestratorBuilder: builder,
+            selectionProvider: { await selectionSource.current() },
             emergencyStopState: AgentEmergencyStopState(),
             mutationExecutionActive: { true }
         )
@@ -62,12 +68,54 @@ final class AgentApplicationCommandTests: XCTestCase {
         XCTAssertEqual(final?.lifecycle, .cancelled)
     }
 
+    func testAgentRunCapturesOneSelectionAndNextRunUsesLatestSelection() async throws {
+        let firstOrchestrator = BlockingAgentOrchestrator(sessionID: "first-session")
+        let secondOrchestrator = RecordingAgentOrchestrator(session: nil)
+        let builder = RecordingAgentOrchestratorBuilder(
+            orchestrators: [firstOrchestrator, secondOrchestrator]
+        )
+        let source = MutableProviderSelectionSource(
+            .fixture(provider: "provider-a", model: "model-a", revision: 1)
+        )
+        let runtime = AgentCommandRuntime(
+            orchestratorBuilder: builder,
+            selectionProvider: { await source.current() },
+            emergencyStopState: AgentEmergencyStopState()
+        )
+
+        let first = try await runtime.submitUserGoal("First run")
+        await source.set(.fixture(provider: "provider-b", model: "model-b", revision: 2))
+
+        let duringFirstRun = await builder.selections
+        XCTAssertEqual(duringFirstRun, [.fixture(provider: "provider-a", model: "model-a", revision: 1)])
+
+        try await runtime.cancel(sessionID: first.id)
+        _ = await runtime.waitForCurrentRun()
+        _ = try await runtime.submitUserGoal("Second run")
+
+        let selections = await builder.selections
+        XCTAssertEqual(
+            selections,
+            [
+                .fixture(provider: "provider-a", model: "model-a", revision: 1),
+                .fixture(provider: "provider-b", model: "model-b", revision: 2)
+            ]
+        )
+    }
+
     func testSubmitUserGoalFailsClosedWhenStructuredPlanningIsUnavailable() async throws {
         let orchestrator = RecordingAgentOrchestrator(session: nil)
+        let selectionSource = MutableProviderSelectionSource(.fixture(provider: "text-only", model: "plain"))
+        let builder = RecordingAgentOrchestratorBuilder(
+            orchestrators: [orchestrator],
+            terminalError: V2RuntimeCommandError.unsupportedCommand(
+                "agent-structured-planning-unavailable"
+            )
+        )
         let runtime = AgentCommandRuntime(
-            orchestrator: orchestrator,
-            emergencyStopState: AgentEmergencyStopState(),
-            structuredPlanningAvailable: { false }
+            orchestratorBuilder: builder,
+            selectionProvider: { await selectionSource.current() },
+            emergencyStopState: AgentEmergencyStopState()
         )
 
         do {
@@ -94,8 +142,11 @@ final class AgentApplicationCommandTests: XCTestCase {
                 verificationEvidenceID: nil
             )
         )
+        let selectionSource = MutableProviderSelectionSource(.fixture(provider: "codex", model: "gpt-a"))
+        let builder = RecordingAgentOrchestratorBuilder(orchestrators: [orchestrator])
         let runtime = AgentCommandRuntime(
-            orchestrator: orchestrator,
+            orchestratorBuilder: builder,
+            selectionProvider: { await selectionSource.current() },
             emergencyStopState: AgentEmergencyStopState()
         )
 
@@ -407,6 +458,7 @@ private enum RecordedAgentOrchestratorCall: Sendable, Equatable {
 
 private enum AgentApplicationCommandTestError: Error {
     case timedOutWaitingForActiveSession
+    case missingOrchestrator
 }
 
 private actor RecordingAgentOrchestrator: AgentOrchestrating {
@@ -464,10 +516,15 @@ private actor RecordingAgentOrchestrator: AgentOrchestrating {
 private actor BlockingAgentOrchestrator: AgentOrchestrating {
     private var session: AgentSessionSnapshot?
     private var shouldFinish = false
+    private let sessionID: AgentSessionID
+
+    init(sessionID: String = "blocking-session") {
+        self.sessionID = AgentSessionID(rawValue: sessionID)
+    }
 
     func start(goal: GoalSnapshot) async throws -> AgentSessionSnapshot {
         let running = AgentSessionSnapshot(
-            id: AgentSessionID(rawValue: "blocking-session"),
+            id: sessionID,
             goalID: goal.id,
             lifecycle: .executing,
             verificationEvidenceID: nil
@@ -507,6 +564,57 @@ private actor BlockingAgentOrchestrator: AgentOrchestrating {
         false
     }
 
+}
+
+private actor MutableProviderSelectionSource {
+    private var selection: ProviderSelectionSnapshot
+
+    init(_ selection: ProviderSelectionSnapshot) {
+        self.selection = selection
+    }
+
+    func current() -> ProviderSelectionSnapshot { selection }
+
+    func set(_ selection: ProviderSelectionSnapshot) {
+        self.selection = selection
+    }
+}
+
+private actor RecordingAgentOrchestratorBuilder: AgentOrchestratorBuilding {
+    private var orchestrators: [any AgentOrchestrating]
+    private let terminalError: Error?
+    private(set) var selections: [ProviderSelectionSnapshot] = []
+
+    init(
+        orchestrators: [any AgentOrchestrating],
+        terminalError: Error? = nil
+    ) {
+        self.orchestrators = orchestrators
+        self.terminalError = terminalError
+    }
+
+    func make(selection: ProviderSelectionSnapshot) async throws -> any AgentOrchestrating {
+        selections.append(selection)
+        if let terminalError { throw terminalError }
+        guard !orchestrators.isEmpty else {
+            throw AgentApplicationCommandTestError.missingOrchestrator
+        }
+        return orchestrators.removeFirst()
+    }
+}
+
+private extension ProviderSelectionSnapshot {
+    static func fixture(
+        provider: String,
+        model: String,
+        revision: UInt64 = 0
+    ) -> ProviderSelectionSnapshot {
+        ProviderSelectionSnapshot(
+            providerID: ModelProviderID(rawValue: provider),
+            modelID: model,
+            revision: revision
+        )
+    }
 }
 
 private enum RecordedAgentApplicationCommand: Equatable {

@@ -20,6 +20,24 @@ protocol AgentOrchestrating: Sendable {
 
 extension AgentOrchestrator: AgentOrchestrating {}
 
+nonisolated protocol AgentOrchestratorBuilding: Sendable {
+    func make(selection: ProviderSelectionSnapshot) async throws -> any AgentOrchestrating
+}
+
+nonisolated struct ClosureAgentOrchestratorBuilder: AgentOrchestratorBuilding {
+    private let build: @Sendable (ProviderSelectionSnapshot) async throws -> any AgentOrchestrating
+
+    init(
+        build: @escaping @Sendable (ProviderSelectionSnapshot) async throws -> any AgentOrchestrating
+    ) {
+        self.build = build
+    }
+
+    func make(selection: ProviderSelectionSnapshot) async throws -> any AgentOrchestrating {
+        try await build(selection)
+    }
+}
+
 nonisolated final class AgentEmergencyStopState: @unchecked Sendable {
     private let lock = NSLock()
     private var stopped = false
@@ -67,21 +85,22 @@ nonisolated final class AgentMutationExecutionState: @unchecked Sendable {
 }
 
 actor AgentCommandRuntime {
-    private let orchestrator: any AgentOrchestrating
+    private let orchestratorBuilder: any AgentOrchestratorBuilding
+    private let selectionProvider: @Sendable () async -> ProviderSelectionSnapshot
     private let emergencyStopState: AgentEmergencyStopState
-    private let structuredPlanningAvailable: @Sendable () async -> Bool
     private let mutationExecutionActive: @Sendable () async -> Bool
+    private var orchestrator: (any AgentOrchestrating)?
     private var activeRun: Task<AgentSessionSnapshot, Error>?
 
     init(
-        orchestrator: any AgentOrchestrating,
+        orchestratorBuilder: any AgentOrchestratorBuilding,
+        selectionProvider: @escaping @Sendable () async -> ProviderSelectionSnapshot,
         emergencyStopState: AgentEmergencyStopState,
-        structuredPlanningAvailable: @escaping @Sendable () async -> Bool = { true },
         mutationExecutionActive: @escaping @Sendable () async -> Bool = { false }
     ) {
-        self.orchestrator = orchestrator
+        self.orchestratorBuilder = orchestratorBuilder
+        self.selectionProvider = selectionProvider
         self.emergencyStopState = emergencyStopState
-        self.structuredPlanningAvailable = structuredPlanningAvailable
         self.mutationExecutionActive = mutationExecutionActive
     }
 
@@ -90,22 +109,21 @@ actor AgentCommandRuntime {
         guard !normalized.isEmpty else {
             throw V2RuntimeCommandError.unsupportedCommand("agent-empty-goal")
         }
-        if let existing = await orchestrator.snapshot(),
+        if let orchestrator,
+           let existing = await orchestrator.snapshot(),
            !Self.isTerminal(existing.lifecycle) {
             throw V2RuntimeCommandError.unsupportedCommand("agent-session-already-active")
         }
-        guard await structuredPlanningAvailable() else {
-            throw V2RuntimeCommandError.unsupportedCommand(
-                "agent-structured-planning-unavailable"
-            )
-        }
 
+        let selection = await selectionProvider()
+        let orchestrator = try await orchestratorBuilder.make(selection: selection)
+        self.orchestrator = orchestrator
         emergencyStopState.reset()
+
         let goal = GoalSnapshot(
             id: GoalID(rawValue: UUID().uuidString),
             objective: normalized
         )
-        let orchestrator = self.orchestrator
         let run = Task {
             try await orchestrator.start(goal: goal)
         }
@@ -129,22 +147,23 @@ actor AgentCommandRuntime {
     }
 
     func pause(sessionID: AgentSessionID) async throws {
-        _ = try await requireActiveSession(sessionID)
+        let orchestrator = try await requireActiveSession(sessionID).orchestrator
         await orchestrator.pause()
     }
 
     func resume(sessionID: AgentSessionID) async throws {
-        _ = try await requireActiveSession(sessionID)
+        let orchestrator = try await requireActiveSession(sessionID).orchestrator
         try await orchestrator.resume()
     }
 
     func cancel(sessionID: AgentSessionID) async throws {
-        _ = try await requireActiveSession(sessionID)
+        let orchestrator = try await requireActiveSession(sessionID).orchestrator
         await orchestrator.cancel()
     }
 
     func emergencyStop() async throws {
-        guard let session = await orchestrator.snapshot(),
+        guard let orchestrator,
+              let session = await orchestrator.snapshot(),
               !Self.isTerminal(session.lifecycle) else {
             throw V2RuntimeCommandError.unsupportedCommand("agent-session-not-active")
         }
@@ -157,7 +176,10 @@ actor AgentCommandRuntime {
         isPaused: Bool,
         mutationExecutionActive: Bool
     ) {
-        (
+        guard let orchestrator else {
+            return (nil, false, await mutationExecutionActive())
+        }
+        return (
             await orchestrator.snapshot(),
             await orchestrator.isPaused(),
             await mutationExecutionActive()
@@ -166,24 +188,27 @@ actor AgentCommandRuntime {
 
     func waitForCurrentRun() async -> AgentSessionSnapshot? {
         guard let activeRun else {
-            return await orchestrator.snapshot()
+            return await orchestrator?.snapshot()
         }
 
         defer { self.activeRun = nil }
         do {
             return try await activeRun.value
         } catch {
-            return await orchestrator.snapshot()
+            return await orchestrator?.snapshot()
         }
     }
 
-    private func requireActiveSession(_ sessionID: AgentSessionID) async throws -> AgentSessionSnapshot {
-        guard let session = await orchestrator.snapshot(),
+    private func requireActiveSession(
+        _ sessionID: AgentSessionID
+    ) async throws -> (orchestrator: any AgentOrchestrating, session: AgentSessionSnapshot) {
+        guard let orchestrator,
+              let session = await orchestrator.snapshot(),
               session.id == sessionID,
               !Self.isTerminal(session.lifecycle) else {
             throw V2RuntimeCommandError.unsupportedCommand("agent-session-not-active")
         }
-        return session
+        return (orchestrator, session)
     }
 
     private static func isTerminal(_ lifecycle: AgentLifecycle) -> Bool {
@@ -195,6 +220,7 @@ actor AgentCommandRuntime {
         }
     }
 }
+
 
 /// Main application runtime used by the SwiftUI shell after the V2 cutover.
 ///

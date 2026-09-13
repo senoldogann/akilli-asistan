@@ -80,6 +80,37 @@ final class ModelProviderFabricTests: XCTestCase {
         XCTAssertFalse(unknownModelSupportsJSON)
     }
 
+    func testExplicitModelCapabilityCheckIgnoresMutableSelection() async {
+        let textOnlyID = ModelProviderID(rawValue: "text-only")
+        let jsonID = ModelProviderID(rawValue: "json")
+        let textOnly = RecordingModelProvider(
+            id: "text-only",
+            capabilities: [.textStreaming]
+        )
+        let json = RecordingModelProvider(
+            id: "json",
+            capabilities: [.textStreaming, .jsonOutput]
+        )
+        let fabric = ModelProviderFabric(
+            providers: [textOnly, json],
+            selectedProviderID: textOnlyID
+        )
+
+        let explicitJSONSupport = await fabric.modelSupports(
+            .jsonOutput,
+            modelID: "default",
+            using: jsonID
+        )
+        let explicitTextOnlySupport = await fabric.modelSupports(
+            .jsonOutput,
+            modelID: "default",
+            using: textOnlyID
+        )
+
+        XCTAssertTrue(explicitJSONSupport)
+        XCTAssertFalse(explicitTextOnlySupport)
+    }
+
     func testSelectingProviderChangesAuthoritativeRoute() async throws {
         let codexID = ModelProviderID(rawValue: "codex")
         let claudeID = ModelProviderID(rawValue: "claude")
