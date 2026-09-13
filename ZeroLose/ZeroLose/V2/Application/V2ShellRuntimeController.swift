@@ -91,6 +91,7 @@ actor AgentCommandRuntime {
     private let mutationExecutionActive: @Sendable () async -> Bool
     private var orchestrator: (any AgentOrchestrating)?
     private var activeRun: Task<AgentSessionSnapshot, Error>?
+    private var isStartingRun = false
 
     init(
         orchestratorBuilder: any AgentOrchestratorBuilding,
@@ -109,15 +110,28 @@ actor AgentCommandRuntime {
         guard !normalized.isEmpty else {
             throw V2RuntimeCommandError.unsupportedCommand("agent-empty-goal")
         }
+        guard !isStartingRun else {
+            throw V2RuntimeCommandError.unsupportedCommand("agent-session-already-active")
+        }
+        isStartingRun = true
+
         if let orchestrator,
            let existing = await orchestrator.snapshot(),
            !Self.isTerminal(existing.lifecycle) {
+            isStartingRun = false
             throw V2RuntimeCommandError.unsupportedCommand("agent-session-already-active")
         }
 
         let selection = await selectionProvider()
-        let orchestrator = try await orchestratorBuilder.make(selection: selection)
+        let orchestrator: any AgentOrchestrating
+        do {
+            orchestrator = try await orchestratorBuilder.make(selection: selection)
+        } catch {
+            isStartingRun = false
+            throw error
+        }
         self.orchestrator = orchestrator
+        isStartingRun = false
         emergencyStopState.reset()
 
         let goal = GoalSnapshot(
@@ -705,9 +719,9 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
         guard !isBusy else {
             throw V2RuntimeCommandError.unsupportedCommand("concurrent-chat")
         }
-        let selection = await selectionProvider()
-
         isBusy = true
+
+        let selection = await selectionProvider()
         statusMessage = "Thinking..."
         messages.append(ChatMessage(text: query, isUser: true, type: .text))
         let assistantID = UUID()

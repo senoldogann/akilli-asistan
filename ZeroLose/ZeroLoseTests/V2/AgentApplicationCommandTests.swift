@@ -103,6 +103,59 @@ final class AgentApplicationCommandTests: XCTestCase {
         )
     }
 
+    func testConcurrentSubmitUserGoalCallsDoNotBothStartARun() async throws {
+        let firstOrchestrator = RecordingAgentOrchestrator(session: nil)
+        let secondOrchestrator = RecordingAgentOrchestrator(session: nil)
+        let builder = RecordingAgentOrchestratorBuilder(
+            orchestrators: [firstOrchestrator, secondOrchestrator]
+        )
+        let selectionSource = MutableProviderSelectionSource(.fixture(provider: "codex", model: "gpt-a"))
+        let runtime = AgentCommandRuntime(
+            orchestratorBuilder: builder,
+            selectionProvider: {
+                try? await Task.sleep(for: .milliseconds(200))
+                return await selectionSource.current()
+            },
+            emergencyStopState: AgentEmergencyStopState()
+        )
+
+        async let firstResult: Result<AgentSessionSnapshot, Error> = {
+            do {
+                return .success(try await runtime.submitUserGoal("First concurrent goal"))
+            } catch {
+                return .failure(error)
+            }
+        }()
+        try await Task.sleep(for: .milliseconds(30))
+        async let secondResult: Result<AgentSessionSnapshot, Error> = {
+            do {
+                return .success(try await runtime.submitUserGoal("Second concurrent goal"))
+            } catch {
+                return .failure(error)
+            }
+        }()
+
+        guard case .success = await firstResult else {
+            XCTFail("expected the earlier submission to succeed")
+            return
+        }
+        guard case .failure(let secondError) = await secondResult else {
+            XCTFail("expected the later, overlapping submission to be rejected instead of silently starting its own run")
+            return
+        }
+        XCTAssertEqual(
+            secondError as? V2RuntimeCommandError,
+            .unsupportedCommand("agent-session-already-active")
+        )
+
+        let selections = await builder.selections
+        XCTAssertEqual(
+            selections.count,
+            1,
+            "Only one orchestrator should ever be built for two near-simultaneous submissions"
+        )
+    }
+
     func testSubmitUserGoalFailsClosedWhenStructuredPlanningIsUnavailable() async throws {
         let orchestrator = RecordingAgentOrchestrator(session: nil)
         let selectionSource = MutableProviderSelectionSource(.fixture(provider: "text-only", model: "plain"))

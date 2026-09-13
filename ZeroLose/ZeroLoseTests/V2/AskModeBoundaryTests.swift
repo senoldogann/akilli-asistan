@@ -55,6 +55,22 @@ final class AskModeBoundaryTests: XCTestCase {
         XCTAssertFalse(shellViewModel.contains("contextUsage"))
     }
 
+    func testIsBusyIsClaimedBeforeAwaitingSelectionToPreventConcurrentAsks() throws {
+        let source = try productionSource("V2/Application/V2ShellRuntimeController.swift")
+        let askBody = try XCTUnwrap(functionBody(named: "processAsk", in: source))
+
+        guard let busyRange = askBody.range(of: "isBusy = true"),
+              let selectionRange = askBody.range(of: "let selection = await selectionProvider()") else {
+            XCTFail("Expected both 'isBusy = true' and the selection await inside processAsk")
+            return
+        }
+
+        XCTAssertTrue(
+            busyRange.lowerBound < selectionRange.lowerBound,
+            "isBusy must be claimed synchronously before the first await (selectionProvider()); otherwise two near-simultaneous processAsk calls can both pass the isBusy guard"
+        )
+    }
+
     func testProductionCompositionBuildsGeneralContextAndRequestCoordinator() throws {
         let source = try productionSource("V2/Application/ZeroLoseRuntimeContainer.swift")
 
