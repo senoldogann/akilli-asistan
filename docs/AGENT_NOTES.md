@@ -25,9 +25,32 @@
   **BUILD SUCCEEDED**, universal `x86_64 arm64`, `Identifier=com.senoldogan.ZeroLose`,
   `codesign --verify --deep --strict` → *valid on disk / satisfies its Designated Requirement*.
 
-Working tree state: all changes below are **uncommitted** in the shared checkout
-(`feat/zerolose-agent-runtime-composition`, HEAD `99a4470`). Nothing was pushed, installed,
-or merged.
+Published state: the work below is committed on
+`feat/zerolose-agent-runtime-composition` and pushed as **PR #28**
+(<https://github.com/senoldogann/akilli-asistan/pull/28>). The PR is **open and not merged** —
+merging through the PR is still pending explicit approval.
+
+Focused commits from this session (on top of the earlier branch work):
+
+| commit | subject |
+| --- | --- |
+| `f1a80a0` | fix: keep the V2 runtime container a composition root |
+| `fddc480` | fix: scope credential handles to their tool invocation |
+| `38a65a2` | fix: keep Keychain failures diagnosable without echoing secrets |
+| `b5edcf8` | refactor: remove the interview product surface |
+| `5b63449` | refactor: stop importing provider keys from local auth files |
+| `d7e60a5` | test: make the repository gate run ZeroLose tests and guard its boundaries |
+| `5b13ea8` | docs: record the verified cutover status and remaining blockers |
+
+Install smoke result: the Release bundle (ad-hoc signed, universal `x86_64 arm64`,
+`Identifier=com.senoldogan.ZeroLose`) was installed to `/Applications/ZeroLose.app`; the
+installed content digest (`bd24a7376d52b0b59f771906e332a70fbefb71d874da30b0555bcb1f1103d45d`)
+matched the built bundle byte-for-byte, and launch → quit → relaunch produced no crash reports.
+`/Applications/ZeroLose.app` did not exist before, so nothing was replaced.
+Noted during the smoke: the ad-hoc build logs a Keychain read status `-128` at startup (the
+login-keychain ACL does not include an ad-hoc signature), so previously stored keys may need to be
+re-entered once — pre-existing behaviour of unsigned/adhoc local builds, not a regression from
+these changes.
 
 ---
 
@@ -174,16 +197,16 @@ screenshot/refinement capabilities.
 Unblocks with the Task 7 remainder; the pinned closure in `ProviderLegacyDemolitionTests` shrinks
 as each file is migrated.
 
-### 🟡 Task 9 — acceptance, install and launch smoke
-Done: clean-state preflight, focused regression matrix (full suite green), full repository gate,
-Release build + ad-hoc signature verification (identities/hashes above).
-Remaining: replace `/Applications/ZeroLose.app` with the verified Release bundle, compare bundle
-identity, launch + relaunch smoke, and re-confirm a clean feature HEAD. **These require explicit
-user approval** (install replaces an installed app; the plan also requires building from the exact
-committed HEAD, which needs a commit first).
+### ✅ Task 9 — acceptance, install and launch smoke
+Done and verified: clean-state preflight, focused regression matrix, full repository gate, Release
+build from the exact committed HEAD with a valid ad-hoc signature, byte-identical install to
+`/Applications/ZeroLose.app`, and launch/relaunch smoke with no crash reports (evidence above).
 
-### 🟡 Task 10 — PR, exact-head verification, merge, branch/worktree cleanup
-Not started. Requires explicit user approval to push, open a PR, and merge.
+### 🟡 Task 10 — PR is open; merge and cleanup still pending
+PR #28 is open against `main` with head `5b13ea8` verified equal to the locally verified SHA and CI
+(`verify`) running the full repository gate. Remaining: wait for CI green on the exact head, merge
+through the PR, verify merged `main`, then prove branch/worktree cleanup safety and delete only
+merged/unused branches. **Merging and branch deletion still require explicit approval.**
 
 ### 🟢 Low #12 — repo hygiene follow-up
 `.freebuff/` (client state from the Freebuff agent host, not user work) is untracked. Confirm the
