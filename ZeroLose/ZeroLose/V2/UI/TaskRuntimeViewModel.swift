@@ -1,3 +1,4 @@
+import Foundation
 import Observation
 
 struct TaskRuntimeProjectionSnapshot: Sendable, Equatable {
@@ -59,6 +60,12 @@ final class TaskRuntimeViewModel {
         isPaused = snapshot.isPaused
         mutationCapableExecutionActive = snapshot.mutationCapableExecutionActive
         statusText = snapshot.statusText
+    }
+
+    func submitGoal(_ text: String) async throws {
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return }
+        try await commandSender.send(.submitUserGoal(normalized))
     }
 
     func pause() async throws {

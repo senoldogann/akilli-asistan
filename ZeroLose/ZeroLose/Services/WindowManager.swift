@@ -84,6 +84,7 @@ class WindowManager: NSObject, NSWindowDelegate {
             rootView: ContentView(
                 viewModel: runtimeContainer.shellViewModel,
                 chatViewModel: runtimeContainer.chatViewModel,
+                providerViewModel: runtimeContainer.providerViewModel,
                 settingsViewModel: runtimeContainer.settingsViewModel,
                 taskRuntimeViewModel: runtimeContainer.taskRuntimeViewModel,
                 approvalViewModel: runtimeContainer.approvalViewModel,

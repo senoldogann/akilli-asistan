@@ -70,6 +70,7 @@ final class ViewModelProjectionTests: XCTestCase {
         settings.apply(SettingsProjectionSnapshot(authorityMode: .manual))
 
         try await chat.submit("hello")
+        try await tasks.submitGoal("ship the fix")
         try await tasks.pause()
         try await approvals.approve(InvocationID(rawValue: "i1"))
         try await tools.disable(ToolID(rawValue: "tool.a"))
@@ -81,6 +82,7 @@ final class ViewModelProjectionTests: XCTestCase {
             commands,
             [
                 "chat:hello",
+                "goal:ship the fix",
                 "pause-session:s1",
                 "approve:i1",
                 "disable-tool:tool.a",
