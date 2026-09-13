@@ -370,7 +370,8 @@ class WindowManager: NSObject, NSWindowDelegate {
                     if !show { self?.closeSettingsWindow() }
                 }
             ),
-            viewModel: ZeroLoseRuntimeContainer.shared.settingsViewModel
+            viewModel: ZeroLoseRuntimeContainer.shared.settingsViewModel,
+            providerViewModel: ZeroLoseRuntimeContainer.shared.providerViewModel
         )
         
         // Ayarların arkasında gerçek bulanıklık katmanı olarak NSVisualEffectView

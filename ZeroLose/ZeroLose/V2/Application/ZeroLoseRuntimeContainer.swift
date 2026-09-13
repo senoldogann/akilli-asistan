@@ -656,67 +656,25 @@ private final class RuntimeSettingsDataController: SettingsDataControlling {
         self.dependencies = dependencies
     }
 
-    func credentialSnapshot() async -> CredentialSettingsSnapshot {
-        CredentialSettingsSnapshot(
-            values: [
-                .openAI: Secrets.openAIApiKey,
-                .deepSeek: Secrets.deepSeekApiKey,
-                .openCodeZen: Secrets.openCodeZenApiKey,
-                .openCodeGo: Secrets.openCodeGoApiKey,
-                .ollama: Secrets.ollamaApiKey,
-                .groq: Secrets.groqApiKey,
-                .tavily: Secrets.tavilyApiKey
-            ],
-            validity: [
-                .openAI: Secrets.isOpenAIKeyValid,
-                .deepSeek: Secrets.isDeepSeekKeyValid,
-                .openCodeZen: Secrets.isOpenCodeZenKeyValid,
-                .openCodeGo: Secrets.isOpenCodeGoKeyValid,
-                .ollama: Secrets.isOllamaKeyValid,
+    func integrationSnapshot() async -> IntegrationSettingsSnapshot {
+        IntegrationSettingsSnapshot(
+            configured: [
                 .groq: Secrets.isGroqKeyValid,
                 .tavily: Secrets.isTavilyKeyValid
-            ],
-            models: [
-                .openAI: OllamaService.cachedModels(for: CredentialProvider.openAI.rawValue),
-                .deepSeek: OllamaService.cachedModels(for: CredentialProvider.deepSeek.rawValue),
-                .openCodeZen: OllamaService.cachedModels(for: CredentialProvider.openCodeZen.rawValue),
-                .openCodeGo: OllamaService.cachedModels(for: CredentialProvider.openCodeGo.rawValue),
-                .ollama: OllamaService.cachedModels(for: CredentialProvider.ollama.rawValue)
             ]
         )
     }
 
-    func updateCredential(_ value: String, for provider: CredentialProvider) async {
-        switch provider {
-        case .openAI: Secrets.openAIApiKey = value
-        case .deepSeek: Secrets.deepSeekApiKey = value
-        case .openCodeZen: Secrets.openCodeZenApiKey = value
-        case .openCodeGo: Secrets.openCodeGoApiKey = value
-        case .ollama: Secrets.ollamaApiKey = value
-        case .groq: Secrets.groqApiKey = value
-        case .tavily: Secrets.tavilyApiKey = value
+    func updateIntegrationCredential(
+        _ value: String,
+        for credential: IntegrationCredential
+    ) async {
+        switch credential {
+        case .groq:
+            Secrets.groqApiKey = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        case .tavily:
+            Secrets.tavilyApiKey = value.trimmingCharacters(in: .whitespacesAndNewlines)
         }
-    }
-
-    func resetCredentials() async {
-        Secrets.resetToDefaults()
-    }
-
-    func refreshModels(for provider: CredentialProvider) async -> [String] {
-        let key: String
-        switch provider {
-        case .openAI: key = Secrets.openAIApiKey
-        case .deepSeek: key = Secrets.deepSeekApiKey
-        case .openCodeZen: key = Secrets.openCodeZenApiKey
-        case .openCodeGo: key = Secrets.openCodeGoApiKey
-        case .ollama: key = Secrets.ollamaApiKey
-        case .groq, .tavily: return []
-        }
-        guard !key.isEmpty else { return [] }
-        return await dependencies.ollamaService.fetchAvailableModels(
-            provider: provider.rawValue,
-            apiKey: key
-        )
     }
 
     func memoryCount() async throws -> Int {
