@@ -18,11 +18,42 @@ actor ModelProviderFabric {
         selectedProviderID = providerID
     }
 
+    func registeredProviderIDs() -> [ModelProviderID] {
+        providers.keys.sorted { $0.rawValue < $1.rawValue }
+    }
+
+    func capabilities(
+        for providerID: ModelProviderID
+    ) throws -> ModelCapabilities {
+        guard let provider = providers[providerID] else {
+            throw ProviderError.providerUnavailable(providerID: providerID)
+        }
+        return provider.capabilities
+    }
+
+    func status(for providerID: ModelProviderID) async -> ProviderStatus {
+        guard let provider = providers[providerID] else {
+            return ProviderStatus(
+                providerID: providerID,
+                displayName: providerID.rawValue,
+                availability: .unavailable
+            )
+        }
+        return await provider.status()
+    }
+
     func stream(
         _ request: ModelRequest
     ) throws -> AsyncThrowingStream<ModelEvent, Error> {
-        guard let provider = providers[selectedProviderID] else {
-            throw ProviderError.providerUnavailable(providerID: selectedProviderID)
+        try stream(request, using: selectedProviderID)
+    }
+
+    func stream(
+        _ request: ModelRequest,
+        using providerID: ModelProviderID
+    ) throws -> AsyncThrowingStream<ModelEvent, Error> {
+        guard let provider = providers[providerID] else {
+            throw ProviderError.providerUnavailable(providerID: providerID)
         }
         return provider.stream(request)
     }
@@ -56,14 +87,7 @@ actor ModelProviderFabric {
     }
 
     func selectedStatus() async -> ProviderStatus {
-        guard let provider = providers[selectedProviderID] else {
-            return ProviderStatus(
-                providerID: selectedProviderID,
-                displayName: selectedProviderID.rawValue,
-                availability: .unavailable
-            )
-        }
-        return await provider.status()
+        await status(for: selectedProviderID)
     }
 
     func statuses() async -> [ProviderStatus] {
@@ -89,7 +113,14 @@ actor ModelProviderFabric {
     }
 
     func cancel(sessionID: ModelSessionID) async {
-        guard let provider = providers[selectedProviderID] else {
+        await cancel(sessionID: sessionID, using: selectedProviderID)
+    }
+
+    func cancel(
+        sessionID: ModelSessionID,
+        using providerID: ModelProviderID
+    ) async {
+        guard let provider = providers[providerID] else {
             return
         }
         await provider.cancel(sessionID: sessionID)
