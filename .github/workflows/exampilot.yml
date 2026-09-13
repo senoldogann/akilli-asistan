@@ -40,7 +40,10 @@ jobs:
         run: |
           set -euo pipefail
           root="ZeroLose/ZeroLose/V2"
-          if git grep -nE '\b(dlopen|dlsym)\b|Bundle[^[:alnum:]_]*\(' -- "$root"; then
+          # `Bundle` must be preceded by a non-identifier character so ordinary value
+          # types whose names end in "Bundle" (e.g. `ContextBundle(items:)`) are not
+          # reported as dynamic bundle loading.
+          if git grep -nE '\b(dlopen|dlsym)\b|(^|[^[:alnum:]_])Bundle[^[:alnum:]_]*\(' -- "$root"; then
             echo "Dynamic plugin loading found in ZeroLose V2."
             exit 1
           fi
