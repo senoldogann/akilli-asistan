@@ -36,7 +36,6 @@ protocol ShellFeatureControlling: AnyObject {
     func clearAttachment()
     func attachFile(from url: URL)
     func analyzeScreen()
-    @discardableResult func warmUpInterviewContext() -> String
 }
 
 @MainActor
@@ -74,5 +73,4 @@ final class ShellViewModel {
     func clearAttachment() { controller.clearAttachment() }
     func attachFile(from url: URL) { controller.attachFile(from: url) }
     func analyzeScreen() { controller.analyzeScreen() }
-    @discardableResult func warmUpInterviewContext() -> String { controller.warmUpInterviewContext() }
 }

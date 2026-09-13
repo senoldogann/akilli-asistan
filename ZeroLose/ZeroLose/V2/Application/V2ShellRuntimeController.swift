@@ -253,7 +253,6 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
     private let vectorStore: VectorStore
     private let chatHistoryService: ChatHistoryService
     private let nativeToolRuntime: V2NativeToolRuntime
-    private let responseCacheService: ResponseCacheService
     private let requestCoordinator: RequestCoordinator
     private let attachmentContextProvider: any MutableAttachmentContextProviding
     private let selectionProvider: @Sendable () async -> ProviderSelectionSnapshot
@@ -306,7 +305,6 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
         self.vectorStore = vectorStore
         self.chatHistoryService = chatHistoryService
         self.nativeToolRuntime = nativeToolRuntime
-        self.responseCacheService = .shared
         self.requestCoordinator = requestCoordinator
         self.attachmentContextProvider = attachmentContextProvider
         self.selectionProvider = selectionProvider
@@ -624,85 +622,6 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
             }
             await self.processImage(data, source: "Screen Capture", query: nil)
         }
-    }
-
-    @discardableResult
-    func warmUpInterviewContext() -> String {
-        let activeRoleContext = ActiveRoleProfileService.warmUpContext(
-            for: ActiveRoleProfileService.currentProfile()
-        )
-        let baseContext = """
-        [INTERVIEW MODE ACTIVATED]
-        \(activeRoleContext)
-
-        Identity Rules:
-        - Use only the loaded Persona & Context, active role, interview notes, and vault entries as facts about the candidate.
-        - If a personal detail is missing, do not invent a name, background, location, or years of experience.
-
-        Language Rules:
-        - Match the interviewer’s language exactly.
-        - For Finnish, use professional spoken Finnish with natural tech terms.
-
-        RESPONSE RULES:
-        - Keep answers concise, interview-ready and factual.
-        - Prefer active role grounding for company, stack, and expectation-specific questions.
-        - Use memory only when directly relevant to the question.
-        """
-
-        let categories = VaultService.shared.categories
-        let allItems: [(category: String, item: VaultInterviewItem)] = categories.flatMap { category in
-            category.items.map { (category.title, $0) }
-        }
-        let rawNotes = UserDefaults.standard.string(forKey: "teleprompterText") ?? ""
-        let noteCacheEntries = IntelligenceService.interviewNoteCacheEntries(from: rawNotes)
-
-        guard !allItems.isEmpty || !noteCacheEntries.isEmpty else {
-            intelligenceService.setTransientPersonaContext(baseContext)
-            statusMessage = "⚠️ Vault ve Interview Notes boş. Sadece temel interview context yüklendi."
-            publishSnapshot()
-            return statusMessage
-        }
-
-        responseCacheService.clearCache()
-        let vaultEntries = allItems.map { entry in
-            ResponseCacheService.InterviewCacheEntry(
-                question: entry.item.question,
-                answer: entry.item.answerFinnish,
-                category: entry.category,
-                translation: entry.item.translationTr,
-                keyPoints: entry.item.keyPoints
-            )
-        }
-        _ = responseCacheService.primeInterviewVault(entries: vaultEntries)
-        _ = responseCacheService.primeInterviewVault(entries: noteCacheEntries)
-
-        let coverageEntries = allItems.map {
-            (question: $0.item.question, answer: $0.item.answerFinnish, category: $0.category)
-        } + noteCacheEntries
-        let coverage = responseCacheService.interviewVaultCoverage(entries: coverageEntries)
-        let categoryTitles = categories.map(\.title).joined(separator: ", ")
-        let notesSummary = noteCacheEntries.isEmpty
-            ? "No interview notes cached"
-            : "Interview Notes cached: \(noteCacheEntries.count)"
-        let warmupContext = """
-        [INTERVIEW WARM-UP STATUS]
-        Cache coverage: \(coverage.cached)/\(coverage.total)
-        Categories: \(categoryTitles)
-        \(notesSummary)
-
-        Rules:
-        - Use interview vault as the primary source.
-        - Use Interview Notes as a secondary direct source when they contain a strong matching answer.
-        - Choose a single best-matching vault answer; do not blend unrelated entries.
-        - Keep answers concise and interview-ready.
-        - Never mention private contact details or salary unless explicitly asked.
-        """
-        intelligenceService.setTransientPersonaContext("\(baseContext)\n\n\(warmupContext)")
-        statusMessage = coverage.missing == 0
-            ? "🔥 Warm-up tamam: cache doğrulandı \(coverage.cached)/\(coverage.total)."
-            : "⚠️ Warm-up kısmi: cache \(coverage.cached)/\(coverage.total), eksik \(coverage.missing)."
-        publishSnapshot()
-        return statusMessage
     }
 
     nonisolated static func userDefaultsBool(_ key: String, defaultValue: Bool) -> Bool {

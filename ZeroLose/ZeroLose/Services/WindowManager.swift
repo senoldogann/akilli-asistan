@@ -9,12 +9,6 @@ class GhostWindow: NSWindow {
     override var canBecomeMain: Bool { return true }
 }
 
-// Teleprompter için kenarlıksız pencere.
-class TeleprompterWindow: NSWindow {
-    override var canBecomeKey: Bool { return true }
-    override var canBecomeMain: Bool { return true }
-}
-
 // Ayarlar için özel pencere.
 class SettingsWindow: NSWindow {
     override var canBecomeKey: Bool { return true }
@@ -25,17 +19,8 @@ class SettingsWindow: NSWindow {
 class WindowManager: NSObject, NSWindowDelegate {
     static let shared = WindowManager()
     
-    private enum WindowPreferenceKeys {
-        static let teleprompterWidth = "teleprompterWindowWidth"
-        static let teleprompterHeight = "teleprompterWindowHeight"
-        static let teleprompterPosX = "teleprompterWindowPosX"
-        static let teleprompterPosY = "teleprompterWindowPosY"
-    }
-    
     private var window: NSWindow!
-    private var teleprompterWindow: NSWindow?
     private var settingsWindow: NSWindow?
-    private var isClosingTeleprompterWindow = false
     private var isClosingSettingsWindow = false
     private let logger = Logger(subsystem: "com.zerolose", category: "WindowManager")
     private var stealthModeObserver: NSKeyValueObservation?
@@ -148,9 +133,6 @@ class WindowManager: NSObject, NSWindowDelegate {
     
     @objc private func appWillTerminate() {
         saveWindowFrame()
-        if let teleprompterWindow {
-            saveTeleprompterFrame(teleprompterWindow)
-        }
     }
     
     /// Gizli mod ayarına göre pencere paylaşım türünü günceller.
@@ -158,7 +140,7 @@ class WindowManager: NSObject, NSWindowDelegate {
     func updateSharingType(stealth: Bool) {
         let type: NSWindow.SharingType = stealth ? .none : .readOnly
         
-        // Ana pencere, sayfalar, teleprompter vb. yakalamak için tüm uygulama pencerelerini döngüye al
+        // Ana pencere ve yardımcı pencereleri yakalamak için tüm uygulama pencerelerini döngüye al
         for window in NSApp.windows {
             window.sharingType = type
         }
@@ -190,7 +172,6 @@ class WindowManager: NSObject, NSWindowDelegate {
         let alpha = CGFloat(clamped)
         
         window?.alphaValue = alpha
-        teleprompterWindow?.alphaValue = alpha
         settingsWindow?.alphaValue = alpha
     }
     
@@ -237,22 +218,14 @@ class WindowManager: NSObject, NSWindowDelegate {
     
     // MARK: - NSWindowDelegate
     func windowDidMove(_ notification: Notification) {
-        if let win = notification.object as? NSWindow {
-            if win == self.window {
-                saveWindowFrame()
-            } else if win == self.teleprompterWindow {
-                saveTeleprompterFrame(win)
-            }
+        if let win = notification.object as? NSWindow, win == self.window {
+            saveWindowFrame()
         }
     }
     
     func windowDidResize(_ notification: Notification) {
-        if let win = notification.object as? NSWindow {
-            if win == self.window {
-                saveWindowFrame()
-            } else if win == self.teleprompterWindow {
-                saveTeleprompterFrame(win)
-            }
+        if let win = notification.object as? NSWindow, win == self.window {
+            saveWindowFrame()
         }
     }
     
@@ -264,41 +237,7 @@ class WindowManager: NSObject, NSWindowDelegate {
         UserDefaults.standard.set(contentSize.width, forKey: "windowWidth")
         UserDefaults.standard.set(contentSize.height, forKey: "windowHeight")
     }
-    
-    private func restoreTeleprompterSize() -> NSSize {
-        let defaults = UserDefaults.standard
-        let savedWidth = defaults.double(forKey: WindowPreferenceKeys.teleprompterWidth)
-        let savedHeight = defaults.double(forKey: WindowPreferenceKeys.teleprompterHeight)
-        
-        let defaultSize = NSSize(width: 430, height: 300)
-        guard savedWidth > 0, savedHeight > 0 else { return defaultSize }
-        
-        let clampedWidth = max(320, min(savedWidth, 1200))
-        let clampedHeight = max(220, min(savedHeight, 1000))
-        return NSSize(width: clampedWidth, height: clampedHeight)
-    }
-    
-    private func saveTeleprompterFrame(_ window: NSWindow) {
-        let frame = window.frame
-        let contentSize = window.contentRect(forFrameRect: window.frame).size
-        UserDefaults.standard.set(frame.origin.x, forKey: WindowPreferenceKeys.teleprompterPosX)
-        UserDefaults.standard.set(frame.origin.y, forKey: WindowPreferenceKeys.teleprompterPosY)
-        UserDefaults.standard.set(contentSize.width, forKey: WindowPreferenceKeys.teleprompterWidth)
-        UserDefaults.standard.set(contentSize.height, forKey: WindowPreferenceKeys.teleprompterHeight)
-    }
 
-    private func restoreTeleprompterFrame(size: NSSize) -> NSRect {
-        let defaults = UserDefaults.standard
-        let savedX = defaults.double(forKey: WindowPreferenceKeys.teleprompterPosX)
-        let savedY = defaults.double(forKey: WindowPreferenceKeys.teleprompterPosY)
-
-        if savedX != 0 || savedY != 0 {
-            return NSRect(x: savedX, y: savedY, width: size.width, height: size.height)
-        }
-
-        return NSRect(x: 300, y: 300, width: size.width, height: size.height)
-    }
-    
     func showWindow() {
         logger.info("👁️ Showing overlay window")
         window.makeKeyAndOrderFront(nil)
@@ -415,120 +354,12 @@ class WindowManager: NSObject, NSWindowDelegate {
         }
     }
     
-    // MARK: - Teleprompter Penceresi
-    
-    func toggleTeleprompterWindow() {
-        if teleprompterWindow != nil {
-            closeTeleprompterWindow()
-        } else {
-            showTeleprompterWindow()
-        }
-    }
-    
-    func showTeleprompterWindow() {
-        if isClosingTeleprompterWindow {
-            logger.debug("Teleprompter close in progress; skipping open request.")
-            return
-        }
-        
-        if let existingWindow = teleprompterWindow {
-            existingWindow.makeKeyAndOrderFront(nil)
-            existingWindow.orderFrontRegardless()
-            return
-        }
-        
-        // Bilinen son boyutu geri yükle; ilk başlatmada varsayılana düş
-        let restoredSize = restoreTeleprompterSize()
-        let restoredFrame = restoreTeleprompterFrame(size: restoredSize)
-        
-        let tpWindow = TeleprompterWindow(
-            contentRect: restoredFrame,
-            styleMask: [.borderless, .resizable, .fullSizeContentView],
-            backing: .buffered,
-            defer: false
-        )
-        
-        tpWindow.level = .floating
-        tpWindow.backgroundColor = .clear
-        tpWindow.isOpaque = false
-        tpWindow.hasShadow = true
-        tpWindow.isMovableByWindowBackground = true
-        tpWindow.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        tpWindow.isReleasedWhenClosed = false
-        
-        // Teleprompter Penceresine gizli modu uygula
-        let stealthEnabled = UserDefaults.standard.bool(forKey: "stealthModeEnabled")
-        tpWindow.sharingType = stealthEnabled ? .none : .readOnly
-        let tpOpacityRaw = UserDefaults.standard.double(forKey: "windowOpacity")
-        tpWindow.alphaValue = CGFloat(max(0.35, min(tpOpacityRaw > 0 ? tpOpacityRaw : 1.0, 1.0)))
-        
-        let tpView = TeleprompterView(
-            isPresented: Binding(
-                get: { [weak self] in self?.teleprompterWindow != nil },
-                set: { [weak self] show in
-                    if !show { self?.closeTeleprompterWindow() }
-                }
-            )
-        )
-        
-        // Teleprompter'ın arkasında gerçek bulanıklık katmanı olarak NSVisualEffectView
-        let effectView = NSVisualEffectView()
-        effectView.material = .hudWindow
-        effectView.blendingMode = .behindWindow
-        effectView.state = .active
-        effectView.wantsLayer = true
-        effectView.layer?.cornerRadius = 12
-        effectView.layer?.masksToBounds = true
-
-        let hostingView = NSHostingView(rootView: tpView)
-        hostingView.translatesAutoresizingMaskIntoConstraints = false
-        effectView.addSubview(hostingView)
-        NSLayoutConstraint.activate([
-            hostingView.leadingAnchor.constraint(equalTo: effectView.leadingAnchor),
-            hostingView.trailingAnchor.constraint(equalTo: effectView.trailingAnchor),
-            hostingView.topAnchor.constraint(equalTo: effectView.topAnchor),
-            hostingView.bottomAnchor.constraint(equalTo: effectView.bottomAnchor)
-        ])
-        
-        tpWindow.contentView = effectView
-        tpWindow.delegate = self
-        
-        teleprompterWindow = tpWindow
-        
-        tpWindow.makeKeyAndOrderFront(nil)
-        tpWindow.orderFrontRegardless()
-    }
-    
-    func closeTeleprompterWindow() {
-        guard !isClosingTeleprompterWindow, let win = teleprompterWindow else { return }
-        isClosingTeleprompterWindow = true
-        saveTeleprompterFrame(win)
-        
-        // SwiftUI durum yarışlarını önlemek için binding destekli "isPresented" değerini hemen false yap.
-        teleprompterWindow = nil
-        
-        // Algılanan duyarlılığı artırmak için hemen gizle
-        win.orderOut(nil)
-        
-        // SwiftUI yeniden giriş sorunlarını/çökmelerini önlemek için sonraki runloop'ta kapat
-        DispatchQueue.main.async { [weak self] in
-            win.close()
-            self?.isClosingTeleprompterWindow = false
-            self?.logger.info("📚 Teleprompter window closed safely")
-        }
-    }
-    
     func windowWillClose(_ notification: Notification) {
         guard let closingWindow = notification.object as? NSWindow else { return }
         
         if closingWindow is SettingsWindow {
             settingsWindow = nil
             isClosingSettingsWindow = false
-        }
-        
-        if closingWindow is TeleprompterWindow {
-            teleprompterWindow = nil
-            isClosingTeleprompterWindow = false
         }
     }
 }

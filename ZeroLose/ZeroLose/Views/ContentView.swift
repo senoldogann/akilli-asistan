@@ -56,7 +56,6 @@ struct ContentView: View {
     @State private var inputText: String = ""
     @FocusState private var isInputFocused: Bool
     @State private var isNearBottom: Bool = true
-    @State private var isHistoryPresented: Bool = false
     @State private var isDropTargeted: Bool = false
     @State private var isRuntimeDashboardPresented: Bool = false
     @State private var commandErrorMessage: String?
