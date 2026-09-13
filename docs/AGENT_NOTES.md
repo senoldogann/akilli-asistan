@@ -179,11 +179,20 @@ preference) are still live.
 `.freebuff/` (client state from the Freebuff agent host, not user work) is untracked. Confirm the
 desired treatment (ignore file vs. leave untracked) at the next cleanup boundary.
 
-### 🟢 Stale remote branches
+### ✅ Stale remote branches — swept, with the proof kept
 
-`origin` still carries ~30 old slice/plan branches from the V2 build-out. Only branches already
-merged into `main` may be deleted, each proven with
-`git merge-base --is-ancestor origin/<branch> main` first.
+Every remote branch was classified with `git merge-base --is-ancestor origin/<branch> main`.
+**22 branches proven to be ancestors of `main` were deleted** (`chore/repository-cleanup`,
+`design/computer-agent-runtime-v2`, `feat/computer-agent-runtime-v2-slice1..7`,
+`feat/runtime-diagnostics`, `feat/zerolose-v2-{computer-agent-core,foundation,persistence-replay,tool-fabric}`,
+`fix/exampilot-cgs-bootstrap-{final,real,red,work}`, `fix/navigation-question-identity`,
+`plan/computer-agent-runtime-v2-slice{2,3,4}`).
+
+**6 branches were deliberately preserved** because they carry unique unmerged commits:
+`feat/computer-agent-runtime-v2-slice8-browser-semantics` (+23),
+`feat/exampilot-visual-agent` (+66), `feat/zerolose-context-request-pipeline` (+18),
+`feat/zerolose-provider-fabric` (+9), `fix/exampilot-cgs-bootstrap` (+3),
+`fix/localized-answer-verification` (+8). Re-run the same ancestor check before touching them.
 
 ---
 
