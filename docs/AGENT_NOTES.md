@@ -1,185 +1,202 @@
 # Agent Handoff Notes — ZeroLose V2 Provider Control Plane Cutover
 
 > **To the active agent working on this repo (Codex / Claude / OpenCode / Antigravity):**
-> These notes were written by an external reviewer on 2026-09-13 after a full audit of
+> These notes were originally written by an external reviewer on 2026-09-13 after a full audit of
 > `feat/zerolose-agent-runtime-composition` at commit `a4fcd69` — Tasks 1-6 of
 > `docs/superpowers/plans/2026-09-13-zerolose-v2-ui-control-plane-cutover.md`.
-> The audit included reading the plan/design docs, running `python3 scripts/verify_all.py`
-> (passed), running the focused `ZeroLoseTests` suite for the changed area via
-> `xcodebuild test` (passed, 0 failures), full-file source reads, and independent
-> cross-verification of every finding below. This document replaces the prior
-> (2026-08-25) notes, which described the pre-V2 architecture and are now obsolete.
-> Read this before starting Task 7.
+> They are continuously updated with **verified** status. An item is only marked resolved when
+> implementation **and** local verification actually completed; anything else stays open.
+> All results below are from `/Users/dogan/Desktop/akilli-asistan` on 2026-09-13.
 
 ---
 
-## ✅ Verified current state (2026-09-13)
+## Verification snapshot (2026-09-13, this session)
 
-- Tasks 1–6 of the cutover plan are committed and match their described contracts.
-  Task 7 (interview removal), Task 8 (legacy provider authority removal), Task 9
-  (release/install/smoke), Task 10 (PR/merge) are not started yet — expected.
-- `python3 scripts/verify_all.py`: **SUCCESS** (layout guard, legacy-demolition scan,
-  provider-fabric forbidden-token scan, ExamPilot 196 tests, ExamPilot release build,
-  ExamPilot CLI smoke, ZeroLose Xcode Debug build).
-- Focused `ZeroLoseTests` run — `ModelProviderFabricTests`, `ProviderControlPlaneTests`,
-  `ProviderViewModelTests`, `RequestCoordinatorTests`, `ModelPlanningAdapterTests`,
-  `AgentApplicationCommandTests`, `MainWorkspaceBoundaryTests`, `SettingsSurfaceTests`,
-  `ProviderCompositionTests`, `AskModeBoundaryTests`, `ViewModelProjectionTests` —
-  **`** TEST SUCCEEDED **`, 0 failures.**
-- Architecture is sound: immutable `ProviderSelectionSnapshot`, actor-isolated
-  `ModelProviderFabric` / `ProviderControlPlane`, per-run orchestrator builder in
-  `AgentCommandRuntime`. Request/cancellation binding to an explicit provider (bypassing
-  the fabric's mutable `selectedProviderID`) is correctly implemented and tested
-  (`testExplicitProviderStreamIgnoresMutableSelection`,
-  `testRequestUsesBoundProviderAndModelAfterFabricSelectionChanges`). Keep this direction.
-- No secret leakage found in `ProviderControlSnapshot` / `ProviderPresentation` /
-  UserDefaults / logs (independently verified via full-file reads + `rg` scans).
+- `xcodebuild -project ZeroLose/ZeroLose.xcodeproj -scheme ZeroLose -destination 'platform=macOS,arch=arm64' test`
+  → **TEST SUCCEEDED**, 458 tests, 0 failures.
+- `xcodebuild ... -destination 'platform=macOS' test CODE_SIGNING_ALLOWED=NO` (the exact command
+  CI runs) → **TEST SUCCEEDED**, 458 tests, 0 failures.
+- `python3 scripts/verify_all.py` → **exit 0**: layout guard, legacy-demolition scan,
+  provider-fabric token scan, **provider-authority scan (new)**, **interview-demolition scan
+  (new)**, ExamPilot 196 tests, ExamPilot release build, ExamPilot CLI smoke, ZeroLose Debug
+  build, **and the full ZeroLose test suite (new)**.
+- Release build with ad-hoc signing
+  (`-configuration Release -derivedDataPath /tmp/zl_release_dd2 build CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual`):
+  **BUILD SUCCEEDED**, universal `x86_64 arm64`, `Identifier=com.senoldogan.ZeroLose`,
+  `codesign --verify --deep --strict` → *valid on disk / satisfies its Designated Requirement*.
+
+Working tree state: all changes below are **uncommitted** in the shared checkout
+(`feat/zerolose-agent-runtime-composition`, HEAD `99a4470`). Nothing was pushed, installed,
+or merged.
 
 ---
 
-## 🔴 Critical — fix before any Task 9 install/smoke test
+## Fixed and verified in this session
 
-### 1. Emergency Stop / Stop button visibility is gated by `workspaceMode`, not by live session state
-**File:** `ZeroLose/ZeroLose/Views/ContentView.swift:314`, `:363-378`, `:974`, `:989`
+### ✅ NEW (was RED) — `UIBoundaryTests.testRuntimeContainerIsCompositionRootNotAUIExecutionBackdoor`
+This existing invariant test was **failing on the branch**, and nobody saw it because the
+repository gate only ran `xcodebuild build` (medium #4 below).
+Root cause: commit `9b52209` moved the live macOS observation source
+(`LiveMacOSComputerObservationSourceProvider` with `CGWindowList*` / `AXUIElement*`) into
+`V2/Application/ZeroLoseRuntimeContainer.swift`, which that test forbids.
 
-`if workspaceMode == .agent { ... }` wraps Pause/Resume/Cancel/**Emergency Stop**
-(lines 315–378). `if workspaceMode == .chat && viewModel.isBusy { ... }` wraps the Chat
-Stop button (lines 974–988), falling through to the mic controls otherwise (989).
-`workspaceMode` is a presentation-only `@State` with no relationship to whether a
-session is actually live.
+Fix: extracted the provider verbatim to
+`V2/Computer/LiveMacOSComputerObservationSourceProvider.swift` (observation semantics and policy
+wiring untouched) and removed the then-unused `ApplicationServices` / `CoreGraphics` imports from
+the container. Verified by `UIBoundaryTests`, `AgentComputerCompositionTests`,
+`ArchitectureBoundaryTests`, `AgentComputerMutationBoundaryTests`, and the full suite.
 
-**Impact:** if the user switches the segmented control away from the mode with the
-live session, the corresponding stop control disappears from the UI entirely — even
-though `taskRuntimeViewModel.canEmergencyStop` / `viewModel.isBusy` may still be true
-and the session (including real mouse/keyboard mutation) keeps running. This directly
-violates the repo's own non-negotiable rule (AGENTS.md / CONTRIBUTING.md): *"Emergency
-stop/cancellation checks must remain effective"* / *"Do not weaken ... Emergency Stop
-... to simplify UI work."* This regression was introduced by the Task 5 `ContentView`
-rewrite in this branch.
+### ✅ Critical #1 — Emergency Stop / Chat Stop visibility gated by `workspaceMode`
+Already fixed before this session by commit `7f6c863`
+(`testEmergencyStopIsGatedIndependentlyOfWorkspaceMode`,
+`testChatStopRemainsReachableRegardlessOfWorkspaceMode`). Re-verified in `Views/ContentView.swift`:
+Emergency Stop is gated on `workspaceMode == .agent || taskRuntimeViewModel.canEmergencyStop`; the
+composer Stop button gates on `viewModel.isBusy` only.
 
-**Fix:** gate visibility on real session liveness (`taskRuntimeViewModel.hasActiveSession`
-/ `viewModel.isBusy`), independent of `workspaceMode`.
+### ✅ High #2a — `ProviderControlPlane` check-then-await-then-mutate reentrancy
+Already fixed by commit `81132a7` (serialized mutations + concurrent-call regression test).
 
----
+### ✅ High #2b / #2c — `AgentCommandRuntime.submitUserGoal` / `processAsk` reentrancy
+Already fixed by commit `99a4470` (`isStartingRun` / `isBusy` claimed synchronously before the
+first `await`, with concurrent-call regression tests).
 
-## 🟠 High — fix before calling Task 6 verification complete
+### ✅ High #3 — boundary suites were only source-text scans
+`MainWorkspaceBoundaryTests.testMainWorkspaceAndSettingsShareOneProviderViewModelInstance` now
+constructs the real `ContentView` and `SettingsView` with one `ProviderViewModel` and asserts
+object identity (`===` and `ObjectIdentifier`), so a duplicated or recomputed provider state is
+caught structurally. The literal/text scans remain as a cheap secondary guard.
 
-### 2. Check-then-await-then-mutate reentrancy race, repeated in 3 places
-Swift actors and `@MainActor` types are reentrant across `await` — a guard checked
-before a suspension point can be passed twice if state isn't claimed synchronously
-first. None of the three sites below claim state before their first `await`, and none
-have a concurrent-call regression test.
+### ✅ Medium #4 — `scripts/verify_all.py` never ran ZeroLose tests
+`verify_zerolose()` now runs an arch-aware concrete-destination `xcodebuild test` after the
+unsigned `generic/platform=macOS` build. This is the gate that would have caught the regression
+above; it is also asserted by `ProviderLegacyDemolitionTests`.
 
-**2a. `ZeroLose/ZeroLose/V2/Providers/ProviderControlPlane.swift`** —
-`selectProvider` (115–143), `selectModel` (145–182), `refresh` (87–109): each
-unconditionally overwrites `cachedSnapshot` at the end, after one or more `await`s
-(`presentations()` walks every registered provider's CLI-backed status/model
-discovery — not free). `ZeroLose/ZeroLose/V2/UI/ProviderSelectorView.swift:11,39,52`
-spawns a bare `Task { await viewModel.selectProvider(...) }` / `selectModel(...)` per
-tap with **no debounce/disable**, so this is reachable from ordinary fast clicking.
-**Impact:** the selection that *finishes last* wins, not the one *clicked last* — the
-app can silently end up using the wrong provider/model for the next request, which
-contradicts the design's own "no silent fallback" contract.
-**Fix:** add a monotonic generation/ticket check before committing `cachedSnapshot`
-(discard a result if a newer call has started since).
+### ✅ Medium #5 — "no CI for ZeroLose" was stale
+`.github/workflows/exampilot.yml` (job name `Repository`, runner `macos-26`) has run
+`Test ZeroLose` + `python3 scripts/verify_all.py` since commit `0e0b7ad` (present on `main`).
+The CI-equivalent command was re-run locally and passes. No new workflow was needed.
 
-**2b. `ZeroLose/ZeroLose/V2/Application/V2ShellRuntimeController.swift:112-120`**
-(`actor AgentCommandRuntime.submitUserGoal`) — the "already active" guard reads
-`self.orchestrator` before two `await`s (`selectionProvider()` at 118,
-`orchestratorBuilder.make` at 119); `self.orchestrator` is only reassigned at 120.
-**Impact:** two near-simultaneous goal submissions can each pass the guard and build
-their own orchestrator. The losing run keeps executing (planning/tool/mutation calls)
-but `pause`/`resume`/`cancel` only ever target `self.orchestrator`, so the orphaned run
-becomes untargetable by those three (only the shared-flag `emergencyStop` still reaches
-it — not a total safety bypass, but targeted control is broken).
-**Fix:** claim a "starting" placeholder synchronously before the first `await`.
+### ✅ Medium #6 — credential-handle revoke path was dead code in production
+`ToolFabric.execute` issued credential handles per invocation but never invalidated them, so
+handles stayed valid after their invocation and accumulated in the broker.
+Fix: new `CredentialBroking.discardHandles(_:)` (handle-scoped; does **not** revoke the scope),
+implemented in `InMemoryCredentialBroker` + `KeychainCredentialBrokerAdapter`, called by
+`ToolFabric.execute` on both success and failure paths. `InMemoryCredentialBroker` also exposes
+`outstandingHandleCount` for the bounded-memory invariant.
+Tests (`ToolFabricTests`, `CredentialBrokerTests`): handle invalidated after success, invalidated
+after failure, scope stays available across repeated invocations, inventory returns to 0.
 
-**2c. `ZeroLose/ZeroLose/V2/Application/V2ShellRuntimeController.swift:702-710`**
-(`processAsk`) — `guard !isBusy else { throw ... }` at 705 precedes
-`await selectionProvider()` at 708; `isBusy = true` is only set at 710.
-**Impact:** two near-simultaneous chat sends can both pass the guard; `activeAskSessionID`
-/ `activeAskSelection` (728–729) become last-write-wins, so `stopResponse()` can target
-the wrong session or silently no-op for the orphaned one.
-**Fix:** set `isBusy = true` synchronously as part of the guard, before any `await`.
+### ✅ Task 7 (safe subset, verified) — interview product surface removed
+- Deleted: `Views/InterviewVaultView.swift`, `Views/MockInterviewView.swift`,
+  `Views/TeleprompterView.swift`, `Views/CheatSheetView.swift`, `Views/KeyboardDisguiseView.swift`,
+  `Services/MockInterviewService.swift`, `ViewModels/CheatSheetViewModel.swift`
+  (each proven to have zero production consumers outside the deletion set first).
+- Removed the Teleprompter window class/state/frame preferences/show/close/toggle/hooks from
+  `Services/WindowManager.swift`; `GhostWindow`, hotkey, opacity, sizing and Settings window
+  behaviour are untouched. Stored teleprompter defaults were **not** deleted (they are inert).
+- Removed `warmUpInterviewContext()` from `ShellFeatureControlling`, `ShellViewModel`, and
+  `V2ShellRuntimeController` (including its interview persona prompt and vault priming), and
+  dropped the now-unused `responseCacheService` dependency from the shell controller.
+- Rewrote `ZeroLose/README.md` and the `Info.plist` privacy strings so the product is described
+  as a general Chat/Agent assistant (no interview/meeting framing).
+- New permanent guard: `ZeroLoseTests/V2/InterviewDemolitionTests.swift` (deleted files absent,
+  zero production references to the removed tokens, ShellFeatureControlling still exposes all
+  general capabilities, Info.plist/README copy clean) plus the `verify_zerolose_interview_demolition()`
+  step in `scripts/verify_all.py`.
 
-**Testing gap common to 2a/2b/2c:** `ProviderControlPlaneTests.swift`,
-`AgentApplicationCommandTests.swift`, and `AskModeBoundaryTests.swift` are all
-sequential-only (`await` one call, then the next) — add at least one concurrent-call
-(`async let` / `TaskGroup`) regression test per site.
+**Task 7 is still OPEN.** The remaining closure is `IntelligenceService` (2 651 lines) and the
+services it pulls in (`OllamaService`, `ResponseCacheService`, `TextAnalysis`, `LLMPromptBuilder`,
+`VaultService`, `VaultSearchEngine`, `ActiveRoleProfileService`, `InterviewKnowledgeMatcher`,
+`Models/InterviewItem.swift`). Those are still reachable through two live general behaviours:
+- `V2ShellRuntimeController.processImage` (screen capture, attachment images, auto-screenshot)
+  → `IntelligenceService.process(query:imageData:…)`
+- `V2ShellRuntimeController.processText` (answer refinement) → same service
 
-### 3. `MainWorkspaceBoundaryTests` / `SettingsSurfaceTests` are source-text scans, not structural checks
-Both suites read the file as a string and assert `source.contains("...")`, plus a
-hand-rolled brace-counter to slice a property/function body that is naive about braces
-inside string literals. They currently prove true things (independently verified — e.g.
-`providerViewModel` really is a single stored `let` shared by `ContentView` and
-`SettingsView`), but wouldn't catch a future regression via indirection (e.g.
-`providerViewModel` becoming a computed property, or a duplicate provider picker added
-through another file that doesn't contain the banned literal token).
-**Fix:** add at least one structural/identity check (e.g. `ObjectIdentifier` equality
-between the instance `ContentView` and `SettingsView` actually receive) alongside the
-text scans.
+Deleting them requires a **vision-capable V2 request**: `ModelMessage` currently carries only
+`content: String` (no image payload), while `ModelCapabilities.vision` already exists. That is a
+provider-contract migration (OpenAI API + CLI adapters) and its own task — do **not** delete the
+general screenshot/refine functionality to satisfy a symbol scan.
 
----
+### ✅ Task 8 (partial, verified) — legacy provider authority
+- Removed the automatic credential import: `Secrets.importOpenCodeKeysIfNeeded()` is gone
+  (function + `opencode_keys_autoimport_v1` flag) and is no longer called from
+  `ZeroLoseApp.applicationDidFinishLaunching`. Stored keys are untouched; `~/.local/share/opencode/auth.json`
+  is never read. Verified: zero production references to `importOpenCodeKeysIfNeeded`, `auth.json`,
+  `.local/share/opencode`.
+- New permanent guards: `ZeroLoseTests/V2/ProviderLegacyDemolitionTests.swift` — no legacy
+  authority token in the primary paths (`Views`, `V2/UI`, `V2/Application`, `V2/Providers`), the
+  legacy closure is pinned to exactly `Resources/Constants.swift`, `Services/DependencyContainer.swift`,
+  `Services/GroqService.swift`, `Services/IntelligenceService.swift`, `Services/OllamaService.swift`,
+  `llm_provider` is readable only by `Constants.swift` + `V2/Migration/SettingsMigrationCoordinator.swift`,
+  and the repository gate asserts both new guard functions.
+- `scripts/verify_all.py` gained `verify_zerolose_provider_authority()` (primary-path scan + app-launch
+  credential-import check).
 
-## 🟡 Medium — repo-wide gaps, not introduced by this branch
+**Task 8 is still OPEN:** the remaining legacy authority is exactly the closure above
+(`AIModelNames.currentProvider()` reading `llm_provider`, `OllamaService` routing, `custom*Model`
+defaults), all reachable only through the `IntelligenceService` path. It unblocks together with the
+Task 7 remainder. `AIModelNames.whisper` in `GroqService` is the documented compatibility-only
+allowance for voice transcription until it is migrated separately.
 
-### 4. `scripts/verify_all.py`'s `verify_zerolose()` only builds, never tests
-`scripts/verify_all.py:231-257` runs `xcodebuild ... build` with
-`-destination generic/platform=macOS` (which doesn't support the `test` action anyway).
-The one command `CONTRIBUTING.md` tells contributors to run before opening a PR never
-executes `ZeroLoseTests` — including every test added in Tasks 1–6. Add a real
-`xcodebuild test` step with a concrete runtime destination.
+### ✅ Low #7 — dead state
+`isHistoryPresented` removed from `Views/ContentView.swift`.
 
-### 5. No CI for ZeroLose at all
-`.github/workflows/` contains only `exampilot.yml`. All ZeroLose-side verification
-(including this entire V2 control-plane migration) runs on local discipline only, with
-no automated check on push/PR.
+### ✅ Low #8 / #10 — Keychain error diagnostics
+`ProviderViewModel` now appends a non-secret diagnostic (`(Keychain status N)`, `(key rejected)`,
+`(no key stored)`) to credential errors instead of discarding the real error.
+`ProviderViewModelTests.testKeychainFailuresSurviveAsSafeDiagnosticsThroughTheRealAdapter` exercises
+the **real** `KeychainCredentialBrokerAdapter` on an isolated Keychain service: blank key rejected
+without a write, secret never echoed, real store/remove round trip, teardown removes the item.
 
-### 6. Credential-handle revoke path is dead code in production
-`AutonomousRuntime` / `credentialHandleDiscarder` is constructed only in
-`AutonomousRuntimeResumeTests.swift:180`; production (`ZeroLoseRuntimeContainer.swift:241-248`)
-wires `AgentCommandRuntime` instead, which never calls
-`CredentialBroker.revoke(scope:)` (only implementation:
-`KeychainCredentialBrokerAdapter.swift:35`). Mitigated today because
-`isCredentialPresent`/`isValid` re-read Keychain live (self-healing), but the intended
-credential-lifecycle discipline isn't wired into any live path. Pre-existing, surfaced
-now because `ZeroLoseRuntimeContainer.swift` changed 172 lines in this branch.
+### ✅ Low #9 — accessibility class: investigated, deliberately **not** changed
+Attempted hardening to `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` and verified it: on this
+macOS the items are created in the legacy login keychain, where `kSecAttrAccessible` is neither
+applied nor returned by `SecItemCopyMatching` (verified with a real adapter store + attribute read;
+the returned attributes contain no `kSecAttrAccessible`). The change was reverted because it would
+have been an unverifiable claim. `CredentialBrokerTests.testRealKeychainAdapterDoesNotExposeDataProtectionAccessibilityClass`
+now pins the observed reality so the claim cannot be made again without evidence. Real hardening
+requires a `kSecUseDataProtectionKeychain` migration for **new** items plus an explicit plan for
+reading existing legacy items — its own task, and it must not silently make stored keys look missing.
 
----
-
-## 🟢 Low
-
-7. `ContentView.swift:59` — `isHistoryPresented` state declared, never read/written; dead, safe to delete.
-8. `ProviderViewModel.swift:73-76,85-88` — `saveOpenAIAPIKey`/`removeOpenAIAPIKey` catch
-   blocks discard the real thrown error (e.g. Keychain `OSStatus`), surfacing only a
-   generic string. Safe for secrecy, harder to debug real Keychain failures.
-9. `KeychainCredentialBrokerAdapter.swift:89` — uses `kSecAttrAccessibleAfterFirstUnlock`,
-   not `...ThisDeviceOnly`; consistent with existing convention, minor hardening
-   opportunity only.
-10. `testCredentialErrorsNeverEchoSubmittedKey` only exercises a mock settings
-    controller, not the real Keychain adapter — doesn't hide a live gap today (the
-    ViewModel's catch-all makes the guarantee adapter-agnostic in practice), but
-    wouldn't catch a future regression introduced only in the real adapter.
-11. `ZeroLose/README.md` and `Info.plist`'s `NSScreenCaptureUsageDescription` /
-    `NSMicrophoneUsageDescription` still describe an interview/meeting assistant —
-    expected, already in Task 7's file list. Just don't install/demo the current build
-    before Task 7 lands, or the user will see stale permission-prompt copy.
-12. Repo hygiene, not a code bug (worth confirming, not fixing in code): a remote
-    branch named exactly `feat/zerolose-agent-runtime-composition` existed on GitHub and
-    was deleted with no associated PR (`git fetch --prune` detected the deletion; `gh`
-    found no PR under that name). This worktree was cloned from a separate local path
-    `/Users/dogan/akilli-asistan`. The design doc already pins
-    `/Users/dogan/Desktop/akilli-asistan` as the sole active development root — confirm
-    nothing is concurrently in progress at the other path under the same branch name.
+### ✅ Repo hygiene
+- An empty stray `.claude/` directory (created by external tooling, no files) was failing the
+  layout guard in `verify_all.py`; removed with `rmdir` (empty-only, so no user work could be lost).
 
 ---
 
-## Suggested fix order
+## Still open
 
-1. Critical #1 (Emergency Stop visibility) — safety-relevant, smallest diff.
-2. High #2a/2b/2c (reentrancy races) — same shape of fix (claim-before-await) in three
-   places; add one concurrent-call test per site.
-3. High #3 (boundary-test hardening) — optional but cheap alongside #2.
-4. Resume Task 7 of the cutover plan.
-5. Medium #4/#5/#6 — track as separate repo-infrastructure follow-ups, not blockers for
-   this feature branch.
+### 🟠 Task 7 remainder — vision-capable V2 request, then delete the interview closure
+See above. Blocked on image payload support in the V2 provider contract; do not delete the general
+screenshot/refinement capabilities.
+
+### 🟠 Task 8 remainder — retire `LLMProvider` / `AIModelNames` / `OllamaService`
+Unblocks with the Task 7 remainder; the pinned closure in `ProviderLegacyDemolitionTests` shrinks
+as each file is migrated.
+
+### 🟡 Task 9 — acceptance, install and launch smoke
+Done: clean-state preflight, focused regression matrix (full suite green), full repository gate,
+Release build + ad-hoc signature verification (identities/hashes above).
+Remaining: replace `/Applications/ZeroLose.app` with the verified Release bundle, compare bundle
+identity, launch + relaunch smoke, and re-confirm a clean feature HEAD. **These require explicit
+user approval** (install replaces an installed app; the plan also requires building from the exact
+committed HEAD, which needs a commit first).
+
+### 🟡 Task 10 — PR, exact-head verification, merge, branch/worktree cleanup
+Not started. Requires explicit user approval to push, open a PR, and merge.
+
+### 🟢 Low #12 — repo hygiene follow-up
+`.freebuff/` (client state from the Freebuff agent host, not user work) is untracked. Confirm the
+desired treatment (ignore or leave untracked) at the same time as the Task 10 cleanup.
+
+---
+
+## Suggested next order
+
+1. Get approval for: commit the verified working tree, then Task 9 install/launch smoke.
+2. Task 10 (push → PR → exact-head verify → merge → prove cleanup safety → delete merged branches).
+3. Task 7 + Task 8 remainder together, in one migration: image payload in `ModelRequest`/`ModelMessage`
+   → OpenAI API + CLI adapter support → move `processImage`/`processText` onto `RequestCoordinator`
+   → delete `IntelligenceService`, `OllamaService`, `ResponseCacheService`, `TextAnalysis`,
+   `LLMPromptBuilder`, the vault/role/matcher services and `Models/InterviewItem.swift`
+   → shrink the pinned legacy closure → re-run `python3 scripts/verify_all.py`.
