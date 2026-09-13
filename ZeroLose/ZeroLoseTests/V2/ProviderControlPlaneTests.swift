@@ -117,6 +117,35 @@ final class ProviderControlPlaneTests: XCTestCase {
         XCTAssertEqual(selectedStatus.providerID, second.id)
     }
 
+    func testConcurrentSelectionsResolveToTheMostRecentlyCalledOne() async throws {
+        let slow = ConfigurableControlPlaneProvider(
+            id: "slow",
+            models: ["slow-model"],
+            discoveryDelayNanoseconds: 300_000_000
+        )
+        let fast = ConfigurableControlPlaneProvider(id: "fast", models: ["fast-model"])
+        let fabric = ModelProviderFabric(providers: [slow, fast], selectedProviderID: fast.id)
+        let controlPlane = ProviderControlPlane(
+            fabric: fabric,
+            persistence: MemoryProviderSelectionStore(providerID: "fast", modelID: "default")
+        )
+        _ = await controlPlane.snapshot()
+
+        async let earlierCallWithSlowDiscovery = try? controlPlane.selectProvider(slow.id)
+        try await Task.sleep(nanoseconds: 30_000_000)
+        async let laterCallWithFastDiscovery = try? controlPlane.selectProvider(fast.id)
+
+        _ = await earlierCallWithSlowDiscovery
+        _ = await laterCallWithFastDiscovery
+
+        let finalSelection = await controlPlane.currentSelection()
+        XCTAssertEqual(
+            finalSelection.providerID,
+            fast.id,
+            "The most recently invoked selection must win even when an earlier call's slower provider discovery completes after it"
+        )
+    }
+
     func testOnlyActiveProviderDiscoveredModelCanBeSelected() async throws {
         let alpha = ConfigurableControlPlaneProvider(id: "alpha", models: ["alpha-model"])
         let beta = ConfigurableControlPlaneProvider(id: "beta", models: ["beta-model"])
@@ -291,6 +320,7 @@ private final class ConfigurableControlPlaneProvider: ModelProvider, Sendable {
     private let modelIDs: [String]
     private let modelCapabilities: ModelCapabilities
     private let discoveryError: ConfigurableControlPlaneProviderError?
+    private let discoveryDelayNanoseconds: UInt64
 
     init(
         id: String,
@@ -299,7 +329,8 @@ private final class ConfigurableControlPlaneProvider: ModelProvider, Sendable {
         capabilities: ModelCapabilities = [.textStreaming],
         models: [String] = ["default"],
         modelCapabilities: ModelCapabilities? = nil,
-        discoveryError: ConfigurableControlPlaneProviderError? = nil
+        discoveryError: ConfigurableControlPlaneProviderError? = nil,
+        discoveryDelayNanoseconds: UInt64 = 0
     ) {
         self.id = ModelProviderID(rawValue: id)
         self.displayName = displayName ?? id.capitalized
@@ -308,6 +339,7 @@ private final class ConfigurableControlPlaneProvider: ModelProvider, Sendable {
         modelIDs = models
         self.modelCapabilities = modelCapabilities ?? capabilities
         self.discoveryError = discoveryError
+        self.discoveryDelayNanoseconds = discoveryDelayNanoseconds
     }
 
     func status() async -> ProviderStatus {
@@ -319,6 +351,9 @@ private final class ConfigurableControlPlaneProvider: ModelProvider, Sendable {
     }
 
     func discoverModels() async throws -> [ModelDescriptor] {
+        if discoveryDelayNanoseconds > 0 {
+            try? await Task.sleep(nanoseconds: discoveryDelayNanoseconds)
+        }
         if let discoveryError { throw discoveryError }
         return modelIDs.map {
             ModelDescriptor(

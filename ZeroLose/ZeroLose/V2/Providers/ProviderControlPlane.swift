@@ -68,6 +68,7 @@ actor ProviderControlPlane {
 
     private var cachedSnapshot: ProviderControlSnapshot?
     private var revision: UInt64 = 0
+    private var mutationTail: Task<Void, Never> = Task {}
 
     init(
         fabric: ModelProviderFabric,
@@ -81,104 +82,42 @@ actor ProviderControlPlane {
         if let cachedSnapshot {
             return cachedSnapshot
         }
-        return await bootstrap()
+        return await runExclusively {
+            if let cached = await self.cachedSnapshotIfPresent() {
+                return cached
+            }
+            return await self.bootstrap()
+        }
     }
 
     func refresh() async -> ProviderControlSnapshot {
-        let current = await ensureSelection()
-        let providers = await presentations()
-        var selection = current
-
-        if selection.modelID != "default",
-           !Self.modelIsValid(selection.modelID, providerID: selection.providerID, providers: providers) {
-            revision &+= 1
-            selection = ProviderSelectionSnapshot(
-                providerID: selection.providerID,
-                modelID: "default",
-                revision: revision
-            )
-            await persistence.save(
-                providerID: selection.providerID.rawValue,
-                modelID: selection.modelID
-            )
-        }
-
-        let updated = ProviderControlSnapshot(providers: providers, selection: selection)
-        cachedSnapshot = updated
-        return updated
+        await runExclusively { await self.performRefresh() }
     }
 
     func currentSelection() async -> ProviderSelectionSnapshot {
-        await ensureSelection()
+        if let cachedSnapshot {
+            return cachedSnapshot.selection
+        }
+        return await runExclusively {
+            if let cached = await self.cachedSnapshotIfPresent() {
+                return cached.selection
+            }
+            return await self.bootstrap().selection
+        }
     }
 
     func selectProvider(
         _ providerID: ModelProviderID
     ) async throws -> ProviderControlSnapshot {
-        let current = await ensureSelection()
-        let registered = await fabric.registeredProviderIDs()
-        guard registered.contains(providerID) else {
-            throw ProviderControlPlaneError.unknownProvider(providerID)
+        try await runExclusivelyThrowing {
+            try await self.performSelectProvider(providerID)
         }
-
-        guard providerID != current.providerID else {
-            return await snapshot()
-        }
-
-        revision &+= 1
-        let selection = ProviderSelectionSnapshot(
-            providerID: providerID,
-            modelID: "default",
-            revision: revision
-        )
-        await fabric.select(providerID)
-        await persistence.save(providerID: providerID.rawValue, modelID: "default")
-
-        let updated = ProviderControlSnapshot(
-            providers: await presentations(),
-            selection: selection
-        )
-        cachedSnapshot = updated
-        return updated
     }
 
     func selectModel(_ modelID: String) async throws -> ProviderControlSnapshot {
-        let current = await ensureSelection()
-        let normalized = Self.normalizedModelID(modelID)
-        let currentSnapshot = await snapshot()
-
-        guard normalized == "default"
-                || Self.modelIsValid(
-                    normalized,
-                    providerID: current.providerID,
-                    providers: currentSnapshot.providers
-                ) else {
-            throw ProviderControlPlaneError.invalidModel(
-                providerID: current.providerID,
-                modelID: normalized
-            )
+        try await runExclusivelyThrowing {
+            try await self.performSelectModel(modelID)
         }
-
-        guard normalized != current.modelID else {
-            return currentSnapshot
-        }
-
-        revision &+= 1
-        let selection = ProviderSelectionSnapshot(
-            providerID: current.providerID,
-            modelID: normalized,
-            revision: revision
-        )
-        await persistence.save(
-            providerID: current.providerID.rawValue,
-            modelID: normalized
-        )
-        let updated = ProviderControlSnapshot(
-            providers: currentSnapshot.providers,
-            selection: selection
-        )
-        cachedSnapshot = updated
-        return updated
     }
 
     func canUseChat() async -> Bool {
@@ -223,6 +162,146 @@ actor ProviderControlPlane {
             return false
         }
         return model.capabilities.contains(.jsonOutput)
+    }
+
+    /// Serializes control-plane mutations so a slower earlier call cannot overwrite the
+    /// result of a call made after it: each operation waits for the previously enqueued
+    /// one to finish before it runs, so fabric selection, persistence, and
+    /// `cachedSnapshot` all update in call order rather than completion order. Only call
+    /// this from a public entry point — `performRefresh`/`performSelectProvider`/
+    /// `performSelectModel`/`bootstrap` must not call back into it, or a turn would wait
+    /// on itself.
+    private func runExclusively<T: Sendable>(
+        _ operation: @escaping @Sendable () async -> T
+    ) async -> T {
+        let previous = mutationTail
+        let task = Task<T, Never> {
+            _ = await previous.value
+            return await operation()
+        }
+        mutationTail = Task { _ = await task.value }
+        return await task.value
+    }
+
+    private func runExclusivelyThrowing<T: Sendable>(
+        _ operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        let previous = mutationTail
+        let task = Task<Result<T, Error>, Never> {
+            _ = await previous.value
+            do {
+                return .success(try await operation())
+            } catch {
+                return .failure(error)
+            }
+        }
+        mutationTail = Task { _ = await task.value }
+        return try await task.value.get()
+    }
+
+    private func cachedSnapshotIfPresent() -> ProviderControlSnapshot? {
+        cachedSnapshot
+    }
+
+    private func performRefresh() async -> ProviderControlSnapshot {
+        let current = await ensureSelection()
+        let providers = await presentations()
+        var selection = current
+
+        if selection.modelID != "default",
+           !Self.modelIsValid(selection.modelID, providerID: selection.providerID, providers: providers) {
+            revision &+= 1
+            selection = ProviderSelectionSnapshot(
+                providerID: selection.providerID,
+                modelID: "default",
+                revision: revision
+            )
+            await persistence.save(
+                providerID: selection.providerID.rawValue,
+                modelID: selection.modelID
+            )
+        }
+
+        let updated = ProviderControlSnapshot(providers: providers, selection: selection)
+        cachedSnapshot = updated
+        return updated
+    }
+
+    private func performSelectProvider(
+        _ providerID: ModelProviderID
+    ) async throws -> ProviderControlSnapshot {
+        let current = await ensureSelection()
+        let registered = await fabric.registeredProviderIDs()
+        guard registered.contains(providerID) else {
+            throw ProviderControlPlaneError.unknownProvider(providerID)
+        }
+
+        guard providerID != current.providerID else {
+            if let cachedSnapshot {
+                return cachedSnapshot
+            }
+            return await bootstrap()
+        }
+
+        revision &+= 1
+        let selection = ProviderSelectionSnapshot(
+            providerID: providerID,
+            modelID: "default",
+            revision: revision
+        )
+        await fabric.select(providerID)
+        await persistence.save(providerID: providerID.rawValue, modelID: "default")
+
+        let updated = ProviderControlSnapshot(
+            providers: await presentations(),
+            selection: selection
+        )
+        cachedSnapshot = updated
+        return updated
+    }
+
+    private func performSelectModel(_ modelID: String) async throws -> ProviderControlSnapshot {
+        let current = await ensureSelection()
+        let normalized = Self.normalizedModelID(modelID)
+        let currentSnapshot: ProviderControlSnapshot
+        if let cachedSnapshot {
+            currentSnapshot = cachedSnapshot
+        } else {
+            currentSnapshot = await bootstrap()
+        }
+
+        guard normalized == "default"
+                || Self.modelIsValid(
+                    normalized,
+                    providerID: current.providerID,
+                    providers: currentSnapshot.providers
+                ) else {
+            throw ProviderControlPlaneError.invalidModel(
+                providerID: current.providerID,
+                modelID: normalized
+            )
+        }
+
+        guard normalized != current.modelID else {
+            return currentSnapshot
+        }
+
+        revision &+= 1
+        let selection = ProviderSelectionSnapshot(
+            providerID: current.providerID,
+            modelID: normalized,
+            revision: revision
+        )
+        await persistence.save(
+            providerID: current.providerID.rawValue,
+            modelID: normalized
+        )
+        let updated = ProviderControlSnapshot(
+            providers: currentSnapshot.providers,
+            selection: selection
+        )
+        cachedSnapshot = updated
+        return updated
     }
 
     private func bootstrap() async -> ProviderControlSnapshot {
