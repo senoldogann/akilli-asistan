@@ -12,7 +12,7 @@ Requirements:
 
 ## Verification
 
-Run the repository gate before opening or merging a pull request:
+All implementation, tests, builds, and release verification are performed locally first. Run the repository gate before opening a pull request:
 
 ```bash
 python3 scripts/verify_all.py
@@ -29,6 +29,8 @@ swift build -c release
 ## Pull request rules
 
 - Keep changes focused and reviewable.
+- Do not use a pull request as a remote development/test loop. Finish the scoped implementation and required verification locally first.
+- Once local gates are green, push the focused feature branch, open a pull request, verify the exact PR head, and merge through the pull request rather than committing directly to `main`.
 - Add a regression test before fixing runtime behavior.
 - Do not weaken `ActionPolicy`, stale-state checks, focus continuity, semantic verification, recovery budgets, or emergency-stop behavior to make a test pass.
 - Treat provider/model output as untrusted input.
@@ -48,3 +50,7 @@ swift build -c release
 ## Repository hygiene
 
 Project-local `.agent`, `.codex`, `.claude`, and `.opencode` adapter trees are not part of the repository architecture. Do not regenerate or commit them.
+
+- Keep working trees clean and remove accidental temporary/generated files before handoff or merge.
+- After a pull request is merged and verified, prune merged/unused feature branches and obsolete worktrees only after confirming they contain no unique unmerged commits or user work.
+- Retain a branch or worktree only when it is still active, intentionally preserved, or needed for recovery.
