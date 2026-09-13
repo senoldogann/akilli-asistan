@@ -63,10 +63,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // on every normal launch; the explicit UI-test path remains regular.
         NSApp.setActivationPolicy(.accessory)
 
-        // Bu makinedeki mevcut OpenCode Go / Zen üyeliğini yeniden kullan, böylece
-        // OpenCode sağlayıcısı anahtarı yeniden yapıştırmadan hemen çalışır.
-        Secrets.importOpenCodeKeysIfNeeded()
-        
         // Keep the utility available through its status-item/window hotkey without
         // activating it on launch; this also avoids an unexpected foreground jump.
         
