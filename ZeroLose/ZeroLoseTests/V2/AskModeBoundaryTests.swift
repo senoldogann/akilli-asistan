@@ -32,11 +32,27 @@ final class AskModeBoundaryTests: XCTestCase {
         }
     }
 
-    func testStopForwardsCancellationToRequestCoordinator() throws {
+    func testStopForwardsCancellationToRequestCoordinatorWithBoundProvider() throws {
         let source = try productionSource("V2/Application/V2ShellRuntimeController.swift")
         let stopBody = try XCTUnwrap(functionBody(named: "stopResponse", in: source))
 
         XCTAssertTrue(stopBody.contains("requestCoordinator.cancel("))
+        XCTAssertTrue(stopBody.contains("providerID:"))
+        XCTAssertTrue(source.contains("activeAskSelection"))
+    }
+
+    func testAskCapturesV2SelectionAndDoesNotRebuildLegacyProviderDisplay() throws {
+        let source = try productionSource("V2/Application/V2ShellRuntimeController.swift")
+        let askBody = try XCTUnwrap(functionBody(named: "processAsk", in: source))
+        let shellViewModel = try productionSource("V2/UI/ShellViewModel.swift")
+
+        XCTAssertTrue(source.contains("selectionProvider"))
+        XCTAssertTrue(askBody.contains("let selection = await selectionProvider()"))
+        XCTAssertTrue(askBody.contains("selection: selection"))
+        XCTAssertFalse(source.contains("modelIDProvider"))
+        XCTAssertFalse(source.contains("AIModelNames"))
+        XCTAssertFalse(shellViewModel.contains("currentModelDisplay"))
+        XCTAssertFalse(shellViewModel.contains("contextUsage"))
     }
 
     func testProductionCompositionBuildsGeneralContextAndRequestCoordinator() throws {

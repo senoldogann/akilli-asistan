@@ -23,6 +23,7 @@ final class ZeroLoseRuntimeContainer {
     private let runtimeController: V2ShellRuntimeController
     private let nativeToolRuntime: V2NativeToolRuntime
     private let modelProviderFabric: ModelProviderFabric
+    private let providerControlPlane: ProviderControlPlane
     private let settingsController: RuntimeSettingsDataController
     private let eventStore: SQLiteEventStore?
     private let eventRecorder: RuntimeEventRecorder?
@@ -126,6 +127,10 @@ final class ZeroLoseRuntimeContainer {
         let modelProviderFabric = ModelProviderFabric(
             providers: [codexProvider, claudeProvider, openCodeProvider, antigravityProvider, openAIProvider],
             selectedProviderID: selectedProviderID
+        )
+        let providerControlPlane = ProviderControlPlane(
+            fabric: modelProviderFabric,
+            persistence: UserDefaultsProviderSelectionStore(defaults: defaults)
         )
 
         let attachmentContextBuffer = AttachmentContextBuffer()
@@ -259,11 +264,8 @@ final class ZeroLoseRuntimeContainer {
             nativeToolRuntime: nativeToolRuntime,
             requestCoordinator: requestCoordinator,
             attachmentContextProvider: attachmentContextBuffer,
-            modelIDProvider: {
-                let configured = UserDefaults.standard
-                    .string(forKey: defaultModelIDKey)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                return configured?.isEmpty == false ? configured! : "default"
+            selectionProvider: {
+                await providerControlPlane.currentSelection()
             },
             agentRuntime: agentRuntime,
             initialAuthorityMode: initialAuthority
@@ -284,6 +286,7 @@ final class ZeroLoseRuntimeContainer {
         self.runtimeController = runtimeController
         self.nativeToolRuntime = nativeToolRuntime
         self.modelProviderFabric = modelProviderFabric
+        self.providerControlPlane = providerControlPlane
         self.settingsController = settingsController
         self.eventStore = eventStore
         self.eventRecorder = eventRecorder

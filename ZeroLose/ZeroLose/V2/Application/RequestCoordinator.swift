@@ -26,8 +26,11 @@ actor RequestCoordinator {
         }
     }
 
-    func cancel(sessionID: ModelSessionID) async {
-        await providerFabric.cancel(sessionID: sessionID)
+    func cancel(
+        sessionID: ModelSessionID,
+        providerID: ModelProviderID
+    ) async {
+        await providerFabric.cancel(sessionID: sessionID, using: providerID)
     }
 
     private func execute(
@@ -73,12 +76,15 @@ actor RequestCoordinator {
             let modelRequest = ModelRequest(
                 sessionID: request.sessionID,
                 conversation: conversation,
-                modelID: request.modelID,
+                modelID: request.selection.modelID,
                 tools: filteredReadOnlyToolSchemas(),
                 responseMode: .text
             )
 
-            let providerStream = try await providerFabric.stream(modelRequest)
+            let providerStream = try await providerFabric.stream(
+                modelRequest,
+                using: request.selection.providerID
+            )
             var assistantText = ""
             var completed = false
 

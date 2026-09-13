@@ -591,17 +591,6 @@ struct ContentView: View {
                     .foregroundStyle(.red)
                     .lineLimit(1)
             }
-
-            if !viewModel.currentModelDisplay.isEmpty {
-                Text("\(activeProvider.displayName) · \(activeReasoningModel)")
-                    .font(.system(size: 9, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.tertiary)
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 1)
-                    .background(Color.primary.opacity(0.05))
-                    .cornerRadius(4)
-                    .lineLimit(1)
-            }
         }
         .padding(.trailing, 4)
     }
@@ -1118,8 +1107,6 @@ struct ContentView: View {
             .menuStyle(.borderlessButton)
 
             Spacer(minLength: 0)
-
-            contextMeter
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
@@ -1179,26 +1166,6 @@ struct ContentView: View {
         case .openCodeGo: customOpenCodeGoReasoningModel = model
         case .ollama: customOllamaReasoningModel = model
         }
-    }
-
-    @ViewBuilder
-    private var contextMeter: some View {
-        let usage = viewModel.contextUsage
-        VStack(alignment: .trailing, spacing: 2) {
-            Text("Konteks %\(Int((usage.fraction * 100).rounded()))")
-                .font(.system(size: 9, weight: .semibold, design: .rounded))
-                .foregroundStyle(usage.fraction > 0.85 ? .red : .secondary)
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Color.primary.opacity(0.08))
-                    Capsule()
-                        .fill(usage.fraction > 0.85 ? Color.red : (usage.fraction > 0.6 ? Color.orange : themeColor))
-                        .frame(width: geo.size.width * usage.fraction)
-                }
-            }
-            .frame(width: 72, height: 4)
-        }
-        .help("Kullanılan tahmini bağlam")
     }
 
     @ViewBuilder

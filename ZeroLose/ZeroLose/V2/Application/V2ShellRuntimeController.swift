@@ -216,7 +216,7 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
     private let responseCacheService: ResponseCacheService
     private let requestCoordinator: RequestCoordinator
     private let attachmentContextProvider: any MutableAttachmentContextProviding
-    private let modelIDProvider: () -> String
+    private let selectionProvider: @Sendable () async -> ProviderSelectionSnapshot
     private let agentRuntime: AgentCommandRuntime?
 
     private weak var shellViewModel: ShellViewModel?
@@ -235,6 +235,7 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
     private var authorityMode: AuthorityMode
     private var askConversationID = UUID().uuidString
     private var activeAskSessionID: ModelSessionID?
+    private var activeAskSelection: ProviderSelectionSnapshot?
     var onAuthorityModeChanged: ((AuthorityMode) -> Void)?
     var onAgentStateChanged: ((TaskRuntimeProjectionSnapshot) -> Void)?
 
@@ -251,7 +252,7 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
         nativeToolRuntime: V2NativeToolRuntime,
         requestCoordinator: RequestCoordinator,
         attachmentContextProvider: any MutableAttachmentContextProviding,
-        modelIDProvider: @escaping () -> String,
+        selectionProvider: @escaping @Sendable () async -> ProviderSelectionSnapshot,
         agentRuntime: AgentCommandRuntime? = nil,
         initialAuthorityMode: AuthorityMode
     ) {
@@ -268,7 +269,7 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
         self.responseCacheService = .shared
         self.requestCoordinator = requestCoordinator
         self.attachmentContextProvider = attachmentContextProvider
-        self.modelIDProvider = modelIDProvider
+        self.selectionProvider = selectionProvider
         self.agentRuntime = agentRuntime
         self.authorityMode = initialAuthorityMode
         installObservations()
@@ -399,6 +400,7 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
         let previousConversationID = askConversationID
         askConversationID = UUID().uuidString
         activeAskSessionID = nil
+        activeAskSelection = nil
         messages.removeAll()
         intelligenceService.clearHistory()
         Task {
@@ -434,12 +436,17 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
         guard isBusy else { return }
         activeTask?.cancel()
         activeTask = nil
-        if let sessionID = activeAskSessionID {
+        if let sessionID = activeAskSessionID,
+           let selection = activeAskSelection {
             Task {
-                await requestCoordinator.cancel(sessionID: sessionID)
+                await requestCoordinator.cancel(
+                    sessionID: sessionID,
+                    providerID: selection.providerID
+                )
             }
         }
         activeAskSessionID = nil
+        activeAskSelection = nil
         isBusy = false
         statusMessage = "Interrupted"
 
@@ -672,6 +679,7 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
         guard !isBusy else {
             throw V2RuntimeCommandError.unsupportedCommand("concurrent-chat")
         }
+        let selection = await selectionProvider()
 
         isBusy = true
         statusMessage = "Thinking..."
@@ -692,6 +700,7 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
         let conversationID = askConversationID
         let sessionID = ModelSessionID(rawValue: UUID().uuidString)
         activeAskSessionID = sessionID
+        activeAskSelection = selection
         let hadAttachmentContext = await stageAttachmentContextIfNeeded(conversationID: conversationID)
         if hadAttachmentContext {
             attachedFileData = nil
@@ -705,7 +714,7 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
                 sessionID: sessionID,
                 conversationID: conversationID,
                 text: query,
-                modelID: modelIDProvider(),
+                selection: selection,
                 activeGoalID: nil
             )
             let stream = await requestCoordinator.stream(request)
@@ -751,6 +760,7 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
             await attachmentContextProvider.clearAttachments(conversationID: conversationID)
             if activeAskSessionID == sessionID {
                 activeAskSessionID = nil
+                activeAskSelection = nil
             }
             isBusy = false
             statusMessage = "Ready"
@@ -760,6 +770,7 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
             await attachmentContextProvider.clearAttachments(conversationID: conversationID)
             if activeAskSessionID == sessionID {
                 activeAskSessionID = nil
+                activeAskSelection = nil
             }
             isBusy = false
             activeTask = nil
@@ -1158,18 +1169,11 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
     }
 
     private func publishSnapshot() {
-        let provider = AIModelNames.currentProvider()
-        let model = AIModelNames.reasoning(forProvider: provider)
         shellViewModel?.apply(
             ShellProjectionSnapshot(
                 messages: messages,
                 isBusy: isBusy,
                 statusMessage: statusMessage,
-                currentModelDisplay: "\(provider.displayName) · \(model)",
-                contextUsage: ContextUsage(
-                    usedTokens: intelligenceService.contextTokenEstimate,
-                    windowTokens: AIModelNames.contextWindow(forProvider: provider, model: AIModelNames.reasoning)
-                ),
                 isClipboardActive: isClipboardActive,
                 isListeningActive: isListeningActive,
                 liveVoicePreview: liveVoicePreview,

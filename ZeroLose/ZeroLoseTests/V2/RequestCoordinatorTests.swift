@@ -66,7 +66,11 @@ final class RequestCoordinatorTests: XCTestCase {
                 sessionID: ModelSessionID(rawValue: "s1"),
                 conversationID: "c1",
                 text: "latest question",
-                modelID: "model-1",
+                selection: ProviderSelectionSnapshot(
+                    providerID: providerID,
+                    modelID: "model-1",
+                    revision: 0
+                ),
                 activeGoalID: GoalID(rawValue: "goal-1")
             )
         )
@@ -94,6 +98,36 @@ final class RequestCoordinatorTests: XCTestCase {
         let finalAssistant = try XCTUnwrap(saved.last { $0.role == .assistant && $0.text == "final answer" })
         XCTAssertEqual(finalAssistant.provenance.source, .native)
         XCTAssertFalse(finalAssistant.verifiedSemanticTruth)
+    }
+
+    func testRequestUsesBoundProviderAndModelAfterFabricSelectionChanges() async throws {
+        let firstID = ModelProviderID(rawValue: "first")
+        let secondID = ModelProviderID(rawValue: "second")
+        let first = CoordinatorRecordingProvider(id: firstID)
+        let second = CoordinatorRecordingProvider(id: secondID)
+        let fabric = ModelProviderFabric(
+            providers: [first, second],
+            selectedProviderID: firstID
+        )
+        let coordinator = RequestCoordinator(
+            contextOrchestrator: ContextOrchestrator(
+                sources: [],
+                policy: ContextPolicy(maxCharacters: 4_000, minimumRelevance: 0)
+            ),
+            providerFabric: fabric,
+            conversationStore: CoordinatorConversationStore()
+        )
+        let request = AskRequest.fixture(providerID: firstID, modelID: "bound-model")
+
+        await fabric.select(secondID)
+        let stream = await coordinator.stream(request)
+        for try await _ in stream {}
+
+        let firstRequests = await first.requests
+        let secondRequestCount = await second.requests.count
+        XCTAssertEqual(firstRequests.count, 1)
+        XCTAssertEqual(firstRequests.first?.modelID, "bound-model")
+        XCTAssertEqual(secondRequestCount, 0)
     }
 
     func testAskModeFiltersMutationToolSchemas() async throws {
@@ -129,26 +163,32 @@ final class RequestCoordinatorTests: XCTestCase {
         XCTAssertEqual(request.tools.map(\.name), ["read.fs"])
     }
 
-    func testCancellationRoutesToSelectedProvider() async {
-        let providerID = ModelProviderID(rawValue: "recording")
-        let provider = CoordinatorRecordingProvider(id: providerID)
+    func testCancellationRoutesToBoundProviderAfterSelectionChanges() async {
+        let firstID = ModelProviderID(rawValue: "first")
+        let secondID = ModelProviderID(rawValue: "second")
+        let first = CoordinatorRecordingProvider(id: firstID)
+        let second = CoordinatorRecordingProvider(id: secondID)
+        let fabric = ModelProviderFabric(
+            providers: [first, second],
+            selectedProviderID: firstID
+        )
         let coordinator = RequestCoordinator(
             contextOrchestrator: ContextOrchestrator(
                 sources: [],
                 policy: ContextPolicy(maxCharacters: 4_000, minimumRelevance: 0)
             ),
-            providerFabric: ModelProviderFabric(
-                providers: [provider],
-                selectedProviderID: providerID
-            ),
+            providerFabric: fabric,
             conversationStore: CoordinatorConversationStore()
         )
         let sessionID = ModelSessionID(rawValue: "cancel-me")
 
-        await coordinator.cancel(sessionID: sessionID)
+        await fabric.select(secondID)
+        await coordinator.cancel(sessionID: sessionID, providerID: firstID)
 
-        let cancelledSessions = await provider.cancelledSessions
-        XCTAssertEqual(cancelledSessions, [sessionID])
+        let firstCancelled = await first.cancelledSessions
+        let secondCancelled = await second.cancelledSessions
+        XCTAssertEqual(firstCancelled, [sessionID])
+        XCTAssertEqual(secondCancelled, [])
     }
 
     func testProviderErrorIsSurfacedWithoutFallbackOrFinalAssistantPersistence() async throws {
@@ -179,7 +219,7 @@ final class RequestCoordinatorTests: XCTestCase {
 
         var thrown: ProviderError?
         do {
-            let stream = await coordinator.stream(.fixture())
+            let stream = await coordinator.stream(.fixture(providerID: selectedID))
             for try await _ in stream {}
         } catch let error as ProviderError {
             thrown = error
@@ -249,7 +289,11 @@ final class RequestCoordinatorTests: XCTestCase {
                     sessionID: ModelSessionID(rawValue: "s-empty"),
                     conversationID: "c1",
                     text: "  \n\t ",
-                    modelID: "model-1",
+                    selection: ProviderSelectionSnapshot(
+                        providerID: providerID,
+                        modelID: "model-1",
+                        revision: 0
+                    ),
                     activeGoalID: nil
                 )
             )
@@ -412,12 +456,19 @@ private actor CoordinatorRecordingProvider: ModelProvider {
 }
 
 private extension AskRequest {
-    static func fixture() -> AskRequest {
+    static func fixture(
+        providerID: ModelProviderID = ModelProviderID(rawValue: "recording"),
+        modelID: String = "model-1"
+    ) -> AskRequest {
         AskRequest(
             sessionID: ModelSessionID(rawValue: "s1"),
             conversationID: "c1",
             text: "hello",
-            modelID: "model-1",
+            selection: ProviderSelectionSnapshot(
+                providerID: providerID,
+                modelID: modelID,
+                revision: 0
+            ),
             activeGoalID: nil
         )
     }

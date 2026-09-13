@@ -5,8 +5,6 @@ struct ShellProjectionSnapshot {
     let messages: [ChatMessage]
     let isBusy: Bool
     let statusMessage: String
-    let currentModelDisplay: String
-    let contextUsage: ContextUsage
     let isClipboardActive: Bool
     let isListeningActive: Bool
     let liveVoicePreview: String
@@ -18,8 +16,6 @@ struct ShellProjectionSnapshot {
         messages: [],
         isBusy: false,
         statusMessage: "Ready",
-        currentModelDisplay: "",
-        contextUsage: ContextUsage(usedTokens: 0, windowTokens: 1),
         isClipboardActive: false,
         isListeningActive: false,
         liveVoicePreview: "",
@@ -56,8 +52,6 @@ final class ShellViewModel {
     var messages: [ChatMessage] { snapshot.messages }
     var isBusy: Bool { snapshot.isBusy }
     var statusMessage: String { snapshot.statusMessage }
-    var currentModelDisplay: String { snapshot.currentModelDisplay }
-    var contextUsage: ContextUsage { snapshot.contextUsage }
     var isClipboardActive: Bool { snapshot.isClipboardActive }
     var isListeningActive: Bool { snapshot.isListeningActive }
     var liveVoicePreview: String { snapshot.liveVoicePreview }
