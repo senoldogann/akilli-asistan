@@ -104,6 +104,37 @@ final class CLIProcessRunnerTests: XCTestCase {
         XCTAssertEqual(events.last, .exited(1))
     }
 
+    /// Regression guard for a real hang: agent CLIs such as codex announce
+    /// "Reading additional input from stdin..." and block forever when they
+    /// inherit an open stdin pipe from the app. With stdin bound to a null device
+    /// the child sees immediate EOF and finishes.
+    func testRunnerBindsStdinSoChildrenCannotBlockOnInheritedInput() async throws {
+        let runner = CLIProcessRunner(
+            baseEnvironment: ["PATH": "/bin:/usr/bin", "HOME": "/tmp"]
+        )
+        // `cat` with no file arguments copies stdin to stdout: it only exits on its
+        // own if stdin is closed/empty.
+        let command = CLICommand(
+            sessionID: ModelSessionID(rawValue: "stdin"),
+            executable: URL(fileURLWithPath: "/bin/cat"),
+            arguments: [],
+            workingDirectory: nil,
+            timeoutSeconds: 5,
+            environmentOverrides: [:]
+        )
+
+        var events: [CLIProcessEvent] = []
+        for try await event in await runner.run(command) {
+            events.append(event)
+        }
+
+        XCTAssertEqual(
+            events.last,
+            .exited(0),
+            "A child that reads stdin must receive EOF instead of inheriting the app's input"
+        )
+    }
+
     func testCancelTerminatesActiveSession() async throws {
         let runner = CLIProcessRunner(
             baseEnvironment: ["PATH": "/bin:/usr/bin", "HOME": "/tmp"]

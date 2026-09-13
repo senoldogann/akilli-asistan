@@ -38,6 +38,23 @@ final class ProviderViewModel {
         snapshot.selection.modelID
     }
 
+    var selectedReasoningEffort: String? {
+        snapshot.selection.reasoningEffort
+    }
+
+    /// Reasoning levels published for the currently selected model. Empty until a
+    /// model is chosen explicitly, because the levels belong to the model.
+    var reasoningEffortOptions: [String] {
+        guard snapshot.selection.modelID != "default",
+              let provider = selectedProvider,
+              let model = provider.models.first(where: {
+                  $0.id == snapshot.selection.modelID
+              }) else {
+            return []
+        }
+        return model.reasoningEfforts
+    }
+
     func refresh() async {
         errorMessage = nil
         let refreshed = await controlPlane.refresh()
@@ -61,6 +78,16 @@ final class ProviderViewModel {
             await publish(updated)
         } catch {
             errorMessage = "Unable to select this model."
+        }
+    }
+
+    func selectReasoningEffort(_ effort: String?) async {
+        do {
+            errorMessage = nil
+            let updated = try await controlPlane.selectReasoningEffort(effort)
+            await publish(updated)
+        } catch {
+            errorMessage = "Unable to select this reasoning level."
         }
     }
 

@@ -77,6 +77,106 @@ final class CodexCLIProviderTests: XCTestCase {
         }
     }
 
+    /// Captured from a real `codex exec --json` run whose account hit its usage
+    /// limit. The provider states the reason; the app must show it instead of
+    /// collapsing it into an opaque malformed-output error.
+    func testCodexUsageLimitIsSurfacedAsTheProviderReason() async throws {
+        let fixture = [
+            #"{"type":"thread.started","thread_id":"thread-1"}"#,
+            #"{"type":"turn.started"}"#,
+            #"{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Skill descriptions were shortened."}}"#,
+            #"{"type":"error","message":"You've hit your usage limit. Upgrade to Pro or try again later."}"#,
+            #"{"type":"turn.failed","error":{"message":"You've hit your usage limit. Upgrade to Pro or try again later."}}"#
+        ].joined(separator: "\n") + "\n"
+        let runner = FixtureCLIProcessRunner(events: [
+            .stdout(Data(fixture.utf8)),
+            .exited(1)
+        ])
+        let provider = CodexCLIProvider(
+            locator: StubCLIExecutableLocator(paths: [
+                "codex": URL(fileURLWithPath: "/opt/homebrew/bin/codex")
+            ]),
+            runner: runner,
+            workspaceRoot: URL(fileURLWithPath: "/tmp/codex-limit", isDirectory: true)
+        )
+
+        let error = try await Self.capturedProviderError(from: provider)
+
+        XCTAssertEqual(
+            error,
+            .providerReported(
+                providerID: ModelProviderID(rawValue: "codex"),
+                message: "You've hit your usage limit. Upgrade to Pro or try again later."
+            )
+        )
+        XCTAssertTrue(
+            error.localizedDescription.contains("usage limit"),
+            "The user must see why Codex refused the turn, not an enum index"
+        )
+        XCTAssertFalse(error.localizedDescription.contains("error 7"))
+    }
+
+    /// A CLI that fails without structured JSON must still explain itself through
+    /// its (bounded, redacted) stderr instead of a bare exit status.
+    func testCodexNonzeroExitWithoutStructuredReasonFallsBackToStderr() async throws {
+        let runner = FixtureCLIProcessRunner(events: [
+            .stderr(Data("error: not signed in, run codex login\n".utf8)),
+            .exited(1)
+        ])
+        let provider = CodexCLIProvider(
+            locator: StubCLIExecutableLocator(paths: [
+                "codex": URL(fileURLWithPath: "/opt/homebrew/bin/codex")
+            ]),
+            runner: runner,
+            workspaceRoot: URL(fileURLWithPath: "/tmp/codex-stderr", isDirectory: true)
+        )
+
+        let error = try await Self.capturedProviderError(from: provider)
+
+        XCTAssertEqual(
+            error,
+            .providerReported(
+                providerID: ModelProviderID(rawValue: "codex"),
+                message: "error: not signed in, run codex login"
+            )
+        )
+    }
+
+    /// Provider text is untrusted: credential-shaped material must never reach the
+    /// user through an error message.
+    func testCodexStderrDiagnosticsRedactCredentialShapedText() async throws {
+        let runner = FixtureCLIProcessRunner(events: [
+            .stderr(Data("failed: Authorization: Bearer sk-live-abcdef1234567890\n".utf8)),
+            .exited(1)
+        ])
+        let provider = CodexCLIProvider(
+            locator: StubCLIExecutableLocator(paths: [
+                "codex": URL(fileURLWithPath: "/opt/homebrew/bin/codex")
+            ]),
+            runner: runner,
+            workspaceRoot: URL(fileURLWithPath: "/tmp/codex-secret", isDirectory: true)
+        )
+
+        let error = try await Self.capturedProviderError(from: provider)
+        let rendered = error.localizedDescription
+
+        XCTAssertFalse(rendered.contains("sk-live-abcdef1234567890"))
+        XCTAssertFalse(rendered.contains("Bearer sk-live"))
+        XCTAssertTrue(rendered.contains("<redacted>"))
+    }
+
+    private static func capturedProviderError(
+        from provider: CodexCLIProvider
+    ) async throws -> ProviderError {
+        do {
+            for try await _ in provider.stream(.fixture()) {}
+            XCTFail("Expected the Codex stream to fail")
+            throw ProviderError.providerUnavailable(providerID: ModelProviderID(rawValue: "codex"))
+        } catch let error as ProviderError {
+            return error
+        }
+    }
+
     func testCodexCancellationDelegatesToRunner() async {
         let runner = FixtureCLIProcessRunner(events: [])
         let provider = CodexCLIProvider(

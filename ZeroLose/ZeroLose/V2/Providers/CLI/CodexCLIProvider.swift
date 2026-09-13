@@ -27,8 +27,39 @@ nonisolated struct CodexCLIProvider: ModelProvider {
         )
     }
 
+    /// The Codex CLI publishes its own catalog; this build offers whatever that
+    /// catalog lists (with each model's own reasoning levels) instead of a
+    /// hardcoded guess. A failed or unreadable catalog simply yields no models,
+    /// which leaves the picker on "Default".
     func discoverModels() async throws -> [ModelDescriptor] {
-        []
+        guard let executable = locator.executable(named: "codex") else {
+            return []
+        }
+
+        let command = CLICommand(
+            sessionID: ModelSessionID(rawValue: "catalog-codex-\(UUID().uuidString)"),
+            executable: executable,
+            arguments: CodexModelCatalog.arguments,
+            workingDirectory: nil,
+            timeoutSeconds: CodexModelCatalog.timeoutSeconds,
+            environmentOverrides: [.noColor: "1"]
+        )
+
+        var stdout = Data()
+        do {
+            for try await event in await runner.run(command) {
+                switch event {
+                case .stdout(let data):
+                    stdout.append(data)
+                case .stderr, .exited:
+                    break
+                }
+            }
+        } catch {
+            return []
+        }
+
+        return CodexModelCatalog.models(from: stdout, providerID: id)
     }
 
     func stream(
@@ -64,6 +95,9 @@ nonisolated struct CodexCLIProvider: ModelProvider {
                 if !request.modelID.isEmpty, request.modelID != "default" {
                     arguments += ["--model", request.modelID]
                 }
+                if let effort = request.reasoningEffort, !effort.isEmpty {
+                    arguments += ["-c", "model_reasoning_effort=\"\(effort)\""]
+                }
                 arguments.append(CLIModelPromptRenderer.render(request))
 
                 let command = CLICommand(
@@ -76,6 +110,7 @@ nonisolated struct CodexCLIProvider: ModelProvider {
                 )
 
                 var parser = CodexJSONLParser()
+                var stderrTail = ""
                 do {
                     let processEvents = await runner.run(command)
                     for try await processEvent in processEvents {
@@ -84,17 +119,22 @@ nonisolated struct CodexCLIProvider: ModelProvider {
                             for event in try parser.consume(data) {
                                 continuation.yield(event)
                             }
-                        case .stderr:
-                            break
+                        case .stderr(let data):
+                            // Kept only to explain a failure; never yielded as model output.
+                            stderrTail = CLIProcessFailureText.appendedTail(
+                                stderrTail,
+                                chunk: data
+                            )
                         case .exited(let exitCode):
                             for event in try parser.finish() {
                                 continuation.yield(event)
                             }
                             guard exitCode == 0 else {
                                 continuation.finish(
-                                    throwing: ProviderError.processFailed(
+                                    throwing: CLIProcessFailureText.failure(
                                         providerID: id,
-                                        exitCode: exitCode
+                                        exitCode: exitCode,
+                                        stderrTail: stderrTail
                                     )
                                 )
                                 return
@@ -154,6 +194,33 @@ nonisolated struct CodexCLIProvider: ModelProvider {
         case .launchFailed, .duplicateSession, .disallowedExecutable:
             return .providerUnavailable(providerID: id)
         }
+    }
+}
+
+nonisolated enum CLIProcessFailureText {
+    private static let maximumTailLength = 2_000
+
+    /// Keeps a bounded tail of a child process's stderr so a failure can be
+    /// explained, without unbounded buffering of provider output.
+    static func appendedTail(_ existing: String, chunk: Data) -> String {
+        guard let text = String(data: chunk, encoding: .utf8) else { return existing }
+        let combined = existing + text
+        guard combined.count > maximumTailLength else { return combined }
+        return String(combined.suffix(maximumTailLength))
+    }
+
+    /// Prefers the provider's own structured message and falls back to a bounded,
+    /// redacted stderr tail so a bare exit status is never the whole story.
+    static func failure(
+        providerID: ModelProviderID,
+        exitCode: Int32,
+        stderrTail: String
+    ) -> ProviderError {
+        let tail = ProviderDiagnosticText.sanitized(stderrTail)
+        guard !tail.isEmpty else {
+            return .processFailed(providerID: providerID, exitCode: exitCode)
+        }
+        return .reportedByProvider(providerID, message: tail)
     }
 }
 
@@ -245,11 +312,29 @@ private nonisolated struct CodexJSONLParser {
             emittedCompleted = true
             return [.completed]
 
-        case "turn.failed", "error":
-            throw ProviderError.malformedOutput(providerID: ModelProviderID(rawValue: "codex"))
+        // Codex reports its own failures here (usage limits, auth problems, the
+        // server refusing the turn). Surfacing that text is what makes the error
+        // actionable; a bare `.malformedOutput` hides the real cause.
+        case "error":
+            throw ProviderError.reportedByProvider(
+                ModelProviderID(rawValue: "codex"),
+                message: Self.message(in: object) ?? ""
+            )
+
+        case "turn.failed":
+            throw ProviderError.reportedByProvider(
+                ModelProviderID(rawValue: "codex"),
+                message: Self.message(in: object["error"] as? [String: Any]) ?? Self.message(in: object) ?? ""
+            )
 
         default:
             return []
         }
+    }
+
+    private static func message(in object: [String: Any]?) -> String? {
+        guard let value = object?["message"] as? String else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }

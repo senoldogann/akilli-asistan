@@ -75,6 +75,49 @@ struct ProviderSelectorView: View {
             }
             .menuStyle(.borderlessButton)
             .help("Model")
+
+            if !viewModel.reasoningEffortOptions.isEmpty {
+                Menu {
+                    Button {
+                        Task { await viewModel.selectReasoningEffort(nil) }
+                    } label: {
+                        if viewModel.selectedReasoningEffort == nil {
+                            Label("Auto", systemImage: "checkmark")
+                        } else {
+                            Text("Auto")
+                        }
+                    }
+
+                    Divider()
+
+                    ForEach(viewModel.reasoningEffortOptions, id: \.self) { effort in
+                        Button {
+                            Task { await viewModel.selectReasoningEffort(effort) }
+                        } label: {
+                            if effort == viewModel.selectedReasoningEffort {
+                                Label(effort, systemImage: "checkmark")
+                            } else {
+                                Text(effort)
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "gauge.with.dots.needle.33percent")
+                        Text(viewModel.selectedReasoningEffort ?? "Auto")
+                            .lineLimit(1)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 8, weight: .bold))
+                    }
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(Color.primary.opacity(0.05))
+                    .clipShape(Capsule())
+                }
+                .menuStyle(.borderlessButton)
+                .help("Reasoning effort for the selected model")
+            }
         }
     }
 

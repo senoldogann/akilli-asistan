@@ -27,8 +27,40 @@ nonisolated struct OpenCodeCLIProvider: ModelProvider {
         )
     }
 
+    /// `opencode models` lists the models this OpenCode install can actually run.
+    /// OpenCode exposes provider-specific reasoning variants through `--variant`
+    /// but does not publish the valid values, so no effort options are advertised
+    /// for these models rather than guessing them.
     func discoverModels() async throws -> [ModelDescriptor] {
-        []
+        guard let executable = locator.executable(named: "opencode") else {
+            return []
+        }
+
+        let command = CLICommand(
+            sessionID: ModelSessionID(rawValue: "catalog-opencode-\(UUID().uuidString)"),
+            executable: executable,
+            arguments: ["models"],
+            workingDirectory: nil,
+            timeoutSeconds: 60,
+            environmentOverrides: [.noColor: "1"]
+        )
+
+        var stdout = Data()
+        do {
+            for try await event in await runner.run(command) {
+                switch event {
+                case .stdout(let data):
+                    stdout.append(data)
+                case .stderr, .exited:
+                    break
+                }
+            }
+        } catch {
+            return []
+        }
+
+        let listing = String(decoding: stdout, as: UTF8.self)
+        return OpenCodeModelCatalog.models(from: listing, providerID: id)
     }
 
     func stream(
@@ -61,6 +93,9 @@ nonisolated struct OpenCodeCLIProvider: ModelProvider {
                 if !request.modelID.isEmpty, request.modelID != "default" {
                     arguments += ["--model", request.modelID]
                 }
+                if let effort = request.reasoningEffort, !effort.isEmpty {
+                    arguments += ["--variant", effort]
+                }
                 arguments.append(CLIModelPromptRenderer.render(request))
 
                 let command = CLICommand(
@@ -76,6 +111,7 @@ nonisolated struct OpenCodeCLIProvider: ModelProvider {
                 )
 
                 var parser = OpenCodeJSONLParser()
+                var stderrTail = ""
                 do {
                     let processEvents = await runner.run(command)
                     for try await processEvent in processEvents {
@@ -84,17 +120,22 @@ nonisolated struct OpenCodeCLIProvider: ModelProvider {
                             for event in try parser.consume(data) {
                                 continuation.yield(event)
                             }
-                        case .stderr:
-                            break
+                        case .stderr(let data):
+                            // Kept only to explain a failure; never yielded as model output.
+                            stderrTail = CLIProcessFailureText.appendedTail(
+                                stderrTail,
+                                chunk: data
+                            )
                         case .exited(let exitCode):
                             for event in try parser.finish() {
                                 continuation.yield(event)
                             }
                             guard exitCode == 0 else {
                                 continuation.finish(
-                                    throwing: ProviderError.processFailed(
+                                    throwing: CLIProcessFailureText.failure(
                                         providerID: id,
-                                        exitCode: exitCode
+                                        exitCode: exitCode,
+                                        stderrTail: stderrTail
                                     )
                                 )
                                 return
@@ -228,11 +269,34 @@ private nonisolated struct OpenCodeJSONLParser {
         case "tool", "tool_use", "tool-use":
             throw ProviderError.malformedOutput(providerID: ModelProviderID(rawValue: "opencode"))
 
+        // OpenCode reports its own failures here, e.g.
+        // {"type":"error","error":{"name":"UnknownError","data":{"message":"…","ref":"err_…"}}}
+        // The message (plus its reference) is far more useful than "malformed output".
         case "error":
-            throw ProviderError.malformedOutput(providerID: ModelProviderID(rawValue: "opencode"))
+            throw ProviderError.reportedByProvider(
+                ModelProviderID(rawValue: "opencode"),
+                message: Self.failureMessage(in: object)
+            )
 
         default:
             return []
         }
+    }
+
+    private static func failureMessage(in object: [String: Any]) -> String {
+        let error = object["error"] as? [String: Any]
+        let data = error?["data"] as? [String: Any]
+        let name = error?["name"] as? String
+        let message = (data?["message"] as? String)
+            ?? (object["message"] as? String)
+            ?? name
+            ?? ""
+
+        var text = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let reference = data?["ref"] as? String,
+           !reference.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            text += text.isEmpty ? "Reference: \(reference)" : " (ref \(reference))"
+        }
+        return text
     }
 }

@@ -286,26 +286,153 @@ final class ProviderControlPlaneTests: XCTestCase {
     }
 }
 
+final class ReasoningEffortSelectionTests: XCTestCase {
+    private func makeControlPlane(
+        models: [String] = ["gpt-6-astra"],
+        efforts: [String] = ["low", "medium", "high", "xhigh"],
+        storedModel: String? = "gpt-6-astra",
+        storedEffort: String? = nil
+    ) -> (ProviderControlPlane, MemoryProviderSelectionStore) {
+        let provider = ConfigurableControlPlaneProvider(
+            id: "codex",
+            capabilities: [.textStreaming, .reasoningControl],
+            models: models,
+            reasoningEfforts: efforts,
+            defaultReasoningEffort: efforts.first
+        )
+        let fabric = ModelProviderFabric(
+            providers: [provider],
+            selectedProviderID: provider.id
+        )
+        let store = MemoryProviderSelectionStore(
+            providerID: "codex",
+            modelID: storedModel,
+            reasoningEffort: storedEffort
+        )
+        return (ProviderControlPlane(fabric: fabric, persistence: store), store)
+    }
+
+    func testSelectingAPublishedEffortIsBoundAndPersisted() async throws {
+        let (controlPlane, store) = makeControlPlane()
+        _ = await controlPlane.snapshot()
+
+        let updated = try await controlPlane.selectReasoningEffort("xhigh")
+
+        XCTAssertEqual(updated.selection.reasoningEffort, "xhigh")
+        let boundEffort = await store.effort()
+        XCTAssertEqual(boundEffort, "xhigh")
+    }
+
+    func testClearingTheEffortFallsBackToTheModelDefault() async throws {
+        let (controlPlane, store) = makeControlPlane(storedEffort: "high")
+        _ = await controlPlane.snapshot()
+
+        let updated = try await controlPlane.selectReasoningEffort(nil)
+
+        XCTAssertNil(updated.selection.reasoningEffort)
+        let persistedEffort = await store.effort()
+        XCTAssertNil(persistedEffort)
+    }
+
+    func testAnEffortTheModelDoesNotPublishIsRejected() async throws {
+        let (controlPlane, store) = makeControlPlane()
+        _ = await controlPlane.snapshot()
+
+        do {
+            _ = try await controlPlane.selectReasoningEffort("ultra")
+            XCTFail("An unpublished level must not be forwarded to the CLI")
+        } catch let error as ProviderControlPlaneError {
+            XCTAssertEqual(
+                error,
+                .invalidReasoningEffort(
+                    providerID: ModelProviderID(rawValue: "codex"),
+                    modelID: "gpt-6-astra",
+                    effort: "ultra"
+                )
+            )
+        }
+        let persistedEffort = await store.effort()
+        XCTAssertNil(persistedEffort)
+    }
+
+    func testEffortIsRejectedWhileTheSelectionIsTheProviderDefault() async throws {
+        let (controlPlane, _) = makeControlPlane(storedModel: "default")
+        _ = await controlPlane.snapshot()
+
+        do {
+            _ = try await controlPlane.selectReasoningEffort("high")
+            XCTFail(
+                "Without a chosen model the app cannot know which levels apply"
+            )
+        } catch let error as ProviderControlPlaneError {
+            XCTAssertEqual(
+                error,
+                .invalidReasoningEffort(
+                    providerID: ModelProviderID(rawValue: "codex"),
+                    modelID: "default",
+                    effort: "high"
+                )
+            )
+        }
+    }
+
+    func testChangingTheModelClearsTheBoundEffort() async throws {
+        let (controlPlane, store) = makeControlPlane(models: ["gpt-6-astra", "gpt-5-mini"])
+        _ = await controlPlane.snapshot()
+        _ = try await controlPlane.selectReasoningEffort("xhigh")
+        let boundEffort = await store.effort()
+        XCTAssertEqual(boundEffort, "xhigh")
+
+        let updated = try await controlPlane.selectModel("gpt-5-mini")
+
+        XCTAssertNil(updated.selection.reasoningEffort)
+        let persistedEffort = await store.effort()
+        XCTAssertNil(persistedEffort)
+    }
+
+    func testStalePersistedEffortIsDroppedOnBootstrap() async {
+        let (controlPlane, store) = makeControlPlane(
+            efforts: ["low", "high"],
+            storedEffort: "xhigh"
+        )
+
+        let snapshot = await controlPlane.snapshot()
+
+        XCTAssertNil(snapshot.selection.reasoningEffort)
+        let persistedEffort = await store.effort()
+        XCTAssertNil(persistedEffort)
+    }
+}
+
 private actor MemoryProviderSelectionStore: ProviderSelectionPersisting {
     private var providerID: String?
     private var modelID: String?
+    private var reasoningEffort: String?
 
-    init(providerID: String?, modelID: String?) {
+    init(providerID: String?, modelID: String?, reasoningEffort: String? = nil) {
         self.providerID = providerID
         self.modelID = modelID
+        self.reasoningEffort = reasoningEffort
     }
 
     func loadProviderID() async -> String? { providerID }
     func loadModelID() async -> String? { modelID }
+    func loadReasoningEffort() async -> String? { reasoningEffort }
 
     func save(providerID: String, modelID: String) async {
         self.providerID = providerID
         self.modelID = modelID
     }
 
+    func saveReasoningEffort(_ effort: String?) async {
+        reasoningEffort = effort
+    }
+
     func values() -> (providerID: String?, modelID: String?) {
         (providerID, modelID)
     }
+
+    func effort() -> String? { reasoningEffort }
 }
 
 private enum ConfigurableControlPlaneProviderError: Error {
@@ -321,6 +448,8 @@ private final class ConfigurableControlPlaneProvider: ModelProvider, Sendable {
     private let modelCapabilities: ModelCapabilities
     private let discoveryError: ConfigurableControlPlaneProviderError?
     private let discoveryDelayNanoseconds: UInt64
+    private let reasoningEfforts: [String]
+    private let defaultReasoningEffort: String?
 
     init(
         id: String,
@@ -330,7 +459,9 @@ private final class ConfigurableControlPlaneProvider: ModelProvider, Sendable {
         models: [String] = ["default"],
         modelCapabilities: ModelCapabilities? = nil,
         discoveryError: ConfigurableControlPlaneProviderError? = nil,
-        discoveryDelayNanoseconds: UInt64 = 0
+        discoveryDelayNanoseconds: UInt64 = 0,
+        reasoningEfforts: [String] = [],
+        defaultReasoningEffort: String? = nil
     ) {
         self.id = ModelProviderID(rawValue: id)
         self.displayName = displayName ?? id.capitalized
@@ -340,6 +471,8 @@ private final class ConfigurableControlPlaneProvider: ModelProvider, Sendable {
         self.modelCapabilities = modelCapabilities ?? capabilities
         self.discoveryError = discoveryError
         self.discoveryDelayNanoseconds = discoveryDelayNanoseconds
+        self.reasoningEfforts = reasoningEfforts
+        self.defaultReasoningEffort = defaultReasoningEffort
     }
 
     func status() async -> ProviderStatus {
@@ -360,7 +493,9 @@ private final class ConfigurableControlPlaneProvider: ModelProvider, Sendable {
                 id: $0,
                 displayName: $0,
                 providerID: id,
-                capabilities: modelCapabilities
+                capabilities: modelCapabilities,
+                reasoningEfforts: reasoningEfforts,
+                defaultReasoningEffort: defaultReasoningEffort
             )
         }
     }

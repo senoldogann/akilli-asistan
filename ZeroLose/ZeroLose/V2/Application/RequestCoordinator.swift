@@ -97,7 +97,8 @@ actor RequestCoordinator {
                 conversation: conversation,
                 modelID: request.selection.modelID,
                 tools: filteredReadOnlyToolSchemas(),
-                responseMode: .text
+                responseMode: .text,
+                reasoningEffort: request.selection.reasoningEffort
             )
 
             let providerStream = try await providerFabric.stream(
