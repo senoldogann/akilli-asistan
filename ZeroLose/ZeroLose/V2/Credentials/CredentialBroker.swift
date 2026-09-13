@@ -27,6 +27,11 @@ protocol CredentialBrokering: Sendable {
     func availability(for scope: CredentialScope) async -> CredentialAvailability
     func issueHandle(for scope: CredentialScope) async throws -> CredentialHandle
     func revoke(scope: CredentialScope) async
+
+    /// Invalidates exactly the given issued handles without revoking their scopes, so a
+    /// handle cannot outlive the tool invocation it was issued for while later
+    /// invocations that need the same scope keep working.
+    func discardHandles(_ handles: [CredentialHandle]) async
 }
 
 actor InMemoryCredentialBroker: CredentialBrokering {
@@ -55,6 +60,14 @@ actor InMemoryCredentialBroker: CredentialBrokering {
         availableScopes.remove(scope)
         activeHandles = Set(activeHandles.filter { $0.scope != scope })
     }
+
+    func discardHandles(_ handles: [CredentialHandle]) {
+        activeHandles.subtract(handles)
+    }
+
+    /// Number of handles that would still validate. Working memory must stay bounded:
+    /// completed invocations must not accumulate live handles.
+    var outstandingHandleCount: Int { activeHandles.count }
 
     func isValid(_ handle: CredentialHandle) -> Bool {
         availableScopes.contains(handle.scope) && activeHandles.contains(handle)

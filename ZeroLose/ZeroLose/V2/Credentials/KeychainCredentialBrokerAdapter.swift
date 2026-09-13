@@ -37,6 +37,10 @@ actor KeychainCredentialBrokerAdapter: CredentialBrokering, OpenAIKeyStoring {
         activeHandles = Set(activeHandles.filter { $0.scope != scope })
     }
 
+    func discardHandles(_ handles: [CredentialHandle]) {
+        activeHandles.subtract(handles)
+    }
+
     func isValid(_ handle: CredentialHandle) -> Bool {
         !revokedScopes.contains(handle.scope)
             && isCredentialPresent(for: handle.scope)

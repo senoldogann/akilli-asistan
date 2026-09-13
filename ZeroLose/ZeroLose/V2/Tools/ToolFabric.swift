@@ -123,10 +123,19 @@ actor ToolFabric {
             )
         }
 
-        return try await provider.execute(
-            descriptor: descriptor,
-            invocation: invocation,
-            credentialHandles: handles
-        )
+        // Handles are scoped to this invocation: they must never stay valid after it
+        // ends, but the underlying scopes must remain available for later invocations.
+        do {
+            let receipt = try await provider.execute(
+                descriptor: descriptor,
+                invocation: invocation,
+                credentialHandles: handles
+            )
+            await credentialBroker.discardHandles(handles)
+            return receipt
+        } catch {
+            await credentialBroker.discardHandles(handles)
+            throw error
+        }
     }
 }
