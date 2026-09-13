@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import XCTest
 @testable import ZeroLose
 
@@ -94,6 +95,72 @@ final class MainWorkspaceBoundaryTests: XCTestCase {
         XCTAssertTrue(composer.contains("viewModel.isBusy"), "Chat Stop control must still gate on isBusy")
     }
 
+    /// Structural counterpart to the source-text scans above: the main workspace and
+    /// Settings must receive the *same* `ProviderViewModel` object, so a duplicate or
+    /// recomputed provider state cannot be introduced through indirection.
+    @MainActor
+    func testMainWorkspaceAndSettingsShareOneProviderViewModelInstance() throws {
+        let defaults = try XCTUnwrap(
+            UserDefaults(suiteName: "MainWorkspaceBoundaryTests.shared-provider-view-model")
+        )
+        defaults.removePersistentDomain(
+            forName: "MainWorkspaceBoundaryTests.shared-provider-view-model"
+        )
+
+        let fabric = ModelProviderFabric(
+            providers: [
+                RecordingModelProvider(
+                    id: "codex",
+                    capabilities: [.textStreaming, .jsonOutput]
+                )
+            ],
+            selectedProviderID: ModelProviderID(rawValue: "codex")
+        )
+        let providerViewModel = ProviderViewModel(
+            controlPlane: ProviderControlPlane(
+                fabric: fabric,
+                persistence: UserDefaultsProviderSelectionStore(defaults: defaults)
+            ),
+            settingsController: WorkspaceBoundarySettingsController()
+        )
+
+        let commandSender = WorkspaceBoundaryCommandSender()
+        let settingsViewModel = SettingsViewModel(commandSender: commandSender)
+        let contentView = ContentView(
+            viewModel: ShellViewModel(controller: WorkspaceBoundaryShellController()),
+            chatViewModel: ChatViewModel(commandSender: commandSender),
+            providerViewModel: providerViewModel,
+            settingsViewModel: settingsViewModel,
+            taskRuntimeViewModel: TaskRuntimeViewModel(commandSender: commandSender),
+            approvalViewModel: ApprovalViewModel(commandSender: commandSender),
+            timelineProjection: TimelineProjection(),
+            runtimeProjectionCoordinator: nil,
+            runtimeProjectionInitializationError: nil
+        )
+        let settingsView = SettingsView(
+            isPresented: .constant(false),
+            viewModel: settingsViewModel,
+            providerViewModel: providerViewModel
+        )
+
+        XCTAssertTrue(
+            contentView.providerViewModel === providerViewModel,
+            "ContentView must store the injected ProviderViewModel instead of deriving its own"
+        )
+        XCTAssertTrue(
+            settingsView.providerViewModel === providerViewModel,
+            "SettingsView must store the injected ProviderViewModel instead of deriving its own"
+        )
+        XCTAssertTrue(
+            contentView.providerViewModel === settingsView.providerViewModel,
+            "Main workspace and Settings must observe one shared ProviderViewModel instance"
+        )
+        XCTAssertEqual(
+            ObjectIdentifier(contentView.providerViewModel),
+            ObjectIdentifier(settingsView.providerViewModel)
+        )
+    }
+
     private func functionBody(
         named name: String,
         in source: String,
@@ -128,4 +195,35 @@ final class MainWorkspaceBoundaryTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
     }
+}
+
+private actor WorkspaceBoundarySettingsController: ProviderSettingsControlling {
+    private var configured = false
+
+    func isOpenAIKeyConfigured() async -> Bool { configured }
+
+    func saveOpenAIAPIKey(_ value: String) async throws {
+        configured = !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    func removeOpenAIAPIKey() async throws {
+        configured = false
+    }
+}
+
+private struct WorkspaceBoundaryCommandSender: ApplicationCommandSending {
+    func send(_ command: ApplicationCommand) async throws {}
+}
+
+@MainActor
+private final class WorkspaceBoundaryShellController: ShellFeatureControlling {
+    func clearHistory() {}
+    func toggleClipboard() {}
+    func toggleListening() {}
+    func stopResponse() {}
+    func submitQuery(_ text: String, webSearchMode: WebSearchMode) {}
+    func refineAnswer(messageID: UUID) {}
+    func clearAttachment() {}
+    func attachFile(from url: URL) {}
+    func analyzeScreen() {}
 }
