@@ -118,12 +118,7 @@ actor OpenAITransport: OpenAITransporting {
     nonisolated static func requestBody(
         for request: OpenAITransportRequest
     ) throws -> Data {
-        let input: [[String: Any]] = request.input.map {
-            [
-                "role": $0.role.rawValue,
-                "content": $0.content
-            ]
-        }
+        let input: [[String: Any]] = request.input.map(inputItem(for:))
 
         var tools: [[String: Any]] = []
         tools.reserveCapacity(request.tools.count)
@@ -158,6 +153,36 @@ actor OpenAITransport: OpenAITransporting {
             throw OpenAITransportError.malformedResponse
         }
         return try JSONSerialization.data(withJSONObject: payload)
+    }
+
+    /// Encodes one conversation turn for the Responses API.
+    ///
+    /// Text-only turns keep the compact `content: String` shape. A turn carrying
+    /// image payloads switches to the multimodal content-part array documented for
+    /// the Responses API: `input_text` plus `input_image` with a data URL.
+    /// Image parts are only emitted for `user` messages, which is the only role the
+    /// Responses contract accepts them on.
+    private nonisolated static func inputItem(
+        for item: OpenAITransportInput
+    ) -> [String: Any] {
+        var payload: [String: Any] = ["role": item.role.rawValue]
+        guard item.role == .user, !item.images.isEmpty else {
+            payload["content"] = item.content
+            return payload
+        }
+
+        var content: [[String: Any]] = []
+        if !item.content.isEmpty {
+            content.append(["type": "input_text", "text": item.content])
+        }
+        content.append(contentsOf: item.images.map { image in
+            [
+                "type": "input_image",
+                "image_url": "data:image/jpeg;base64,\(image.base64EncodedString())"
+            ]
+        })
+        payload["content"] = content
+        return payload
     }
 
     private nonisolated static func collect(

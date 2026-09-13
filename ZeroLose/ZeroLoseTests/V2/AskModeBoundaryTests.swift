@@ -12,12 +12,17 @@ final class AskModeBoundaryTests: XCTestCase {
         XCTAssertTrue(source.contains("private let requestCoordinator: RequestCoordinator"))
     }
 
+    /// `processAsk` stages the turn and delegates to the shared `streamAsk`
+    /// helper, so the guard inspects both bodies: the coordinator must own the
+    /// stream, and no legacy interview/provider orchestration may appear in either.
     func testNormalAskPathContainsNoLegacyInterviewOrProviderSpecificOrchestration() throws {
         let source = try productionSource("V2/Application/V2ShellRuntimeController.swift")
         let askBody = try XCTUnwrap(functionBody(named: "processAsk", in: source))
+        let streamBody = try XCTUnwrap(functionBody(named: "streamAsk", in: source))
 
-        XCTAssertTrue(askBody.contains("requestCoordinator.stream("))
-        XCTAssertTrue(askBody.contains("case .textDelta"))
+        XCTAssertTrue(askBody.contains("streamAsk("))
+        XCTAssertTrue(streamBody.contains("requestCoordinator.stream("))
+        XCTAssertTrue(streamBody.contains("case .textDelta"))
 
         for forbidden in [
             "intelligence" + "Service",
@@ -29,6 +34,7 @@ final class AskModeBoundaryTests: XCTestCase {
             "nativeTools:"
         ] {
             XCTAssertFalse(askBody.contains(forbidden), "Normal Ask path still references \(forbidden)")
+            XCTAssertFalse(streamBody.contains(forbidden), "Shared ask stream still references \(forbidden)")
         }
     }
 

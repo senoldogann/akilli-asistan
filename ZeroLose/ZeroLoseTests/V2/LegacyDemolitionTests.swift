@@ -61,11 +61,21 @@ final class LegacyDemolitionTests: XCTestCase {
         )
     }
 
-    func testShellRuntimeInjectsV2NativeToolsIntoModelBoundary() throws {
+    /// The shell chat turn must delegate to the V2 request coordinator and must
+    /// not own a legacy model bridge or a legacy tool registry. Tool exposure is
+    /// owned by the V2 tool runtime (agent planning + facade), not the shell.
+    func testShellRuntimeDelegatesModelTurnsToV2CoordinatorWithoutLegacyBridge() throws {
         let source = try productionSource("V2/Application/V2ShellRuntimeController.swift")
-        XCTAssertTrue(source.contains("nativeToolRuntime.configuration()"))
-        XCTAssertTrue(source.contains("nativeTools: toolConfiguration.tools"))
-        XCTAssertTrue(source.contains("nativeToolExecutor: toolConfiguration.executor"))
+        XCTAssertTrue(source.contains("requestCoordinator.stream("))
+        XCTAssertTrue(source.contains("private let requestCoordinator: RequestCoordinator"))
+        XCTAssertTrue(source.contains("nativeToolRuntime.setAuthorityMode("))
+        for forbidden in [
+            "intelligence" + "Service",
+            "Ollama" + "Service",
+            "AgentCapability" + "Registry",
+        ] {
+            XCTAssertFalse(source.contains(forbidden), "Shell runtime still references \(forbidden)")
+        }
     }
 
     func testShellViewModelExposesNoPhysicalExecutionCommands() throws {
@@ -90,20 +100,20 @@ final class LegacyDemolitionTests: XCTestCase {
         }
     }
 
-    func testModelProviderDoesNotSelectToolsFromLegacyCapabilityRegistry() throws {
-        let source = try productionSource("Services/OllamaService.swift")
-        XCTAssertFalse(
-            source.contains("AgentCapability" + "Registry"),
-            "Model provider still owns legacy tool selection"
-        )
-    }
-
-    func testIntelligenceServiceDoesNotInjectLegacyAutomationPrompt() throws {
-        let source = try productionSource("Services/IntelligenceService.swift")
-        XCTAssertFalse(
-            source.contains("Automation" + "Library"),
-            "IntelligenceService still injects legacy automation prompt state"
-        )
+    /// The legacy model bridge is fully retired: no provider service may own tool
+    /// selection, and the interview-era prompt builder is gone from disk.
+    func testLegacyModelBridgeAndAutomationPromptAreRemovedFromDisk() {
+        let productionRoot = repositoryRoot().appendingPathComponent("ZeroLose")
+        for relativePath in [
+            "Services/Ollama" + "Service.swift",
+            "Services/Intelligence" + "Service.swift",
+        ] {
+            let url = productionRoot.appendingPathComponent(relativePath)
+            XCTAssertFalse(
+                FileManager.default.fileExists(atPath: url.path),
+                "Retired legacy model bridge still exists: \(relativePath)"
+            )
+        }
     }
 
     func testObsoleteLegacyExecutionSourcesAreRemoved() {

@@ -309,6 +309,72 @@ final class RequestCoordinatorTests: XCTestCase {
         XCTAssertEqual(storedCount, 0)
     }
 
+    func testImageRequestFailsClosedWhenBoundProviderLacksVision() async throws {
+        let providerID = ModelProviderID(rawValue: "text-only")
+        let provider = CoordinatorRecordingProvider(id: providerID)
+        let store = CoordinatorConversationStore()
+        let coordinator = RequestCoordinator(
+            contextOrchestrator: ContextOrchestrator(
+                sources: [],
+                policy: ContextPolicy(maxCharacters: 4_000, minimumRelevance: 0)
+            ),
+            providerFabric: ModelProviderFabric(
+                providers: [provider],
+                selectedProviderID: providerID
+            ),
+            conversationStore: store
+        )
+
+        var thrown: RequestCoordinatorError?
+        do {
+            let stream = await coordinator.stream(
+                .fixture(imageData: Data([0x01]))
+            )
+            for try await _ in stream {}
+            XCTFail("Expected the vision-less provider to be rejected")
+        } catch let error as RequestCoordinatorError {
+            thrown = error
+        }
+
+        XCTAssertEqual(thrown, .visionUnsupported)
+        let providerRequestCount = await provider.requests.count
+        XCTAssertEqual(providerRequestCount, 0)
+        let storedCount = try await store.count()
+        XCTAssertEqual(storedCount, 0)
+    }
+
+    func testImageRequestForwardsImageToVisionCapableProvider() async throws {
+        let providerID = ModelProviderID(rawValue: "vision")
+        let image = Data([0x0F, 0xF0])
+        let provider = CoordinatorRecordingProvider(
+            id: providerID,
+            capabilities: [.textStreaming, .vision]
+        )
+        let coordinator = RequestCoordinator(
+            contextOrchestrator: ContextOrchestrator(
+                sources: [],
+                policy: ContextPolicy(maxCharacters: 4_000, minimumRelevance: 0)
+            ),
+            providerFabric: ModelProviderFabric(
+                providers: [provider],
+                selectedProviderID: providerID
+            ),
+            conversationStore: CoordinatorConversationStore()
+        )
+
+        let stream = await coordinator.stream(
+            .fixture(providerID: providerID, imageData: image)
+        )
+        for try await _ in stream {}
+
+        let requests = await provider.requests
+        let request = try XCTUnwrap(requests.first)
+        let last = try XCTUnwrap(request.conversation.last)
+        XCTAssertEqual(last.role, .user)
+        XCTAssertEqual(last.images, [image])
+        XCTAssertTrue(request.conversation.dropLast().allSatisfy { $0.images.isEmpty })
+    }
+
     private func toolSchema(name: String) -> ModelToolSchema {
         ModelToolSchema(
             name: name,
@@ -375,7 +441,7 @@ private actor CoordinatorConversationStore: ConversationStoring {
 private actor CoordinatorRecordingProvider: ModelProvider {
     let id: ModelProviderID
     let displayName: String
-    let capabilities: ModelCapabilities = [.textStreaming]
+    let capabilities: ModelCapabilities
 
     private let emittedEvents: [ModelEvent]
     private let terminalError: ProviderError?
@@ -387,13 +453,15 @@ private actor CoordinatorRecordingProvider: ModelProvider {
         id: ModelProviderID,
         events: [ModelEvent] = [.completed],
         terminalError: ProviderError? = nil,
-        order: CoordinatorOrderRecorder? = nil
+        order: CoordinatorOrderRecorder? = nil,
+        capabilities: ModelCapabilities = [.textStreaming]
     ) {
         self.id = id
         displayName = id.rawValue.capitalized
         emittedEvents = events
         self.terminalError = terminalError
         self.order = order
+        self.capabilities = capabilities
     }
 
     func status() async -> ProviderStatus {
@@ -458,7 +526,8 @@ private actor CoordinatorRecordingProvider: ModelProvider {
 private extension AskRequest {
     static func fixture(
         providerID: ModelProviderID = ModelProviderID(rawValue: "recording"),
-        modelID: String = "model-1"
+        modelID: String = "model-1",
+        imageData: Data? = nil
     ) -> AskRequest {
         AskRequest(
             sessionID: ModelSessionID(rawValue: "s1"),
@@ -469,7 +538,8 @@ private extension AskRequest {
                 modelID: modelID,
                 revision: 0
             ),
-            activeGoalID: nil
+            activeGoalID: nil,
+            imageData: imageData
         )
     }
 }

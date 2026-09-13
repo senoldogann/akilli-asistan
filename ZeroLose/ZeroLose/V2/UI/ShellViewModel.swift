@@ -1,6 +1,16 @@
 import Foundation
 import Observation
 
+/// Caller-side hint that the user asked for a web-grounded answer.
+///
+/// The V2 chat turn routes through the provider coordinator, which decides tool
+/// use from the bound provider's capabilities, so this hint is currently carried
+/// only for the shell contract and persistence of the toggle state.
+enum WebSearchMode: Sendable {
+    case automatic
+    case forceOn
+}
+
 struct ShellProjectionSnapshot {
     let messages: [ChatMessage]
     let isBusy: Bool

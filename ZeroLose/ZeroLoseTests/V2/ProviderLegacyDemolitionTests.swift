@@ -5,25 +5,18 @@ import XCTest
 /// Permanent guard for Task 8 of the V2 UI control plane cutover.
 ///
 /// The V2 provider control plane is the single authority for Chat/Agent routing.
-/// Legacy `LLMProvider` / `AIModelNames` / `OllamaService` / `llm_provider` /
-/// `custom*Model` state may only survive inside the explicitly documented
-/// compatibility closure below, and must never appear in the primary product
-/// paths (Views, V2 UI, V2 Application, V2 Providers).
+/// The legacy `LLMProvider` / `AIModelNames` / `OllamaService` stack is fully
+/// retired, so the compatibility closure is now empty: any production file that
+/// mentions those identifiers is a regression. The single historical
+/// `llm_provider` default survives only in the one migration-only reader, which
+/// never routes a request.
 final class ProviderLegacyDemolitionTests: XCTestCase {
-    /// Files allowed to reference legacy provider authority while their remaining
-    /// general behaviour is migrated off the legacy router. Removing a file from
-    /// this list is progress; adding one is a regression and must be justified.
-    private static let legacyAuthorityClosure = [
-        "Resources/Constants.swift",
-        "Services/DependencyContainer.swift",
-        "Services/GroqService.swift",
-        "Services/IntelligenceService.swift",
-        "Services/OllamaService.swift",
-    ]
+    /// Files allowed to reference legacy provider authority. Empty means the
+    /// legacy router is gone; adding an entry is a regression.
+    private static let legacyAuthorityClosure: [String] = []
 
     /// Files allowed to read the legacy `llm_provider` default.
     private static let legacyDefaultReaders = [
-        "Resources/Constants.swift",
         "V2/Migration/SettingsMigrationCoordinator.swift",
     ]
 
@@ -91,7 +84,7 @@ final class ProviderLegacyDemolitionTests: XCTestCase {
         XCTAssertEqual(
             closure.sorted(),
             Self.legacyAuthorityClosure.sorted(),
-            "Legacy provider authority must stay inside the documented closure; update the closure only when a file is actually migrated"
+            "Legacy provider authority must stay retired; the allowed closure is empty"
         )
 
         let legacyDefaultReaders = try productionFiles(containing: ["llm_provider"])
@@ -140,6 +133,9 @@ final class ProviderLegacyDemolitionTests: XCTestCase {
             "if not verify_zerolose_interview_demolition():",
             "ZEROLOSE_PRIMARY_PATHS",
             "OBSOLETE_ZEROLOSE_INTERVIEW_SOURCES",
+            "OBSOLETE_ZEROLOSE_LEGACY_PROVIDER_SOURCES",
+            "FORBIDDEN_ZEROLOSE_TREE_TOKENS",
+            "ALLOWED_ZEROLOSE_LEGACY_DEFAULT_READERS",
         ] {
             XCTAssertTrue(
                 verifyScript.contains(required),

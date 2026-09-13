@@ -243,7 +243,6 @@ actor AgentCommandRuntime {
 /// mutation-capable work must enter through ToolFabric and its policy boundary.
 @MainActor
 final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureControlling, @unchecked Sendable {
-    private let intelligenceService: IntelligenceService
     private let visionService: VisionService
     private let clipboardService: ClipboardService
     private let screenshotWatcher: ScreenshotWatcherService
@@ -279,7 +278,6 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
     var onAgentStateChanged: ((TaskRuntimeProjectionSnapshot) -> Void)?
 
     init(
-        intelligenceService: IntelligenceService,
         visionService: VisionService,
         clipboardService: ClipboardService,
         screenshotWatcher: ScreenshotWatcherService,
@@ -295,7 +293,6 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
         agentRuntime: AgentCommandRuntime? = nil,
         initialAuthorityMode: AuthorityMode
     ) {
-        self.intelligenceService = intelligenceService
         self.visionService = visionService
         self.clipboardService = clipboardService
         self.screenshotWatcher = screenshotWatcher
@@ -440,7 +437,6 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
         activeAskSessionID = nil
         activeAskSelection = nil
         messages.removeAll()
-        intelligenceService.clearHistory()
         Task {
             await attachmentContextProvider.clearAttachments(conversationID: previousConversationID)
         }
@@ -554,19 +550,7 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
 
         startTask { [weak self] in
             guard let self else { return }
-            do {
-                try await self.processText(
-                    query,
-                    source: "V2 AI Refine",
-                    processingMode: .forceAIReasoning,
-                    showUserMessage: false,
-                    targetAssistantMessageID: messageID
-                )
-            } catch is CancellationError {
-                self.finishCancelledTask()
-            } catch {
-                self.appendRuntimeError(error)
-            }
+            await self.reviseAnswer(query, assistantMessageID: messageID)
         }
     }
 
@@ -669,53 +653,18 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
         }
 
         do {
-            let request = AskRequest(
-                sessionID: sessionID,
-                conversationID: conversationID,
-                text: query,
-                selection: selection,
-                activeGoalID: nil
+            try await streamAsk(
+                AskRequest(
+                    sessionID: sessionID,
+                    conversationID: conversationID,
+                    text: query,
+                    selection: selection,
+                    activeGoalID: nil
+                ),
+                query: query,
+                assistantIndex: assistantIndex,
+                assistantID: assistantID
             )
-            let stream = await requestCoordinator.stream(request)
-            var responseText = ""
-            var completed = false
-
-            for try await event in stream {
-                try Task.checkCancellation()
-                switch event {
-                case .started:
-                    statusMessage = "Thinking..."
-                    publishSnapshot()
-                case .textDelta(let delta):
-                    responseText += delta
-                    updateAssistantMessage(
-                        at: assistantIndex,
-                        id: assistantID,
-                        text: responseText,
-                        type: .thinking,
-                        origin: .aiGenerated,
-                        relatedQuery: query,
-                        thinking: nil
-                    )
-                case .toolCall:
-                    break
-                case .completed:
-                    completed = true
-                }
-            }
-
-            try Task.checkCancellation()
-            if completed {
-                updateAssistantMessage(
-                    at: assistantIndex,
-                    id: assistantID,
-                    text: responseText.isEmpty ? "[No response]" : responseText,
-                    type: .text,
-                    origin: .aiGenerated,
-                    relatedQuery: query,
-                    thinking: nil
-                )
-            }
             await attachmentContextProvider.clearAttachments(conversationID: conversationID)
             if activeAskSessionID == sessionID {
                 activeAskSessionID = nil
@@ -733,7 +682,7 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
             }
             isBusy = false
             activeTask = nil
-            let cancelled = error is CancellationError || Task.isCancelled || Self.isProviderCancellation(error)
+            let cancelled = Self.isCancellation(error)
             statusMessage = cancelled ? "Stopped" : "Error"
             if messages.indices.contains(assistantIndex) {
                 let existing = messages[assistantIndex]
@@ -773,115 +722,127 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
         return true
     }
 
-    private func processText(
-        _ text: String,
-        source: String,
-        webSearchMode: WebSearchMode = .automatic,
-        processingMode: IntelligenceService.ProcessingMode = .automatic,
-        showUserMessage: Bool = true,
-        targetAssistantMessageID: UUID? = nil
-    ) async throws {
-        let query = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return }
-        guard !isBusy || targetAssistantMessageID != nil else {
-            throw V2RuntimeCommandError.unsupportedCommand("concurrent-chat")
-        }
+    /// Re-runs an existing answer through the bound provider without appending a
+    /// new user turn. Reached from the AI-refine affordance on cache/fast-path
+    /// answers; the V2 coordinator owns persistence.
+    private func reviseAnswer(_ query: String, assistantMessageID: UUID) async {
+        guard !isBusy,
+              let assistantIndex = messages.firstIndex(where: { $0.id == assistantMessageID })
+        else { return }
 
         isBusy = true
-        statusMessage = "Thinking..."
-        if showUserMessage {
-            messages.append(ChatMessage(text: query, isUser: true, type: .text))
-            try? await chatHistoryService.addMessage(text: query, isUser: true)
-        }
+        let selection = await selectionProvider()
+        let conversationID = askConversationID
+        let sessionID = ModelSessionID(rawValue: UUID().uuidString)
+        activeAskSessionID = sessionID
+        activeAskSelection = selection
 
-        let assistantID = targetAssistantMessageID ?? UUID()
-        let assistantIndex: Int
-        if let targetAssistantMessageID,
-           let existingIndex = messages.firstIndex(where: { $0.id == targetAssistantMessageID }) {
-            assistantIndex = existingIndex
-            let existing = messages[existingIndex]
-            messages[existingIndex] = ChatMessage(
-                id: existing.id,
-                text: "Thinking...",
-                isUser: false,
-                type: .thinking,
-                assistantOrigin: existing.assistantOrigin,
-                relatedQuery: query
-            )
-        } else {
-            messages.append(
-                ChatMessage(
-                    id: assistantID,
-                    text: "Thinking...",
-                    isUser: false,
-                    type: .thinking,
-                    relatedQuery: query
-                )
-            )
-            assistantIndex = messages.count - 1
-        }
+        let existing = messages[assistantIndex]
+        messages[assistantIndex] = ChatMessage(
+            id: existing.id,
+            text: "Thinking...",
+            isUser: false,
+            type: .thinking,
+            assistantOrigin: existing.assistantOrigin,
+            relatedQuery: query
+        )
+        statusMessage = "Thinking..."
         publishSnapshot()
 
         do {
-            let toolConfiguration = await nativeToolRuntime.configuration()
-            let response = try await intelligenceService.process(
+            let responseText = try await streamAsk(
+                AskRequest(
+                    sessionID: sessionID,
+                    conversationID: conversationID,
+                    text: query,
+                    selection: selection,
+                    activeGoalID: nil
+                ),
                 query: query,
-                webSearchMode: webSearchMode,
-                processingMode: processingMode,
-                nativeTools: toolConfiguration.tools,
-                nativeToolExecutor: toolConfiguration.executor,
-                onStatusUpdate: { [weak self] status in
-                    Task { @MainActor in
-                        self?.statusMessage = status
-                        self?.publishSnapshot()
-                    }
-                },
-                onPartialResponse: { [weak self] partial in
-                    Task { @MainActor in
-                        self?.updateAssistantMessage(
-                            at: assistantIndex,
-                            id: assistantID,
-                            text: partial,
-                            type: .thinking,
-                            origin: nil,
-                            relatedQuery: query,
-                            thinking: nil
-                        )
-                    }
-                }
+                assistantIndex: assistantIndex,
+                assistantID: assistantMessageID
             )
+            try? await chatHistoryService.addMessage(text: responseText, isUser: false)
+            statusMessage = "Ready"
+        } catch {
+            let cancelled = Self.isCancellation(error)
+            updateAssistantMessage(
+                at: assistantIndex,
+                id: assistantMessageID,
+                text: cancelled ? "[Stopped by user]" : "Error: \(error.localizedDescription)",
+                type: cancelled ? .text : .error,
+                origin: nil,
+                relatedQuery: query,
+                thinking: nil
+            )
+            statusMessage = cancelled ? "Stopped" : "Error"
+        }
+        if activeAskSessionID == sessionID {
+            activeAskSessionID = nil
+            activeAskSelection = nil
+        }
+        isBusy = false
+        activeTask = nil
+        publishSnapshot()
+    }
 
+    /// Streams one Ask turn into an already-staged assistant message.
+    ///
+    /// Chat, image analysis and answer revision all funnel through here so every
+    /// model turn uses the same coordinator, cancellation and stop bookkeeping.
+    /// Returns the accumulated assistant text.
+    @discardableResult
+    private func streamAsk(
+        _ request: AskRequest,
+        query: String,
+        assistantIndex: Int,
+        assistantID: UUID
+    ) async throws -> String {
+        let stream = await requestCoordinator.stream(request)
+        var responseText = ""
+        var completed = false
+
+        for try await event in stream {
+            try Task.checkCancellation()
+            switch event {
+            case .started:
+                statusMessage = "Thinking..."
+                publishSnapshot()
+            case .textDelta(let delta):
+                responseText += delta
+                updateAssistantMessage(
+                    at: assistantIndex,
+                    id: assistantID,
+                    text: responseText,
+                    type: .thinking,
+                    origin: .aiGenerated,
+                    relatedQuery: query,
+                    thinking: nil
+                )
+            case .toolCall:
+                break
+            case .completed:
+                completed = true
+            }
+        }
+
+        try Task.checkCancellation()
+        if completed {
             updateAssistantMessage(
                 at: assistantIndex,
                 id: assistantID,
-                text: response.text,
+                text: responseText.isEmpty ? "[No response]" : responseText,
                 type: .text,
-                origin: Self.assistantOrigin(for: response.origin),
+                origin: .aiGenerated,
                 relatedQuery: query,
-                thinking: response.thinking
+                thinking: nil
             )
-            try? await chatHistoryService.addMessage(text: response.text, isUser: false)
-            isBusy = false
-            statusMessage = "Ready"
-            activeTask = nil
-            publishSnapshot()
-        } catch {
-            isBusy = false
-            activeTask = nil
-            statusMessage = error is CancellationError ? "Stopped" : "Error"
-            if messages.indices.contains(assistantIndex) {
-                let existing = messages[assistantIndex]
-                messages[assistantIndex] = ChatMessage(
-                    id: existing.id,
-                    text: error is CancellationError ? "[Stopped by user]" : "Error: \(error.localizedDescription)",
-                    isUser: false,
-                    type: error is CancellationError ? .text : .error,
-                    relatedQuery: query
-                )
-            }
-            publishSnapshot()
-            throw error
         }
+        return responseText
+    }
+
+    private static func isCancellation(_ error: Error) -> Bool {
+        error is CancellationError || Task.isCancelled || isProviderCancellation(error)
     }
 
     private func processImage(_ data: Data, source: String, query: String?) async {
@@ -903,57 +864,44 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
         let assistantID = messages[assistantIndex].id
         publishSnapshot()
 
+        let selection = await selectionProvider()
+        let conversationID = askConversationID
+        let sessionID = ModelSessionID(rawValue: UUID().uuidString)
+        activeAskSessionID = sessionID
+        activeAskSelection = selection
+
         do {
-            let toolConfiguration = await nativeToolRuntime.configuration()
-            let response = try await intelligenceService.process(
+            let responseText = try await streamAsk(
+                AskRequest(
+                    sessionID: sessionID,
+                    conversationID: conversationID,
+                    text: resolvedQuery,
+                    selection: selection,
+                    activeGoalID: nil,
+                    imageData: data
+                ),
                 query: resolvedQuery,
-                imageData: data,
-                nativeTools: toolConfiguration.tools,
-                nativeToolExecutor: toolConfiguration.executor,
-                onStatusUpdate: { [weak self] status in
-                    Task { @MainActor in
-                        self?.statusMessage = status
-                        self?.publishSnapshot()
-                    }
-                },
-                onPartialResponse: { [weak self] partial in
-                    Task { @MainActor in
-                        self?.updateAssistantMessage(
-                            at: assistantIndex,
-                            id: assistantID,
-                            text: partial,
-                            type: .thinking,
-                            origin: nil,
-                            relatedQuery: resolvedQuery,
-                            thinking: nil
-                        )
-                    }
-                }
+                assistantIndex: assistantIndex,
+                assistantID: assistantID
             )
-            updateAssistantMessage(
-                at: assistantIndex,
-                id: assistantID,
-                text: response.text,
-                type: .text,
-                origin: Self.assistantOrigin(for: response.origin),
-                relatedQuery: resolvedQuery,
-                thinking: response.thinking
-            )
-            try? await chatHistoryService.addMessage(text: response.text, isUser: false)
+            try? await chatHistoryService.addMessage(text: responseText, isUser: false)
             statusMessage = "Ready"
-        } catch is CancellationError {
-            statusMessage = "Stopped"
         } catch {
+            let cancelled = Self.isCancellation(error)
             updateAssistantMessage(
                 at: assistantIndex,
                 id: assistantID,
-                text: "Error: \(error.localizedDescription)",
-                type: .error,
+                text: cancelled ? "[Stopped by user]" : "Error: \(error.localizedDescription)",
+                type: cancelled ? .text : .error,
                 origin: nil,
                 relatedQuery: resolvedQuery,
                 thinking: nil
             )
-            statusMessage = "Error"
+            statusMessage = cancelled ? "Stopped" : "Error"
+        }
+        if activeAskSessionID == sessionID {
+            activeAskSessionID = nil
+            activeAskSelection = nil
         }
         isBusy = false
         activeTask = nil
@@ -1141,19 +1089,6 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
                 isIndexing: isIndexing
             )
         )
-    }
-
-    private nonisolated static func assistantOrigin(
-        for origin: IntelligenceService.ResponseOrigin
-    ) -> ChatMessage.AssistantOrigin {
-        switch origin {
-        case .instantCache, .storedCache:
-            return .cache
-        case .groundedFastPath:
-            return .groundedFastPath
-        case .model:
-            return .aiGenerated
-        }
     }
 
     private nonisolated static func isProviderCancellation(_ error: Error) -> Bool {
