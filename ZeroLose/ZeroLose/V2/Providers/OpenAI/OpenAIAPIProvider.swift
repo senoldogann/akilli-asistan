@@ -6,7 +6,8 @@ nonisolated struct OpenAIAPIProvider: ModelProvider {
     let capabilities: ModelCapabilities = [
         .textStreaming,
         .structuredTools,
-        .jsonOutput
+        .jsonOutput,
+        .vision
     ]
 
     private let credentials: any OpenAIKeyStoring
@@ -46,7 +47,11 @@ nonisolated struct OpenAIAPIProvider: ModelProvider {
             sessionID: request.sessionID,
             model: request.modelID.isEmpty || request.modelID == "default" ? "gpt-5.6" : request.modelID,
             input: request.conversation.map {
-                OpenAITransportInput(role: $0.role, content: $0.content)
+                OpenAITransportInput(
+                    role: $0.role,
+                    content: $0.content,
+                    images: $0.images
+                )
             },
             tools: request.tools.map {
                 OpenAITransportTool(

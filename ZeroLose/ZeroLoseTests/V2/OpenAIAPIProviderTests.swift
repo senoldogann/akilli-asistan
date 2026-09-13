@@ -12,8 +12,86 @@ final class OpenAIAPIProviderTests: XCTestCase {
         XCTAssertTrue(provider.capabilities.contains(.textStreaming))
         XCTAssertTrue(provider.capabilities.contains(.structuredTools))
         XCTAssertTrue(provider.capabilities.contains(.jsonOutput))
-        XCTAssertFalse(provider.capabilities.contains(.vision))
+        XCTAssertTrue(provider.capabilities.contains(.vision))
         XCTAssertFalse(provider.capabilities.contains(.reasoningControl))
+    }
+
+    func testTextOnlyInputKeepsPlainStringContentForResponsesContract() throws {
+        let request = OpenAITransportRequest(
+            sessionID: ModelSessionID(rawValue: "text-contract"),
+            model: "gpt-5.6",
+            input: [OpenAITransportInput(role: .user, content: "hello")],
+            tools: [],
+            responseMode: .text
+        )
+
+        let body = try OpenAITransport.requestBody(for: request)
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: body) as? [String: Any]
+        )
+        let input = try XCTUnwrap(object["input"] as? [[String: Any]])
+        let message = try XCTUnwrap(input.first)
+
+        XCTAssertEqual(message["content"] as? String, "hello")
+    }
+
+    func testTransportRequestBodyEncodesImagesAsResponsesInputImageParts() throws {
+        let image = Data([0x01, 0x02, 0x03, 0x04])
+        let request = OpenAITransportRequest(
+            sessionID: ModelSessionID(rawValue: "vision-contract"),
+            model: "gpt-5.6",
+            input: [
+                OpenAITransportInput(
+                    role: .user,
+                    content: "what is on screen?",
+                    images: [image]
+                )
+            ],
+            tools: [],
+            responseMode: .text
+        )
+
+        let body = try OpenAITransport.requestBody(for: request)
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: body) as? [String: Any]
+        )
+        let input = try XCTUnwrap(object["input"] as? [[String: Any]])
+        let message = try XCTUnwrap(input.first)
+        let content = try XCTUnwrap(message["content"] as? [[String: Any]])
+
+        XCTAssertEqual(message["role"] as? String, "user")
+        XCTAssertEqual(content.count, 2)
+        XCTAssertEqual(content[0]["type"] as? String, "input_text")
+        XCTAssertEqual(content[0]["text"] as? String, "what is on screen?")
+        XCTAssertEqual(content[1]["type"] as? String, "input_image")
+        XCTAssertEqual(
+            content[1]["image_url"] as? String,
+            "data:image/jpeg;base64,\(image.base64EncodedString())"
+        )
+    }
+
+    func testProviderForwardsImagePayloadToTransportWithoutOriginatingAContentPart() async throws {
+        let image = Data([0xAA, 0xBB])
+        let transport = RecordingOpenAITransport(events: [.created, .completed])
+        let provider = OpenAIAPIProvider(
+            credentials: StubOpenAIKeyStore(value: "sk-test"),
+            transport: transport
+        )
+        let request = ModelRequest(
+            sessionID: ModelSessionID(rawValue: "vision-session"),
+            conversation: [
+                ModelMessage(role: .user, content: "describe this", images: [image])
+            ],
+            modelID: "gpt-5.6",
+            tools: [],
+            responseMode: .text
+        )
+
+        for try await _ in provider.stream(request) {}
+
+        let requests = await transport.requests
+        let recorded = try XCTUnwrap(requests.first)
+        XCTAssertEqual(recorded.input.last?.images, [image])
     }
 
     func testMissingKeyIsConfigurationRequired() async {

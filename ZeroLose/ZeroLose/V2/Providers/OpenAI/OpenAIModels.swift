@@ -18,6 +18,13 @@ nonisolated protocol OpenAIKeyStoring: Sendable {
 nonisolated struct OpenAITransportInput: Sendable, Equatable {
     let role: ModelRole
     let content: String
+    let images: [Data]
+
+    nonisolated init(role: ModelRole, content: String, images: [Data] = []) {
+        self.role = role
+        self.content = content
+        self.images = images
+    }
 }
 
 nonisolated struct OpenAITransportTool: Sendable, Equatable {

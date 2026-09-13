@@ -14,9 +14,33 @@ nonisolated enum ModelRole: String, Codable, Sendable {
     case assistant
 }
 
+/// A single conversation turn.
+///
+/// `images` carries JPEG payloads for vision-capable providers. It is empty for
+/// ordinary text turns, so text-only providers and callers are unaffected.
 nonisolated struct ModelMessage: Codable, Sendable, Equatable {
     let role: ModelRole
     let content: String
+    let images: [Data]
+
+    nonisolated init(role: ModelRole, content: String, images: [Data] = []) {
+        self.role = role
+        self.content = content
+        self.images = images
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case role
+        case content
+        case images
+    }
+
+    nonisolated init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        role = try container.decode(ModelRole.self, forKey: .role)
+        content = try container.decode(String.self, forKey: .content)
+        images = try container.decodeIfPresent([Data].self, forKey: .images) ?? []
+    }
 }
 
 nonisolated struct ModelToolSchema: Codable, Sendable, Equatable {

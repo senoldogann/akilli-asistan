@@ -43,6 +43,19 @@ actor RequestCoordinator {
                 throw RequestCoordinatorError.emptyUserText
             }
 
+            // Fail closed before any persistence or provider invocation: a vision
+            // turn can only run on a provider/model that actually declares vision.
+            if request.imageData != nil {
+                let supportsVision = await providerFabric.modelSupports(
+                    .vision,
+                    modelID: request.selection.modelID,
+                    using: request.selection.providerID
+                )
+                guard supportsVision else {
+                    throw RequestCoordinatorError.visionUnsupported
+                }
+            }
+
             let previousMessages = try await conversationStore.messages(
                 conversationID: request.conversationID
             )
@@ -71,7 +84,13 @@ actor RequestCoordinator {
                 conversation.append(systemMessage)
             }
             conversation.append(contentsOf: previousMessages.compactMap(modelMessage(from:)))
-            conversation.append(ModelMessage(role: .user, content: request.text))
+            conversation.append(
+                ModelMessage(
+                    role: .user,
+                    content: request.text,
+                    images: request.imageData.map { [$0] } ?? []
+                )
+            )
 
             let modelRequest = ModelRequest(
                 sessionID: request.sessionID,

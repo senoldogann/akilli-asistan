@@ -58,6 +58,45 @@ OBSOLETE_ZEROLOSE_INTERVIEW_SOURCES = (
     "ViewModels/CheatSheetViewModel.swift",
 )
 
+OBSOLETE_ZEROLOSE_LEGACY_PROVIDER_SOURCES = (
+    "Resources/Constants.swift",
+    "Services/IntelligenceService.swift",
+    "Services/OllamaService.swift",
+    "Services/ResponseCacheService.swift",
+    "Services/TextAnalysis.swift",
+    "Services/LLMPromptBuilder.swift",
+    "Services/CodingSandboxService.swift",
+    "Services/VaultService.swift",
+    "Services/VaultSearchEngine.swift",
+    "Services/ActiveRoleProfileService.swift",
+    "Services/InterviewKnowledgeMatcher.swift",
+    "Services/RAG/SemanticRetriever.swift",
+    "Models/InterviewItem.swift",
+)
+
+# The legacy provider authority is fully retired: nothing in the product may
+# reference these identifiers at all. `llm_provider` is the single historical
+# default that one migration-only reader may still inspect.
+FORBIDDEN_ZEROLOSE_TREE_TOKENS = (
+    "LLMProvider",
+    "AIModelNames",
+    "OllamaService",
+    "customOpenAIReasoningModel",
+    "customDeepSeekReasoningModel",
+    "customOpenCodeZenReasoningModel",
+    "customOpenCodeGoReasoningModel",
+    "customOllamaReasoningModel",
+    "customOpenAIVisionModel",
+    "customDeepSeekVisionModel",
+    "customOpenCodeZenVisionModel",
+    "customOpenCodeGoVisionModel",
+    "customOllamaVisionModel",
+)
+
+ALLOWED_ZEROLOSE_LEGACY_DEFAULT_READERS = (
+    "V2/Migration/SettingsMigrationCoordinator.swift",
+)
+
 FORBIDDEN_ZEROLOSE_INTERVIEW_TOKENS = (
     "InterviewVaultView",
     "MockInterviewView",
@@ -270,6 +309,38 @@ def verify_zerolose_provider_authority() -> bool:
         return True
 
     ok = True
+
+    # The retired legacy provider stack must stay deleted.
+    for relative in OBSOLETE_ZEROLOSE_LEGACY_PROVIDER_SOURCES:
+        path = ZEROLOSE_SOURCE / relative
+        if path.exists() or path.is_symlink():
+            print(
+                f"[FAIL] retired legacy provider source is back: {relative}",
+                file=sys.stderr,
+            )
+            ok = False
+
+    # No product source may reference legacy provider authority identifiers, and
+    # only the migration coordinator may read the historical provider default.
+    for path in ZEROLOSE_SOURCE.rglob("*.swift"):
+        content = path.read_text(encoding="utf-8", errors="replace")
+        relative = str(path.relative_to(ZEROLOSE_SOURCE))
+        for token in FORBIDDEN_ZEROLOSE_TREE_TOKENS:
+            if token in content:
+                print(
+                    f"[FAIL] retired provider authority token {token!r} in "
+                    f"ZeroLose/{relative}",
+                    file=sys.stderr,
+                )
+                ok = False
+        if "llm_provider" in content and relative not in ALLOWED_ZEROLOSE_LEGACY_DEFAULT_READERS:
+            print(
+                f"[FAIL] historical provider default \"llm_provider\" is read by "
+                f"ZeroLose/{relative}; only the migration coordinator may read it",
+                file=sys.stderr,
+            )
+            ok = False
+
     inspected = 0
     for relative in ZEROLOSE_PRIMARY_PATHS:
         directory = ZEROLOSE_SOURCE / relative

@@ -249,7 +249,6 @@ final class ZeroLoseRuntimeContainer {
         }
 
         let runtimeController = V2ShellRuntimeController(
-            intelligenceService: dependencies.intelligenceService,
             visionService: dependencies.visionService,
             clipboardService: dependencies.clipboardService,
             screenshotWatcher: dependencies.screenshotWatcher,
@@ -511,7 +510,6 @@ private final class RuntimeSettingsDataController: SettingsDataControlling {
     func clearMemory() async throws -> Int {
         try await dependencies.vectorStore.deleteAll()
         await dependencies.chatHistoryService.startNewSession()
-        dependencies.intelligenceService.clearHistory()
         return try await dependencies.vectorStore.countEmbeddings()
     }
 }

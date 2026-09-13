@@ -8,6 +8,13 @@ actor GroqService: Sendable {
         case groq
     }
 
+    /// Transcription model per endpoint. Voice transcription is the documented
+    /// compatibility-only exception that never participates in chat/agent
+    /// provider selection, so the model is pinned here instead of coming from a
+    /// legacy provider router.
+    nonisolated private static let openAITranscriptionModel = "gpt-4o-mini-transcribe"
+    nonisolated private static let groqTranscriptionModel = "whisper-large-v3-turbo"
+
     private let groqApiKey: String
     nonisolated private let logger = Logger.network
 
@@ -88,7 +95,7 @@ actor GroqService: Sendable {
 
         appendString("--\(boundary)\r\n", to: &body)
         appendString("Content-Disposition: form-data; name=\"model\"\r\n\r\n", to: &body)
-        appendString("\(AIModelNames.whisper)\r\n", to: &body)
+        appendString("\(Self.openAITranscriptionModel)\r\n", to: &body)
 
         if let language {
             appendString("--\(boundary)\r\n", to: &body)
@@ -160,7 +167,7 @@ actor GroqService: Sendable {
 
         appendString("--\(boundary)\r\n", to: &body)
         appendString("Content-Disposition: form-data; name=\"model\"\r\n\r\n", to: &body)
-        appendString("\(AIModelNames.whisper)\r\n", to: &body)
+        appendString("\(Self.groqTranscriptionModel)\r\n", to: &body)
 
         if let language {
             appendString("--\(boundary)\r\n", to: &body)
