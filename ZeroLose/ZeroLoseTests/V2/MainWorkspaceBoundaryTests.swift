@@ -61,6 +61,39 @@ final class MainWorkspaceBoundaryTests: XCTestCase {
         XCTAssertTrue(source.contains("providerViewModel: runtimeContainer.providerViewModel"))
     }
 
+    func testEmergencyStopIsGatedIndependentlyOfWorkspaceMode() throws {
+        let source = try productionSource("Views/ContentView.swift")
+        let strip = try XCTUnwrap(functionBody(named: "runtimeStrip", in: source, declaration: "private var"))
+
+        guard let cancelRange = strip.range(of: "cancel()"),
+              let emergencyRange = strip.range(of: "emergencyStop()"),
+              cancelRange.upperBound < emergencyRange.lowerBound else {
+            XCTFail("Expected cancel() before emergencyStop() inside runtimeStrip")
+            return
+        }
+
+        let betweenCancelAndEmergencyStop = strip[cancelRange.upperBound..<emergencyRange.lowerBound]
+        XCTAssertTrue(
+            betweenCancelAndEmergencyStop.contains("if "),
+            "Emergency Stop must be gated by its own condition, separate from the Pause/Resume/Cancel workspaceMode-only block, so it can remain reachable independent of the selected mode"
+        )
+        XCTAssertTrue(
+            betweenCancelAndEmergencyStop.contains("canEmergencyStop"),
+            "Emergency Stop's own gating condition must reference live emergency-stop availability, not rely solely on workspaceMode"
+        )
+    }
+
+    func testChatStopRemainsReachableRegardlessOfWorkspaceMode() throws {
+        let source = try productionSource("Views/ContentView.swift")
+        let composer = try XCTUnwrap(functionBody(named: "trailingActions", in: source, declaration: "private var"))
+
+        XCTAssertFalse(
+            composer.contains("workspaceMode == .chat && viewModel.isBusy"),
+            "Chat Stop control must not additionally require workspaceMode == .chat; a live chat request must stay stoppable regardless of the selected mode"
+        )
+        XCTAssertTrue(composer.contains("viewModel.isBusy"), "Chat Stop control must still gate on isBusy")
+    }
+
     private func functionBody(
         named name: String,
         in source: String,

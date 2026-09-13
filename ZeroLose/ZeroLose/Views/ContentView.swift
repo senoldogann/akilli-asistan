@@ -359,7 +359,9 @@ struct ContentView: View {
                 .buttonStyle(.plain)
                 .disabled(!taskRuntimeViewModel.canCancel)
                 .help("Cancel agent")
+            }
 
+            if workspaceMode == .agent || taskRuntimeViewModel.canEmergencyStop {
                 Button {
                     Task {
                         do {
@@ -971,7 +973,7 @@ struct ContentView: View {
             .disabled(viewModel.isBusy)
             .pointerCursor()
 
-            if workspaceMode == .chat && viewModel.isBusy {
+            if viewModel.isBusy {
                 Button(action: { withAnimation { viewModel.stopResponse() } }) {
                     Image(systemName: "stop.fill")
                         .font(.system(size: 12, weight: .bold))
