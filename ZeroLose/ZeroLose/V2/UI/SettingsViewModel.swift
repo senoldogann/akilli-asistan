@@ -1,35 +1,29 @@
 import Foundation
 import Observation
 
-enum CredentialProvider: String, CaseIterable, Sendable {
-    case openAI = "openai"
-    case deepSeek = "deepseek"
-    case openCodeZen = "opencode_zen"
-    case openCodeGo = "opencode_go"
-    case ollama = "ollama"
+nonisolated enum IntegrationCredential: String, CaseIterable, Sendable {
     case groq = "groq"
     case tavily = "tavily"
 }
 
-struct CredentialSettingsSnapshot: Sendable, Equatable {
-    let values: [CredentialProvider: String]
-    let validity: [CredentialProvider: Bool]
-    let models: [CredentialProvider: [String]]
+nonisolated struct IntegrationSettingsSnapshot: Sendable, Equatable {
+    let configured: [IntegrationCredential: Bool]
 
-    static let empty = CredentialSettingsSnapshot(values: [:], validity: [:], models: [:])
+    static let empty = IntegrationSettingsSnapshot(configured: [:])
 }
 
 @MainActor
 protocol SettingsDataControlling: AnyObject {
-    func credentialSnapshot() async -> CredentialSettingsSnapshot
-    func updateCredential(_ value: String, for provider: CredentialProvider) async
-    func resetCredentials() async
-    func refreshModels(for provider: CredentialProvider) async -> [String]
+    func integrationSnapshot() async -> IntegrationSettingsSnapshot
+    func updateIntegrationCredential(
+        _ value: String,
+        for credential: IntegrationCredential
+    ) async
     func memoryCount() async throws -> Int
     func clearMemory() async throws -> Int
 }
 
-struct SettingsProjectionSnapshot: Sendable, Equatable {
+nonisolated struct SettingsProjectionSnapshot: Sendable, Equatable {
     let authorityMode: AuthorityMode
 }
 
@@ -37,7 +31,7 @@ struct SettingsProjectionSnapshot: Sendable, Equatable {
 @Observable
 final class SettingsViewModel {
     private(set) var authorityMode: AuthorityMode = .manual
-    private(set) var credentialSnapshot: CredentialSettingsSnapshot = .empty
+    private(set) var integrationSnapshot: IntegrationSettingsSnapshot = .empty
     private(set) var memoryChunkCount = 0
     private(set) var memoryStatus = ""
 
@@ -61,47 +55,30 @@ final class SettingsViewModel {
         try await commandSender.send(.changeAuthorityMode(mode))
     }
 
-    func reloadCredentials() async -> CredentialSettingsSnapshot {
-        guard let dataController else { return credentialSnapshot }
-        let snapshot = await dataController.credentialSnapshot()
-        credentialSnapshot = snapshot
+    func reloadIntegrations() async -> IntegrationSettingsSnapshot {
+        guard let dataController else { return integrationSnapshot }
+        let snapshot = await dataController.integrationSnapshot()
+        integrationSnapshot = snapshot
         return snapshot
     }
 
-    func updateCredential(_ value: String, for provider: CredentialProvider) async {
+    func saveIntegrationCredential(
+        _ value: String,
+        for credential: IntegrationCredential
+    ) async {
         guard let dataController else { return }
-        await dataController.updateCredential(value, for: provider)
-        _ = await reloadCredentials()
+        await dataController.updateIntegrationCredential(value, for: credential)
+        _ = await reloadIntegrations()
     }
 
-    func resetCredentials() async -> CredentialSettingsSnapshot {
-        guard let dataController else { return credentialSnapshot }
-        await dataController.resetCredentials()
-        return await reloadCredentials()
+    func removeIntegrationCredential(_ credential: IntegrationCredential) async {
+        guard let dataController else { return }
+        await dataController.updateIntegrationCredential("", for: credential)
+        _ = await reloadIntegrations()
     }
 
-    @discardableResult
-    func refreshModels(for provider: CredentialProvider) async -> [String] {
-        guard let dataController else {
-            return credentialSnapshot.models[provider] ?? []
-        }
-        let models = await dataController.refreshModels(for: provider)
-        var updatedModels = credentialSnapshot.models
-        updatedModels[provider] = models
-        credentialSnapshot = CredentialSettingsSnapshot(
-            values: credentialSnapshot.values,
-            validity: credentialSnapshot.validity,
-            models: updatedModels
-        )
-        return models
-    }
-
-    func models(for provider: CredentialProvider) -> [String] {
-        credentialSnapshot.models[provider] ?? []
-    }
-
-    func isCredentialValid(for provider: CredentialProvider) -> Bool {
-        credentialSnapshot.validity[provider] ?? false
+    func isIntegrationConfigured(_ credential: IntegrationCredential) -> Bool {
+        integrationSnapshot.configured[credential] ?? false
     }
 
     func refreshMemoryState() async {
@@ -118,7 +95,7 @@ final class SettingsViewModel {
 
     func clearMemory() async {
         guard let dataController else { return }
-        memoryStatus = "Clearing vector database and session context..."
+        memoryStatus = "Clearing memory..."
         do {
             memoryChunkCount = try await dataController.clearMemory()
             memoryStatus = "Memory cleared successfully."

@@ -33,15 +33,21 @@ final class ProviderCompositionTests: XCTestCase {
         XCTAssertTrue(source.contains("providers: [codexProvider, claudeProvider, openCodeProvider, antigravityProvider, openAIProvider]"))
     }
 
-    func testProviderSelectionUsesOnlyNonSecretV2Settings() throws {
-        let source = try providerCompositionProductionSource(
+    func testProviderSelectionPersistenceIsOwnedByControlPlane() throws {
+        let container = try providerCompositionProductionSource(
             "V2/Application/ZeroLoseRuntimeContainer.swift"
         )
+        let controlPlane = try providerCompositionProductionSource(
+            "V2/Providers/ProviderControlPlane.swift"
+        )
 
-        XCTAssertTrue(source.contains("v2.modelProviderID"))
-        XCTAssertTrue(source.contains("v2.modelDefaultID"))
-        XCTAssertFalse(source.contains("v2.modelProviderAPIKey"))
-        XCTAssertFalse(source.contains("v2.modelCredential"))
+        XCTAssertTrue(controlPlane.contains("v2.modelProviderID"))
+        XCTAssertTrue(controlPlane.contains("v2.modelDefaultID"))
+        XCTAssertTrue(container.contains("UserDefaultsProviderSelectionStore(defaults: defaults)"))
+        XCTAssertFalse(container.contains("v2.modelProviderID"))
+        XCTAssertFalse(container.contains("v2.modelDefaultID"))
+        XCTAssertFalse(container.contains("v2.modelProviderAPIKey"))
+        XCTAssertFalse(container.contains("v2.modelCredential"))
     }
 
     func testProviderModuleContainsNoLegacyRouterOrCredentialFilePaths() throws {
@@ -92,6 +98,31 @@ final class ProviderCompositionTests: XCTestCase {
                 "Repository verification is missing provider guard token: \(requiredGuard)"
             )
         }
+    }
+
+    func testRuntimeContainerExposesOneSharedProviderViewModel() throws {
+        let source = try providerCompositionProductionSource(
+            "V2/Application/ZeroLoseRuntimeContainer.swift"
+        )
+
+        XCTAssertTrue(source.contains("let providerViewModel: ProviderViewModel"))
+        XCTAssertEqual(source.components(separatedBy: "ProviderViewModel(").count - 1, 1)
+        XCTAssertTrue(source.contains("ProviderSettingsController("))
+        XCTAssertTrue(source.contains("await providerViewModel.refresh()"))
+    }
+
+    func testAgentCompositionCapturesProviderSelectionPerRun() throws {
+        let source = try providerCompositionProductionSource(
+            "V2/Application/ZeroLoseRuntimeContainer.swift"
+        )
+
+        XCTAssertTrue(source.contains("ClosureAgentOrchestratorBuilder"))
+        XCTAssertTrue(source.contains("selection: selection"))
+        XCTAssertTrue(source.contains("modelID: selection.modelID"))
+        XCTAssertTrue(source.contains("using: selection.providerID"))
+        XCTAssertTrue(source.contains("providerControlPlane.currentSelection()"))
+        XCTAssertFalse(source.contains("configuredAgentModelID"))
+        XCTAssertFalse(source.contains("structuredPlanningAvailable:"))
     }
 }
 

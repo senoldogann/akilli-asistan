@@ -14,6 +14,10 @@ final class RecordingModelProvider: ModelProvider, Sendable {
         get async { await state.requestCount }
     }
 
+    var lastRequest: ModelRequest? {
+        get async { await state.lastRequest }
+    }
+
     var cancelledSessions: [ModelSessionID] {
         get async { await state.cancelledSessions }
     }
@@ -21,11 +25,12 @@ final class RecordingModelProvider: ModelProvider, Sendable {
     init(
         id: String,
         events: [ModelEvent] = [.completed],
-        error: ProviderError? = nil
+        error: ProviderError? = nil,
+        capabilities: ModelCapabilities = [.textStreaming]
     ) {
         self.id = ModelProviderID(rawValue: id)
         displayName = id.capitalized
-        capabilities = [.textStreaming]
+        self.capabilities = capabilities
         emittedEvents = events
         terminalError = error
     }
@@ -58,7 +63,7 @@ final class RecordingModelProvider: ModelProvider, Sendable {
 
         return AsyncThrowingStream { continuation in
             Task {
-                await state.recordRequest()
+                await state.recordRequest(request)
                 if let terminalError {
                     continuation.finish(throwing: terminalError)
                     return
@@ -78,10 +83,12 @@ final class RecordingModelProvider: ModelProvider, Sendable {
 
 private actor RecordingModelProviderState {
     private(set) var requestCount = 0
+    private(set) var lastRequest: ModelRequest?
     private(set) var cancelledSessions: [ModelSessionID] = []
 
-    func recordRequest() {
+    func recordRequest(_ request: ModelRequest) {
         requestCount += 1
+        lastRequest = request
     }
 
     func record(cancelledSessionID: ModelSessionID) {

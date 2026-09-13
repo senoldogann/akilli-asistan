@@ -4,39 +4,62 @@ import XCTest
 
 @MainActor
 final class RuntimeDashboardStateTests: XCTestCase {
-    func testIdleRuntimeDisablesGoalControlsAndExplainsMissingAutonomy() {
+    func testIdleRuntimeDisablesGoalControlsWithoutPlaceholderAction() {
         let viewModel = TaskRuntimeViewModel(commandSender: DashboardRecordingCommandSender())
 
         XCTAssertFalse(viewModel.hasActiveGoal)
         XCTAssertFalse(viewModel.canPause)
         XCTAssertFalse(viewModel.canResume)
         XCTAssertFalse(viewModel.canCancel)
-        XCTAssertEqual(viewModel.statusText, "Autonomous runtime not configured")
+        XCTAssertFalse(viewModel.canEmergencyStop)
+        XCTAssertEqual(viewModel.statusText, "Idle")
     }
 
-    func testActiveGoalEnablesTypedRuntimeControls() async throws {
+    func testActiveSessionEnablesOnlyValidTypedRuntimeControls() async throws {
         let sender = DashboardRecordingCommandSender()
         let viewModel = TaskRuntimeViewModel(commandSender: sender)
         viewModel.apply(
             TaskRuntimeProjectionSnapshot(
                 goalID: GoalID(rawValue: "goal-42"),
-                statusText: "Running"
+                statusText: "Running",
+                sessionID: AgentSessionID(rawValue: "session-42"),
+                lifecycle: .executing,
+                isPaused: false,
+                mutationCapableExecutionActive: true
             )
         )
 
         XCTAssertTrue(viewModel.hasActiveGoal)
         XCTAssertTrue(viewModel.canPause)
-        XCTAssertTrue(viewModel.canResume)
+        XCTAssertFalse(viewModel.canResume)
         XCTAssertTrue(viewModel.canCancel)
+        XCTAssertTrue(viewModel.canEmergencyStop)
 
         try await viewModel.pause()
-        try await viewModel.resume()
         try await viewModel.cancel()
+        try await viewModel.emergencyStop()
+
+        viewModel.apply(
+            TaskRuntimeProjectionSnapshot(
+                goalID: GoalID(rawValue: "goal-42"),
+                statusText: "Paused",
+                sessionID: AgentSessionID(rawValue: "session-42"),
+                lifecycle: .executing,
+                isPaused: true,
+                mutationCapableExecutionActive: false
+            )
+        )
+        try await viewModel.resume()
 
         let commands = await sender.commands
         XCTAssertEqual(
             commands,
-            ["pause:goal-42", "resume:goal-42", "cancel:goal-42"]
+            [
+                "pause-session:session-42",
+                "cancel-session:session-42",
+                "emergency-stop",
+                "resume-session:session-42"
+            ]
         )
     }
 
@@ -102,9 +125,10 @@ private actor DashboardRecordingCommandSender: ApplicationCommandSending {
 
     func send(_ command: ApplicationCommand) async throws {
         switch command {
-        case .pauseGoal(let id): commands.append("pause:\(id.rawValue)")
-        case .resumeGoal(let id): commands.append("resume:\(id.rawValue)")
-        case .cancelGoal(let id): commands.append("cancel:\(id.rawValue)")
+        case .pauseAgentSession(let id): commands.append("pause-session:\(id.rawValue)")
+        case .resumeAgentSession(let id): commands.append("resume-session:\(id.rawValue)")
+        case .cancelAgentSession(let id): commands.append("cancel-session:\(id.rawValue)")
+        case .emergencyStop: commands.append("emergency-stop")
         default: break
         }
     }

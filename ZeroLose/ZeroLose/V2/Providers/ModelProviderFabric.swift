@@ -1,3 +1,5 @@
+import Foundation
+
 actor ModelProviderFabric {
     private let providers: [ModelProviderID: any ModelProvider]
     private var selectedProviderID: ModelProviderID
@@ -16,24 +18,88 @@ actor ModelProviderFabric {
         selectedProviderID = providerID
     }
 
-    func stream(
-        _ request: ModelRequest
-    ) throws -> AsyncThrowingStream<ModelEvent, Error> {
-        guard let provider = providers[selectedProviderID] else {
-            throw ProviderError.providerUnavailable(providerID: selectedProviderID)
-        }
-        return provider.stream(request)
+    func registeredProviderIDs() -> [ModelProviderID] {
+        providers.keys.sorted { $0.rawValue < $1.rawValue }
     }
 
-    func selectedStatus() async -> ProviderStatus {
-        guard let provider = providers[selectedProviderID] else {
+    func capabilities(
+        for providerID: ModelProviderID
+    ) throws -> ModelCapabilities {
+        guard let provider = providers[providerID] else {
+            throw ProviderError.providerUnavailable(providerID: providerID)
+        }
+        return provider.capabilities
+    }
+
+    func status(for providerID: ModelProviderID) async -> ProviderStatus {
+        guard let provider = providers[providerID] else {
             return ProviderStatus(
-                providerID: selectedProviderID,
-                displayName: selectedProviderID.rawValue,
+                providerID: providerID,
+                displayName: providerID.rawValue,
                 availability: .unavailable
             )
         }
         return await provider.status()
+    }
+
+    func stream(
+        _ request: ModelRequest
+    ) throws -> AsyncThrowingStream<ModelEvent, Error> {
+        try stream(request, using: selectedProviderID)
+    }
+
+    func stream(
+        _ request: ModelRequest,
+        using providerID: ModelProviderID
+    ) throws -> AsyncThrowingStream<ModelEvent, Error> {
+        guard let provider = providers[providerID] else {
+            throw ProviderError.providerUnavailable(providerID: providerID)
+        }
+        return provider.stream(request)
+    }
+
+    func selectedModelSupports(
+        _ capability: ModelCapabilities,
+        modelID: String
+    ) async -> Bool {
+        await modelSupports(
+            capability,
+            modelID: modelID,
+            using: selectedProviderID
+        )
+    }
+
+    func modelSupports(
+        _ capability: ModelCapabilities,
+        modelID: String,
+        using providerID: ModelProviderID
+    ) async -> Bool {
+        guard let provider = providers[providerID],
+              provider.capabilities.contains(capability),
+              let models = try? await provider.discoverModels(),
+              !models.isEmpty else {
+            return false
+        }
+
+        let normalizedModelID = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if normalizedModelID.isEmpty || normalizedModelID == "default" {
+            guard models.count == 1, let model = models.first else {
+                return false
+            }
+            return model.providerID == provider.id
+                && model.capabilities.contains(capability)
+        }
+
+        guard let model = models.first(where: {
+            $0.id == normalizedModelID && $0.providerID == provider.id
+        }) else {
+            return false
+        }
+        return model.capabilities.contains(capability)
+    }
+
+    func selectedStatus() async -> ProviderStatus {
+        await status(for: selectedProviderID)
     }
 
     func statuses() async -> [ProviderStatus] {
@@ -59,7 +125,14 @@ actor ModelProviderFabric {
     }
 
     func cancel(sessionID: ModelSessionID) async {
-        guard let provider = providers[selectedProviderID] else {
+        await cancel(sessionID: sessionID, using: selectedProviderID)
+    }
+
+    func cancel(
+        sessionID: ModelSessionID,
+        using providerID: ModelProviderID
+    ) async {
+        guard let provider = providers[providerID] else {
             return
         }
         await provider.cancel(sessionID: sessionID)

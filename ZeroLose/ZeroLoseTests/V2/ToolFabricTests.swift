@@ -193,10 +193,94 @@ final class ToolFabricTests: XCTestCase {
         XCTAssertEqual(executionCount, 1)
     }
 
+    func testIssuedCredentialHandleDoesNotOutliveSuccessfulInvocation() async throws {
+        let registry = ToolRegistry()
+        let provider = RecordingToolProvider(providerID: "builtin")
+        let broker = RecordingCredentialBroker(availableScopes: ["scope.secure"])
+        await registry.register(
+            .test(id: "builtin.secure", requiredCredentialScopes: ["scope.secure"])
+        )
+        let fabric = makeFabric(registry: registry, provider: provider, broker: broker)
+
+        _ = try await fabric.execute(.test(toolID: "builtin.secure", registryRevision: 1))
+
+        let issueCount = await broker.issueCount
+        let discardedCount = await broker.discardedHandleCount
+        let validCount = await broker.validHandleCount
+        let availability = await broker.availability(
+            for: CredentialScope(rawValue: "scope.secure")
+        )
+
+        XCTAssertEqual(issueCount, 1)
+        XCTAssertEqual(
+            discardedCount,
+            1,
+            "A credential handle must be invalidated when the invocation that received it completes"
+        )
+        XCTAssertEqual(validCount, 0, "No credential handle may stay valid after its invocation ends")
+        XCTAssertTrue(
+            availability.available,
+            "Discarding an invocation handle must not revoke the underlying scope"
+        )
+    }
+
+    func testIssuedCredentialHandleIsDiscardedWhenInvocationFails() async throws {
+        let registry = ToolRegistry()
+        let provider = RecordingToolProvider(providerID: "builtin")
+        await provider.setExecutionError(ToolFabricTestError.executionFailed)
+        let broker = RecordingCredentialBroker(availableScopes: ["scope.secure"])
+        await registry.register(
+            .test(id: "builtin.secure", requiredCredentialScopes: ["scope.secure"])
+        )
+        let fabric = makeFabric(registry: registry, provider: provider, broker: broker)
+        var didThrow = false
+
+        do {
+            _ = try await fabric.execute(.test(toolID: "builtin.secure", registryRevision: 1))
+        } catch {
+            didThrow = true
+        }
+
+        let discardedCount = await broker.discardedHandleCount
+        let validCount = await broker.validHandleCount
+        XCTAssertTrue(didThrow, "Expected the provider failure to propagate")
+        XCTAssertEqual(
+            discardedCount,
+            1,
+            "Credential handles must be discarded even when the invocation throws"
+        )
+        XCTAssertEqual(validCount, 0)
+    }
+
+    func testCredentialHandleInventoryStaysBoundedAcrossInvocations() async throws {
+        let registry = ToolRegistry()
+        let provider = RecordingToolProvider(providerID: "builtin")
+        let broker = InMemoryCredentialBroker(scopes: ["scope.secure"])
+        await registry.register(
+            .test(id: "builtin.secure", requiredCredentialScopes: ["scope.secure"])
+        )
+        let fabric = makeFabric(registry: registry, provider: provider, broker: broker)
+
+        for _ in 0..<5 {
+            _ = try await fabric.execute(.test(toolID: "builtin.secure", registryRevision: 1))
+        }
+
+        let outstanding = await broker.outstandingHandleCount
+        let availability = await broker.availability(
+            for: CredentialScope(rawValue: "scope.secure")
+        )
+        XCTAssertEqual(
+            outstanding,
+            0,
+            "Completed invocations must not accumulate live credential handles"
+        )
+        XCTAssertTrue(availability.available, "Repeated invocations must keep working")
+    }
+
     private func makeFabric(
         registry: ToolRegistry,
         provider: RecordingToolProvider,
-        broker: RecordingCredentialBroker = RecordingCredentialBroker(availableScopes: []),
+        broker: any CredentialBrokering = RecordingCredentialBroker(availableScopes: []),
         authorityMode: AuthorityMode = .auto
     ) -> ToolFabric {
         ToolFabric(
@@ -209,14 +293,23 @@ final class ToolFabricTests: XCTestCase {
     }
 }
 
+private enum ToolFabricTestError: Error {
+    case executionFailed
+}
+
 private actor RecordingToolProvider: ToolProviding {
     nonisolated let providerID: String
     private(set) var executionCount = 0
     private(set) var receivedCredentialScopes: Set<String> = []
     private(set) var receivedLogicalOperationKey: String?
+    private var executionError: Error?
 
     init(providerID: String) {
         self.providerID = providerID
+    }
+
+    func setExecutionError(_ error: Error?) {
+        executionError = error
     }
 
     func execute(
@@ -225,6 +318,9 @@ private actor RecordingToolProvider: ToolProviding {
         credentialHandles: [CredentialHandle]
     ) async throws -> ToolExecutionReceipt {
         executionCount += 1
+        if let executionError {
+            throw executionError
+        }
         receivedCredentialScopes = Set(credentialHandles.map(\.scope.rawValue))
         receivedLogicalOperationKey = invocation.logicalOperationKey
         let now = Date()
@@ -239,8 +335,12 @@ private actor RecordingToolProvider: ToolProviding {
 }
 
 private actor RecordingCredentialBroker: CredentialBrokering {
-    private let availableScopes: Set<CredentialScope>
+    private var availableScopes: Set<CredentialScope>
     private(set) var issueCount = 0
+    private(set) var discardedHandleCount = 0
+    private var liveHandles: Set<CredentialHandle> = []
+
+    var validHandleCount: Int { liveHandles.count }
 
     init(availableScopes: Set<String>) {
         self.availableScopes = Set(availableScopes.map(CredentialScope.init(rawValue:)))
@@ -255,10 +355,20 @@ private actor RecordingCredentialBroker: CredentialBrokering {
             throw CredentialBrokerError.scopeUnavailable(scope)
         }
         issueCount += 1
-        return CredentialHandle(scope: scope)
+        let handle = CredentialHandle(scope: scope)
+        liveHandles.insert(handle)
+        return handle
     }
 
-    func revoke(scope: CredentialScope) {}
+    func revoke(scope: CredentialScope) {
+        availableScopes.remove(scope)
+        liveHandles = Set(liveHandles.filter { $0.scope != scope })
+    }
+
+    func discardHandles(_ handles: [CredentialHandle]) {
+        discardedHandleCount += handles.count
+        liveHandles.subtract(handles)
+    }
 }
 
 private extension ToolDescriptor {

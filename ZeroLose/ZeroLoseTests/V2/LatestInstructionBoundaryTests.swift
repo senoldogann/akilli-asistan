@@ -46,7 +46,11 @@ final class LatestInstructionBoundaryTests: XCTestCase {
                 sessionID: ModelSessionID(rawValue: "latest-boundary-session"),
                 conversationID: conversationID,
                 text: latestInstruction,
-                modelID: "model-1",
+                selection: ProviderSelectionSnapshot(
+                    providerID: providerID,
+                    modelID: "model-1",
+                    revision: 0
+                ),
                 activeGoalID: nil
             )
         )

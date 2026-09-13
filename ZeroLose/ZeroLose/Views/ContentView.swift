@@ -46,6 +46,7 @@ struct LiquidGlassMainSurface: ViewModifier {
 struct ContentView: View {
     @Bindable var viewModel: ShellViewModel
     @Bindable var chatViewModel: ChatViewModel
+    @Bindable var providerViewModel: ProviderViewModel
     @Bindable var settingsViewModel: SettingsViewModel
     @Bindable var taskRuntimeViewModel: TaskRuntimeViewModel
     @Bindable var approvalViewModel: ApprovalViewModel
@@ -55,31 +56,17 @@ struct ContentView: View {
     @State private var inputText: String = ""
     @FocusState private var isInputFocused: Bool
     @State private var isNearBottom: Bool = true
-    @State private var isHistoryPresented: Bool = false
-    @State private var isInterviewVaultPresented: Bool = false
-    @State private var isMockInterviewPresented: Bool = false
     @State private var isDropTargeted: Bool = false
-    @State private var isKeyboardDisguisePresented: Bool = false
     @State private var isRuntimeDashboardPresented: Bool = false
     @State private var commandErrorMessage: String?
+    @State private var workspaceMode: WorkspaceMode = .chat
 
     // User Settings
     @AppStorage("fontSize") private var fontSize: Double = 14.0
     @AppStorage("fontDesign") private var fontDesignStr: String = "monospaced"
     @AppStorage("selectedThemeName") private var selectedTheme: String = "Red"
     @AppStorage("forceWebSearch") private var forceWebSearch: Bool = false
-    @AppStorage("reasoning_effort_openai") private var openAIReasoningEffort: String = "high"
-    @AppStorage("reasoning_effort_deepseek") private var deepSeekReasoningEffort: String = "high"
-    @AppStorage("reasoning_effort_opencode_zen") private var openCodeZenReasoningEffort: String = "high"
-    @AppStorage("reasoning_effort_opencode_go") private var openCodeGoReasoningEffort: String = "high"
-    @AppStorage("reasoning_effort_ollama") private var ollamaReasoningEffort: String = ""
     @AppStorage("windowOpacity") private var windowOpacity: Double = 1.0
-    @AppStorage("llm_provider") private var llmProviderRaw: String = LLMProvider.ollama.rawValue
-    @AppStorage("customOpenAIReasoningModel") private var customOpenAIReasoningModel: String = ""
-    @AppStorage("customDeepSeekReasoningModel") private var customDeepSeekReasoningModel: String = ""
-    @AppStorage("customOpenCodeZenReasoningModel") private var customOpenCodeZenReasoningModel: String = ""
-    @AppStorage("customOpenCodeGoReasoningModel") private var customOpenCodeGoReasoningModel: String = ""
-    @AppStorage("customOllamaReasoningModel") private var customOllamaReasoningModel: String = ""
 
     var fontDesign: Font.Design {
         switch fontDesignStr {
@@ -94,65 +81,12 @@ struct ContentView: View {
         ThemeStore.accent(for: selectedTheme)
     }
 
-    private var activeProvider: LLMProvider {
-        LLMProvider(rawValue: llmProviderRaw) ?? .ollama
-    }
-
-    private var activeReasoningModel: String {
-        switch activeProvider {
-        case .openAI:
-            return customOpenAIReasoningModel.isEmpty ? AIModelNames.reasoning(forProvider: .openAI) : customOpenAIReasoningModel
-        case .deepSeek:
-            return customDeepSeekReasoningModel.isEmpty ? AIModelNames.reasoning(forProvider: .deepSeek) : customDeepSeekReasoningModel
-        case .openCodeZen:
-            return customOpenCodeZenReasoningModel.isEmpty ? AIModelNames.reasoning(forProvider: .openCodeZen) : customOpenCodeZenReasoningModel
-        case .openCodeGo:
-            return customOpenCodeGoReasoningModel.isEmpty ? AIModelNames.reasoning(forProvider: .openCodeGo) : customOpenCodeGoReasoningModel
-        case .ollama:
-            return customOllamaReasoningModel.isEmpty ? AIModelNames.reasoning(forProvider: .ollama) : customOllamaReasoningModel
-        }
-    }
-
-    private var selectedReasoningEffort: String {
-        switch activeProvider {
-        case .openAI: return openAIReasoningEffort
-        case .deepSeek: return deepSeekReasoningEffort
-        case .openCodeZen: return openCodeZenReasoningEffort
-        case .openCodeGo: return openCodeGoReasoningEffort
-        case .ollama: return ollamaReasoningEffort
-        }
-    }
-
-    private var supportedReasoningEfforts: [String] {
-        AIModelNames.reasoningEffortOptions(for: activeProvider, model: activeReasoningModel)
-    }
-
-    private func setReasoningEffort(_ effort: String) {
-        switch activeProvider {
-        case .openAI: openAIReasoningEffort = effort
-        case .deepSeek: deepSeekReasoningEffort = effort
-        case .openCodeZen: openCodeZenReasoningEffort = effort
-        case .openCodeGo: openCodeGoReasoningEffort = effort
-        case .ollama: ollamaReasoningEffort = effort
-        }
-    }
-
     private var approvalLabel: String {
         switch settingsViewModel.authorityMode {
         case .manual: return "Onay İste"
         case .auto: return "Oto Onay"
         case .autonomous: return "Otonom"
         case .fullAccess: return "Oto Onay"
-        }
-    }
-
-    private var modelOptions: [String] {
-        switch activeProvider {
-        case .openAI: return [AIModelNames.reasoning(forProvider: .openAI), AIModelNames.fast(forProvider: .openAI), AIModelNames.coding(forProvider: .openAI)]
-        case .deepSeek: return [AIModelNames.reasoning(forProvider: .deepSeek), AIModelNames.fast(forProvider: .deepSeek), AIModelNames.coding(forProvider: .deepSeek)]
-        case .openCodeZen: return [AIModelNames.reasoning(forProvider: .openCodeZen), AIModelNames.fast(forProvider: .openCodeZen), AIModelNames.coding(forProvider: .openCodeZen)]
-        case .openCodeGo: return [AIModelNames.reasoning(forProvider: .openCodeGo), AIModelNames.fast(forProvider: .openCodeGo), AIModelNames.coding(forProvider: .openCodeGo)]
-        case .ollama: return [AIModelNames.reasoning(forProvider: .ollama), AIModelNames.fast(forProvider: .ollama), AIModelNames.coding(forProvider: .ollama)]
         }
     }
 
@@ -180,15 +114,9 @@ struct ContentView: View {
             }
             .onAppear {
                 installSlashKeyMonitor()
-                refreshModelCatalog()
-            }
-            .onChange(of: llmProviderRaw) { _, _ in
-                // The provider just changed: reload the model catalog so the
-                // input picker shows the new provider's live models immediately
-                // instead of requiring a view re-render to reveal them.
-                refreshModelCatalog()
             }
             .task {
+                await providerViewModel.refresh()
                 guard let coordinator = runtimeProjectionCoordinator else { return }
                 while !Task.isCancelled {
                     await coordinator.refresh()
@@ -200,26 +128,6 @@ struct ContentView: View {
                 }
             }
             .onDisappear { removeSlashKeyMonitor() }
-    }
-
-    /// Populate the provider model list in the background so the input picker
-    /// shows live models without forcing the user to open Settings first.
-    private func refreshModelCatalog() {
-        let credentialProvider = credentialProvider(for: activeProvider)
-        Task { @MainActor in
-            _ = await settingsViewModel.reloadCredentials()
-            _ = await settingsViewModel.refreshModels(for: credentialProvider)
-        }
-    }
-
-    private func credentialProvider(for provider: LLMProvider) -> CredentialProvider {
-        switch provider {
-        case .openAI: return .openAI
-        case .deepSeek: return .deepSeek
-        case .openCodeZen: return .openCodeZen
-        case .openCodeGo: return .openCodeGo
-        case .ollama: return .ollama
-        }
     }
 
     // MARK: - Main Layout
@@ -311,51 +219,6 @@ struct ContentView: View {
                 .zIndex(120)
             }
 
-            if isInterviewVaultPresented {
-                ZStack {
-                    Color.black.opacity(windowOpacity * 0.5)
-                        .ignoresSafeArea()
-                        .onTapGesture { dismissInterviewVault() }
-
-                    InterviewVaultView(isPresented: $isInterviewVaultPresented) {
-                        viewModel.warmUpInterviewContext()
-                    }
-                    .shadow(color: .black.opacity(0.5), radius: 40)
-                }
-                .transition(.opacity.combined(with: .scale(scale: 0.97)))
-                .zIndex(100)
-            }
-
-            if isMockInterviewPresented {
-                ZStack {
-                    Color.black.opacity(windowOpacity * 0.5)
-                        .ignoresSafeArea()
-                        .onTapGesture {
-                            MockInterviewService.shared.endSession()
-                            isMockInterviewPresented = false
-                        }
-
-                    MockInterviewView(isPresented: $isMockInterviewPresented)
-                        .shadow(color: .black.opacity(0.5), radius: 40)
-                }
-                .transition(.opacity.combined(with: .scale(scale: 0.97)))
-                .zIndex(100)
-            }
-
-            if isKeyboardDisguisePresented {
-                ZStack {
-                    Color.black.opacity(windowOpacity * 0.35)
-                        .ignoresSafeArea()
-                        .onTapGesture {
-                            withAnimation { isKeyboardDisguisePresented = false }
-                        }
-
-                    KeyboardDisguiseView(isPresented: $isKeyboardDisguisePresented)
-                        .shadow(color: .black.opacity(0.5), radius: 40)
-                }
-                .transition(.opacity.combined(with: .scale(scale: 0.97)))
-                .zIndex(110)
-            }
         }
     }
 
@@ -427,111 +290,146 @@ struct ContentView: View {
     // MARK: - V2 Runtime Surface
 
     private var runtimeStrip: some View {
-        Button {
-            withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
-                isRuntimeDashboardPresented.toggle()
+        HStack(spacing: 7) {
+            Button {
+                withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                    isRuntimeDashboardPresented.toggle()
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "waveform.path.ecg")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(themeColor)
+                    Text(taskRuntimeViewModel.statusText)
+                        .font(.system(size: 9, design: .rounded))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "waveform.path.ecg")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(themeColor)
+            .buttonStyle(.plain)
 
-                Text("Runtime")
-                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+            Spacer(minLength: 4)
 
-                Text(settingsViewModel.authorityMode.rawValue)
+            if workspaceMode == .agent {
+                Button {
+                    Task {
+                        do {
+                            try await taskRuntimeViewModel.pause()
+                            commandErrorMessage = nil
+                        } catch {
+                            commandErrorMessage = "Pause failed: \(error.localizedDescription)"
+                        }
+                    }
+                } label: {
+                    Image(systemName: "pause.fill")
+                }
+                .buttonStyle(.plain)
+                .disabled(!taskRuntimeViewModel.canPause)
+                .help("Pause agent")
+
+                Button {
+                    Task {
+                        do {
+                            try await taskRuntimeViewModel.resume()
+                            commandErrorMessage = nil
+                        } catch {
+                            commandErrorMessage = "Resume failed: \(error.localizedDescription)"
+                        }
+                    }
+                } label: {
+                    Image(systemName: "play.fill")
+                }
+                .buttonStyle(.plain)
+                .disabled(!taskRuntimeViewModel.canResume)
+                .help("Resume agent")
+
+                Button {
+                    Task {
+                        do {
+                            try await taskRuntimeViewModel.cancel()
+                            commandErrorMessage = nil
+                        } catch {
+                            commandErrorMessage = "Cancel failed: \(error.localizedDescription)"
+                        }
+                    }
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.plain)
+                .disabled(!taskRuntimeViewModel.canCancel)
+                .help("Cancel agent")
+            }
+
+            if workspaceMode == .agent || taskRuntimeViewModel.canEmergencyStop {
+                Button {
+                    Task {
+                        do {
+                            try await taskRuntimeViewModel.emergencyStop()
+                            commandErrorMessage = nil
+                        } catch {
+                            commandErrorMessage = "Emergency stop failed: \(error.localizedDescription)"
+                        }
+                    }
+                } label: {
+                    Image(systemName: "exclamationmark.octagon.fill")
+                        .foregroundStyle(taskRuntimeViewModel.canEmergencyStop ? Color.red : Color.secondary)
+                }
+                .buttonStyle(.plain)
+                .disabled(!taskRuntimeViewModel.canEmergencyStop)
+                .help("Emergency stop")
+            }
+
+            if approvalViewModel.pendingCount > 0 {
+                Label("\(approvalViewModel.pendingCount)", systemImage: "checkmark.shield")
                     .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(.secondary)
-
-                Text(taskRuntimeViewModel.statusText)
-                    .font(.system(size: 9, design: .rounded))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-
-                Spacer(minLength: 4)
-
-                if approvalViewModel.pendingCount > 0 {
-                    Label("\(approvalViewModel.pendingCount)", systemImage: "checkmark.shield")
-                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(.orange)
-                }
-
-                if runtimeProjectionInitializationError != nil || runtimeProjectionCoordinator?.lastError != nil {
-                    Image(systemName: "exclamationmark.triangle")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.orange)
-                }
-
-                Image(systemName: isRuntimeDashboardPresented ? "chevron.up" : "chevron.down")
-                    .font(.system(size: 8, weight: .bold))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.orange)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .contentShape(Rectangle())
+
+            if runtimeProjectionInitializationError != nil || runtimeProjectionCoordinator?.lastError != nil {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.orange)
+            }
         }
-        .buttonStyle(.plain)
+        .font(.system(size: 10, weight: .semibold))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
         .liquidGlassSurface(tint: themeColor.opacity(0.08), cornerRadius: 10)
         .padding(.horizontal, 14)
         .padding(.bottom, 8)
         .accessibilityIdentifier("v2.runtime.strip")
-        .help("Open V2 runtime dashboard")
     }
 
     // MARK: - Header Bar
 
     @ViewBuilder
     private var headerBar: some View {
-        HStack(spacing: 4) {
-            // App icon + title
-            HStack(spacing: 8) {
-                Button {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.82)) {
-                        isKeyboardDisguisePresented = true
-                    }
-                } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: "keyboard")
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundStyle(viewModel.isBusy ? Color.cyan : Color.textSecondary)
-                            .symbolEffect(.pulse, isActive: viewModel.isBusy)
+        HStack(spacing: 8) {
+            HStack(spacing: 7) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(themeColor)
+                Text("ZeroLose")
+                    .font(.system(.subheadline, design: .rounded).weight(.semibold))
+                statusIndicator
+            }
 
-                        Text("Keyboard")
-                            .font(.system(.subheadline, design: .rounded).weight(.semibold))
-                            .foregroundStyle(.primary)
-                            .tracking(1.2)
-                    }
+            Spacer(minLength: 4)
+
+            ProviderSelectorView(viewModel: providerViewModel)
+                .layoutPriority(1)
+
+            Picker("Workspace", selection: $workspaceMode) {
+                ForEach(WorkspaceMode.allCases) { mode in
+                    Text(mode.rawValue).tag(mode)
                 }
-                .buttonStyle(.plain)
-                .pointerCursor()
-                .help("Keyboard Settings")
             }
-
-            Spacer()
-
-            // Status
-            statusIndicator
-
-            // ─── Action Buttons ───
-            headerButton(icon: .clipboard, activeColor: .green, isActive: viewModel.isClipboardActive, help: "Toggle Clipboard Auto-Answer") {
-                viewModel.toggleClipboard()
-            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .frame(width: 112)
 
             headerButton(icon: .trash, activeColor: themeColor.opacity(0.7), isActive: false, help: "Clear Chat History") {
                 withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { viewModel.clearHistory() }
-            }
-
-            headerButton(icon: .textbubble, activeColor: themeColor.opacity(0.7), isActive: false, help: "Interview Notes") {
-                WindowManager.shared.toggleTeleprompterWindow()
-            }
-
-            headerButton(icon: .book, activeColor: themeColor.opacity(0.7), isActive: false, help: "Interview Prep Vault") {
-                withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) { isInterviewVaultPresented = true }
-            }
-
-            headerButton(icon: .person, activeColor: themeColor.opacity(0.7), isActive: false, help: "AI Mock Interview") {
-                withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) { isMockInterviewPresented = true }
             }
 
             headerButton(icon: .gear, activeColor: themeColor, isActive: false, help: "Settings") {
@@ -589,17 +487,6 @@ struct ContentView: View {
                 Text(commandErrorMessage)
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(.red)
-                    .lineLimit(1)
-            }
-
-            if !viewModel.currentModelDisplay.isEmpty {
-                Text("\(activeProvider.displayName) · \(activeReasoningModel)")
-                    .font(.system(size: 9, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.tertiary)
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 1)
-                    .background(Color.primary.opacity(0.05))
-                    .cornerRadius(4)
                     .lineLimit(1)
             }
         }
@@ -990,108 +877,27 @@ struct ContentView: View {
     @ViewBuilder
     private var inputControlStrip: some View {
         HStack(spacing: 8) {
-            // Quick actions (+)
             Menu {
                 Button("Dosya Ekle (PDF, Resim)") { showFilePicker() }
                 Divider()
                 Toggle("Zorla Web Arama", isOn: $forceWebSearch)
+                    .disabled(workspaceMode == .agent)
                 Divider()
                 Button("Ekranı Analiz Et") { viewModel.analyzeScreen() }
             } label: {
-                Image(systemName: forceWebSearch ? "globe.badge.chevron.backward" : "plus.circle")
+                Image(systemName: forceWebSearch && workspaceMode == .chat ? "globe.badge.chevron.backward" : "plus.circle")
                     .font(.system(size: 17, weight: .light))
-                    .foregroundStyle(forceWebSearch ? .cyan : Color.textSecondary)
+                    .foregroundStyle(forceWebSearch && workspaceMode == .chat ? .cyan : Color.textSecondary)
                     .frame(width: 28, height: 28)
                     .contentShape(Rectangle())
                     .background(Color.primary.opacity(0.05))
                     .clipShape(Circle())
             }
             .buttonStyle(.interactive)
-            .help(forceWebSearch ? "Web Arama: ZORUNLU" : "Hızlı İşlemler")
+            .help("Hızlı İşlemler")
             .pointerCursor()
 
             Divider().frame(height: 16).overlay(Color.primary.opacity(0.12))
-
-            Menu {
-                ForEach(LLMProvider.allCases, id: \.rawValue) { provider in
-                    Button {
-                        llmProviderRaw = provider.rawValue
-                    } label: {
-                        if provider == activeProvider {
-                            Label("\(provider.displayName) (aktif)", systemImage: "checkmark")
-                        } else {
-                            Text(provider.displayName)
-                        }
-                    }
-
-                    Menu {
-                        ForEach(reasoningModelCandidates(for: provider), id: \.self) { model in
-                            Button {
-                                // Selecting a model from a provider submenu must
-                                // also switch the active provider to that model's
-                                // provider, otherwise the selection is silently
-                                // ignored while the active provider differs.
-                                llmProviderRaw = provider.rawValue
-                                setReasoningModel(model, for: provider)
-                            } label: {
-                                if model == AIModelNames.reasoning(forProvider: provider) {
-                                    Label(model, systemImage: "checkmark")
-                                } else {
-                                    Text(model)
-                                }
-                            }
-                        }
-                    } label: {
-                        Text("\(provider.displayName) modeli")
-                    }
-                }
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: activeProvider == .deepSeek || activeProvider == .openCodeZen || activeProvider == .openCodeGo ? "brain.head.profile" : "cpu")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(themeColor)
-                    Text("\(activeProvider.displayName) · \(activeReasoningModel)")
-                        .font(.system(size: 11, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.system(size: 8, weight: .bold))
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.horizontal, 9)
-                .padding(.vertical, 5)
-                .background(Color.primary.opacity(0.05))
-                .clipShape(Capsule())
-                .overlay(Capsule().strokeBorder(Color.glassStroke, lineWidth: 0.8))
-            }
-            .menuStyle(.borderlessButton)
-            .layoutPriority(1)
-
-            if !supportedReasoningEfforts.isEmpty {
-                Menu {
-                    ForEach(supportedReasoningEfforts, id: \.self) { effort in
-                        Button {
-                            setReasoningEffort(effort)
-                        } label: {
-                            if selectedReasoningEffort == effort {
-                                Label("effort: \(effort)", systemImage: "checkmark")
-                            } else {
-                                Text("effort: \(effort)")
-                            }
-                        }
-                    }
-                } label: {
-                    Text("effort: \(selectedReasoningEffort)")
-                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(themeColor)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 5)
-                        .background(Color.primary.opacity(0.05))
-                        .clipShape(Capsule())
-                }
-                .menuStyle(.borderlessButton)
-            }
 
             Menu {
                 Button("Onay İste") { setAuthorityMode(.manual) }
@@ -1119,7 +925,9 @@ struct ContentView: View {
 
             Spacer(minLength: 0)
 
-            contextMeter
+            Text(workspaceMode == .agent ? "Agent" : "Chat")
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .foregroundStyle(workspaceMode == .agent ? themeColor : .secondary)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
@@ -1147,58 +955,6 @@ struct ContentView: View {
         Task { @MainActor in
             try? await settingsViewModel.setAuthorityMode(mode)
         }
-    }
-
-    private func reasoningModelCandidates(for provider: LLMProvider) -> [String] {
-        let cached = settingsViewModel.models(for: credentialProvider(for: provider))
-        if !cached.isEmpty {
-            return cached
-        }
-
-        // Before the live catalog is fetched (or when offline), show the curated
-        // fallback so the picker is never empty. DeepSeek keeps its own set.
-        switch provider {
-        case .openCodeZen:
-            return AIModelNames.openCodeZenCatalog
-        case .openCodeGo:
-            return AIModelNames.openCodeGoCatalog
-        default:
-            return [
-                AIModelNames.reasoning(forProvider: provider),
-                AIModelNames.fast(forProvider: provider),
-                AIModelNames.coding(forProvider: provider)
-            ]
-        }
-    }
-
-    private func setReasoningModel(_ model: String, for provider: LLMProvider) {
-        switch provider {
-        case .openAI: customOpenAIReasoningModel = model
-        case .deepSeek: customDeepSeekReasoningModel = model
-        case .openCodeZen: customOpenCodeZenReasoningModel = model
-        case .openCodeGo: customOpenCodeGoReasoningModel = model
-        case .ollama: customOllamaReasoningModel = model
-        }
-    }
-
-    @ViewBuilder
-    private var contextMeter: some View {
-        let usage = viewModel.contextUsage
-        VStack(alignment: .trailing, spacing: 2) {
-            Text("Konteks %\(Int((usage.fraction * 100).rounded()))")
-                .font(.system(size: 9, weight: .semibold, design: .rounded))
-                .foregroundStyle(usage.fraction > 0.85 ? .red : .secondary)
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Color.primary.opacity(0.08))
-                    Capsule()
-                        .fill(usage.fraction > 0.85 ? Color.red : (usage.fraction > 0.6 ? Color.orange : themeColor))
-                        .frame(width: geo.size.width * usage.fraction)
-                }
-            }
-            .frame(width: 72, height: 4)
-        }
-        .help("Kullanılan tahmini bağlam")
     }
 
     @ViewBuilder
@@ -1269,6 +1025,8 @@ struct ContentView: View {
                 }
                 .buttonStyle(.interactive)
                 .pointerCursor()
+                .disabled(!canSubmitCurrentMode)
+                .opacity(canSubmitCurrentMode ? 1 : 0.5)
                 .transition(.asymmetric(
                     insertion: .scale(scale: 0.5).combined(with: .opacity),
                     removal: .scale(scale: 0.5).combined(with: .opacity)
@@ -1345,12 +1103,6 @@ struct ContentView: View {
 
     // MARK: - Helper Methods
 
-    private func dismissInterviewVault() {
-        var tx = Transaction()
-        tx.disablesAnimations = true
-        withTransaction(tx) { isInterviewVaultPresented = false }
-    }
-
     private func handleInputSubmit() {
         if showSlashCommands, !filteredSlashCommands.isEmpty {
             let idx = min(max(selectedSlashIndex, 0), filteredSlashCommands.count - 1)
@@ -1383,29 +1135,61 @@ struct ContentView: View {
         return token
     }
 
+    private var canSubmitCurrentMode: Bool {
+        switch workspaceMode {
+        case .chat:
+            return providerViewModel.canUseChat
+        case .agent:
+            return providerViewModel.canUseAgent
+                && !taskRuntimeViewModel.hasActiveSession
+                && viewModel.attachedFileData == nil
+        }
+    }
+
     private func submitQuery() {
         guard !inputText.isEmpty || viewModel.attachedFileData != nil else { return }
+        guard canSubmitCurrentMode else {
+            commandErrorMessage = workspaceMode == .agent
+                ? "Agent mode requires an available JSON-capable provider and text-only input."
+                : "The selected provider is not ready for chat."
+            return
+        }
+
         let query = inputText
-        inputText = ""
         let searchMode: WebSearchMode = forceWebSearch ? .forceOn : .automatic
-        // A new user query should always pull the view back to the newest
-        // message, so a prior manual scroll-up cannot permanently disable
-        // auto-scroll for the next reply.
         isNearBottom = true
 
-        if viewModel.attachedFileData != nil || forceWebSearch {
-            // Attachment/forced-search presentation remains on the temporary
-            // compatibility bridge until the corresponding V2 commands land.
-            viewModel.submitQuery(query, webSearchMode: searchMode)
-        } else {
+        switch workspaceMode {
+        case .agent:
+            inputText = ""
             Task { @MainActor in
                 do {
-                    try await chatViewModel.submit(query)
+                    try await taskRuntimeViewModel.submitGoal(query)
                     commandErrorMessage = nil
                 } catch {
-                    commandErrorMessage = "Command failed: \(error.localizedDescription)"
+                    commandErrorMessage = "Agent command failed: \(error.localizedDescription)"
                     if inputText.isEmpty {
                         inputText = query
+                    }
+                }
+            }
+
+        case .chat:
+            inputText = ""
+            if viewModel.attachedFileData != nil || forceWebSearch {
+                // Attachment/forced-search presentation remains on the temporary
+                // compatibility bridge until the corresponding V2 commands land.
+                viewModel.submitQuery(query, webSearchMode: searchMode)
+            } else {
+                Task { @MainActor in
+                    do {
+                        try await chatViewModel.submit(query)
+                        commandErrorMessage = nil
+                    } catch {
+                        commandErrorMessage = "Command failed: \(error.localizedDescription)"
+                        if inputText.isEmpty {
+                            inputText = query
+                        }
                     }
                 }
             }

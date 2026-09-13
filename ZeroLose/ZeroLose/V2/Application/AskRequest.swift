@@ -4,20 +4,20 @@ nonisolated struct AskRequest: Sendable, Equatable {
     let sessionID: ModelSessionID
     let conversationID: String
     let text: String
-    let modelID: String
+    let selection: ProviderSelectionSnapshot
     let activeGoalID: GoalID?
 
     nonisolated init(
         sessionID: ModelSessionID,
         conversationID: String,
         text: String,
-        modelID: String,
+        selection: ProviderSelectionSnapshot,
         activeGoalID: GoalID?
     ) {
         self.sessionID = sessionID
         self.conversationID = conversationID
         self.text = text
-        self.modelID = modelID
+        self.selection = selection
         self.activeGoalID = activeGoalID
     }
 }

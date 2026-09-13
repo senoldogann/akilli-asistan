@@ -8,6 +8,234 @@ enum V2RuntimeCommandError: Error, Equatable {
     case unsupportedCommand(String)
 }
 
+protocol AgentOrchestrating: Sendable {
+    func start(goal: GoalSnapshot) async throws -> AgentSessionSnapshot
+    func pause() async
+    func resume() async throws
+    func cancel() async
+    func emergencyStop() async
+    func snapshot() async -> AgentSessionSnapshot?
+    func isPaused() async -> Bool
+}
+
+extension AgentOrchestrator: AgentOrchestrating {}
+
+nonisolated protocol AgentOrchestratorBuilding: Sendable {
+    func make(selection: ProviderSelectionSnapshot) async throws -> any AgentOrchestrating
+}
+
+nonisolated struct ClosureAgentOrchestratorBuilder: AgentOrchestratorBuilding {
+    private let build: @Sendable (ProviderSelectionSnapshot) async throws -> any AgentOrchestrating
+
+    init(
+        build: @escaping @Sendable (ProviderSelectionSnapshot) async throws -> any AgentOrchestrating
+    ) {
+        self.build = build
+    }
+
+    func make(selection: ProviderSelectionSnapshot) async throws -> any AgentOrchestrating {
+        try await build(selection)
+    }
+}
+
+nonisolated final class AgentEmergencyStopState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stopped = false
+
+    var isStopped: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return stopped
+    }
+
+    func stop() {
+        lock.lock()
+        stopped = true
+        lock.unlock()
+    }
+
+    func reset() {
+        lock.lock()
+        stopped = false
+        lock.unlock()
+    }
+}
+
+nonisolated final class AgentMutationExecutionState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var activeCount = 0
+
+    var isActive: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return activeCount > 0
+    }
+
+    func begin() {
+        lock.lock()
+        activeCount += 1
+        lock.unlock()
+    }
+
+    func end() {
+        lock.lock()
+        activeCount = max(0, activeCount - 1)
+        lock.unlock()
+    }
+}
+
+actor AgentCommandRuntime {
+    private let orchestratorBuilder: any AgentOrchestratorBuilding
+    private let selectionProvider: @Sendable () async -> ProviderSelectionSnapshot
+    private let emergencyStopState: AgentEmergencyStopState
+    private let mutationExecutionActive: @Sendable () async -> Bool
+    private var orchestrator: (any AgentOrchestrating)?
+    private var activeRun: Task<AgentSessionSnapshot, Error>?
+    private var isStartingRun = false
+
+    init(
+        orchestratorBuilder: any AgentOrchestratorBuilding,
+        selectionProvider: @escaping @Sendable () async -> ProviderSelectionSnapshot,
+        emergencyStopState: AgentEmergencyStopState,
+        mutationExecutionActive: @escaping @Sendable () async -> Bool = { false }
+    ) {
+        self.orchestratorBuilder = orchestratorBuilder
+        self.selectionProvider = selectionProvider
+        self.emergencyStopState = emergencyStopState
+        self.mutationExecutionActive = mutationExecutionActive
+    }
+
+    func submitUserGoal(_ text: String) async throws -> AgentSessionSnapshot {
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else {
+            throw V2RuntimeCommandError.unsupportedCommand("agent-empty-goal")
+        }
+        guard !isStartingRun else {
+            throw V2RuntimeCommandError.unsupportedCommand("agent-session-already-active")
+        }
+        isStartingRun = true
+
+        if let orchestrator,
+           let existing = await orchestrator.snapshot(),
+           !Self.isTerminal(existing.lifecycle) {
+            isStartingRun = false
+            throw V2RuntimeCommandError.unsupportedCommand("agent-session-already-active")
+        }
+
+        let selection = await selectionProvider()
+        let orchestrator: any AgentOrchestrating
+        do {
+            orchestrator = try await orchestratorBuilder.make(selection: selection)
+        } catch {
+            isStartingRun = false
+            throw error
+        }
+        self.orchestrator = orchestrator
+        isStartingRun = false
+        emergencyStopState.reset()
+
+        let goal = GoalSnapshot(
+            id: GoalID(rawValue: UUID().uuidString),
+            objective: normalized
+        )
+        let run = Task {
+            try await orchestrator.start(goal: goal)
+        }
+        activeRun = run
+
+        for _ in 0..<100 {
+            if let session = await orchestrator.snapshot() {
+                return session
+            }
+            await Task.yield()
+        }
+
+        do {
+            let final = try await run.value
+            activeRun = nil
+            return final
+        } catch {
+            activeRun = nil
+            throw error
+        }
+    }
+
+    func pause(sessionID: AgentSessionID) async throws {
+        let orchestrator = try await requireActiveSession(sessionID).orchestrator
+        await orchestrator.pause()
+    }
+
+    func resume(sessionID: AgentSessionID) async throws {
+        let orchestrator = try await requireActiveSession(sessionID).orchestrator
+        try await orchestrator.resume()
+    }
+
+    func cancel(sessionID: AgentSessionID) async throws {
+        let orchestrator = try await requireActiveSession(sessionID).orchestrator
+        await orchestrator.cancel()
+    }
+
+    func emergencyStop() async throws {
+        guard let orchestrator,
+              let session = await orchestrator.snapshot(),
+              !Self.isTerminal(session.lifecycle) else {
+            throw V2RuntimeCommandError.unsupportedCommand("agent-session-not-active")
+        }
+        emergencyStopState.stop()
+        await orchestrator.emergencyStop()
+    }
+
+    func snapshot() async -> (
+        session: AgentSessionSnapshot?,
+        isPaused: Bool,
+        mutationExecutionActive: Bool
+    ) {
+        guard let orchestrator else {
+            return (nil, false, await mutationExecutionActive())
+        }
+        return (
+            await orchestrator.snapshot(),
+            await orchestrator.isPaused(),
+            await mutationExecutionActive()
+        )
+    }
+
+    func waitForCurrentRun() async -> AgentSessionSnapshot? {
+        guard let activeRun else {
+            return await orchestrator?.snapshot()
+        }
+
+        defer { self.activeRun = nil }
+        do {
+            return try await activeRun.value
+        } catch {
+            return await orchestrator?.snapshot()
+        }
+    }
+
+    private func requireActiveSession(
+        _ sessionID: AgentSessionID
+    ) async throws -> (orchestrator: any AgentOrchestrating, session: AgentSessionSnapshot) {
+        guard let orchestrator,
+              let session = await orchestrator.snapshot(),
+              session.id == sessionID,
+              !Self.isTerminal(session.lifecycle) else {
+            throw V2RuntimeCommandError.unsupportedCommand("agent-session-not-active")
+        }
+        return (orchestrator, session)
+    }
+
+    private static func isTerminal(_ lifecycle: AgentLifecycle) -> Bool {
+        switch lifecycle {
+        case .completed, .cancelled, .blocked, .failed, .manualResolutionRequired:
+            return true
+        case .created, .planning, .ready, .executing, .observing, .verifying:
+            return false
+        }
+    }
+}
+
+
 /// Main application runtime used by the SwiftUI shell after the V2 cutover.
 ///
 /// This controller intentionally owns no physical-input, shell, AppleScript, or
@@ -25,13 +253,14 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
     private let vectorStore: VectorStore
     private let chatHistoryService: ChatHistoryService
     private let nativeToolRuntime: V2NativeToolRuntime
-    private let responseCacheService: ResponseCacheService
     private let requestCoordinator: RequestCoordinator
     private let attachmentContextProvider: any MutableAttachmentContextProviding
-    private let modelIDProvider: () -> String
+    private let selectionProvider: @Sendable () async -> ProviderSelectionSnapshot
+    private let agentRuntime: AgentCommandRuntime?
 
     private weak var shellViewModel: ShellViewModel?
     private var activeTask: Task<Void, Never>?
+    private var agentStateTask: Task<Void, Never>?
     private var messages: [ChatMessage] = []
     private var isBusy = false
     private var statusMessage = "Ready"
@@ -45,7 +274,9 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
     private var authorityMode: AuthorityMode
     private var askConversationID = UUID().uuidString
     private var activeAskSessionID: ModelSessionID?
+    private var activeAskSelection: ProviderSelectionSnapshot?
     var onAuthorityModeChanged: ((AuthorityMode) -> Void)?
+    var onAgentStateChanged: ((TaskRuntimeProjectionSnapshot) -> Void)?
 
     init(
         intelligenceService: IntelligenceService,
@@ -60,7 +291,8 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
         nativeToolRuntime: V2NativeToolRuntime,
         requestCoordinator: RequestCoordinator,
         attachmentContextProvider: any MutableAttachmentContextProviding,
-        modelIDProvider: @escaping () -> String,
+        selectionProvider: @escaping @Sendable () async -> ProviderSelectionSnapshot,
+        agentRuntime: AgentCommandRuntime? = nil,
         initialAuthorityMode: AuthorityMode
     ) {
         self.intelligenceService = intelligenceService
@@ -73,10 +305,10 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
         self.vectorStore = vectorStore
         self.chatHistoryService = chatHistoryService
         self.nativeToolRuntime = nativeToolRuntime
-        self.responseCacheService = .shared
         self.requestCoordinator = requestCoordinator
         self.attachmentContextProvider = attachmentContextProvider
-        self.modelIDProvider = modelIDProvider
+        self.selectionProvider = selectionProvider
+        self.agentRuntime = agentRuntime
         self.authorityMode = initialAuthorityMode
         installObservations()
     }
@@ -91,7 +323,46 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
     func submitUserGoal(_ text: String) async throws {
         let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty else { return }
-        throw V2RuntimeCommandError.unsupportedCommand("autonomous-goal-runtime-not-configured")
+        guard let agentRuntime else {
+            throw V2RuntimeCommandError.unsupportedCommand("agent-runtime-unavailable")
+        }
+
+        _ = await nativeToolRuntime.configuration()
+        let session = try await agentRuntime.submitUserGoal(normalized)
+        let initialState = await agentRuntime.snapshot()
+        publishAgentState(
+            session: session,
+            isPaused: initialState.isPaused,
+            mutationExecutionActive: initialState.mutationExecutionActive
+        )
+        if session.lifecycle == .failed {
+            throw V2RuntimeCommandError.unsupportedCommand("agent-structured-planning-blocked")
+        }
+
+        guard !Self.isTerminalAgentLifecycle(session.lifecycle) else { return }
+        agentStateTask?.cancel()
+        agentStateTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                let state = await agentRuntime.snapshot()
+                guard let current = state.session else { break }
+                self.publishAgentState(
+                    session: current,
+                    isPaused: state.isPaused,
+                    mutationExecutionActive: state.mutationExecutionActive
+                )
+                if Self.isTerminalAgentLifecycle(current.lifecycle) {
+                    _ = await agentRuntime.waitForCurrentRun()
+                    break
+                }
+                do {
+                    try await Task.sleep(nanoseconds: 25_000_000)
+                } catch {
+                    break
+                }
+            }
+            self.agentStateTask = nil
+        }
     }
 
     func sendChatMessage(_ text: String) async throws {
@@ -99,15 +370,47 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
     }
 
     func pauseGoal(_ goalID: GoalID) async throws {
-        throw V2RuntimeCommandError.unsupportedCommand("pause:\(goalID.rawValue)")
+        throw V2RuntimeCommandError.unsupportedCommand("agent-session-id-required:pause:\(goalID.rawValue)")
     }
 
     func resumeGoal(_ goalID: GoalID) async throws {
-        throw V2RuntimeCommandError.unsupportedCommand("resume:\(goalID.rawValue)")
+        throw V2RuntimeCommandError.unsupportedCommand("agent-session-id-required:resume:\(goalID.rawValue)")
     }
 
     func cancelGoal(_ goalID: GoalID) async throws {
-        stopResponse()
+        throw V2RuntimeCommandError.unsupportedCommand("agent-session-id-required:cancel:\(goalID.rawValue)")
+    }
+
+    func pauseAgentSession(_ sessionID: AgentSessionID) async throws {
+        guard let agentRuntime else {
+            throw V2RuntimeCommandError.unsupportedCommand("agent-runtime-unavailable")
+        }
+        try await agentRuntime.pause(sessionID: sessionID)
+        await publishCurrentAgentState()
+    }
+
+    func resumeAgentSession(_ sessionID: AgentSessionID) async throws {
+        guard let agentRuntime else {
+            throw V2RuntimeCommandError.unsupportedCommand("agent-runtime-unavailable")
+        }
+        try await agentRuntime.resume(sessionID: sessionID)
+        await publishCurrentAgentState()
+    }
+
+    func cancelAgentSession(_ sessionID: AgentSessionID) async throws {
+        guard let agentRuntime else {
+            throw V2RuntimeCommandError.unsupportedCommand("agent-runtime-unavailable")
+        }
+        try await agentRuntime.cancel(sessionID: sessionID)
+        await publishCurrentAgentState()
+    }
+
+    func emergencyStop() async throws {
+        guard let agentRuntime else {
+            throw V2RuntimeCommandError.unsupportedCommand("agent-runtime-unavailable")
+        }
+        try await agentRuntime.emergencyStop()
+        await publishCurrentAgentState()
     }
 
     func approveInvocation(_ invocationID: InvocationID) async throws {
@@ -135,6 +438,7 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
         let previousConversationID = askConversationID
         askConversationID = UUID().uuidString
         activeAskSessionID = nil
+        activeAskSelection = nil
         messages.removeAll()
         intelligenceService.clearHistory()
         Task {
@@ -170,12 +474,17 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
         guard isBusy else { return }
         activeTask?.cancel()
         activeTask = nil
-        if let sessionID = activeAskSessionID {
+        if let sessionID = activeAskSessionID,
+           let selection = activeAskSelection {
             Task {
-                await requestCoordinator.cancel(sessionID: sessionID)
+                await requestCoordinator.cancel(
+                    sessionID: sessionID,
+                    providerID: selection.providerID
+                )
             }
         }
         activeAskSessionID = nil
+        activeAskSelection = nil
         isBusy = false
         statusMessage = "Interrupted"
 
@@ -315,85 +624,6 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
         }
     }
 
-    @discardableResult
-    func warmUpInterviewContext() -> String {
-        let activeRoleContext = ActiveRoleProfileService.warmUpContext(
-            for: ActiveRoleProfileService.currentProfile()
-        )
-        let baseContext = """
-        [INTERVIEW MODE ACTIVATED]
-        \(activeRoleContext)
-
-        Identity Rules:
-        - Use only the loaded Persona & Context, active role, interview notes, and vault entries as facts about the candidate.
-        - If a personal detail is missing, do not invent a name, background, location, or years of experience.
-
-        Language Rules:
-        - Match the interviewer’s language exactly.
-        - For Finnish, use professional spoken Finnish with natural tech terms.
-
-        RESPONSE RULES:
-        - Keep answers concise, interview-ready and factual.
-        - Prefer active role grounding for company, stack, and expectation-specific questions.
-        - Use memory only when directly relevant to the question.
-        """
-
-        let categories = VaultService.shared.categories
-        let allItems: [(category: String, item: VaultInterviewItem)] = categories.flatMap { category in
-            category.items.map { (category.title, $0) }
-        }
-        let rawNotes = UserDefaults.standard.string(forKey: "teleprompterText") ?? ""
-        let noteCacheEntries = IntelligenceService.interviewNoteCacheEntries(from: rawNotes)
-
-        guard !allItems.isEmpty || !noteCacheEntries.isEmpty else {
-            intelligenceService.setTransientPersonaContext(baseContext)
-            statusMessage = "⚠️ Vault ve Interview Notes boş. Sadece temel interview context yüklendi."
-            publishSnapshot()
-            return statusMessage
-        }
-
-        responseCacheService.clearCache()
-        let vaultEntries = allItems.map { entry in
-            ResponseCacheService.InterviewCacheEntry(
-                question: entry.item.question,
-                answer: entry.item.answerFinnish,
-                category: entry.category,
-                translation: entry.item.translationTr,
-                keyPoints: entry.item.keyPoints
-            )
-        }
-        _ = responseCacheService.primeInterviewVault(entries: vaultEntries)
-        _ = responseCacheService.primeInterviewVault(entries: noteCacheEntries)
-
-        let coverageEntries = allItems.map {
-            (question: $0.item.question, answer: $0.item.answerFinnish, category: $0.category)
-        } + noteCacheEntries
-        let coverage = responseCacheService.interviewVaultCoverage(entries: coverageEntries)
-        let categoryTitles = categories.map(\.title).joined(separator: ", ")
-        let notesSummary = noteCacheEntries.isEmpty
-            ? "No interview notes cached"
-            : "Interview Notes cached: \(noteCacheEntries.count)"
-        let warmupContext = """
-        [INTERVIEW WARM-UP STATUS]
-        Cache coverage: \(coverage.cached)/\(coverage.total)
-        Categories: \(categoryTitles)
-        \(notesSummary)
-
-        Rules:
-        - Use interview vault as the primary source.
-        - Use Interview Notes as a secondary direct source when they contain a strong matching answer.
-        - Choose a single best-matching vault answer; do not blend unrelated entries.
-        - Keep answers concise and interview-ready.
-        - Never mention private contact details or salary unless explicitly asked.
-        """
-        intelligenceService.setTransientPersonaContext("\(baseContext)\n\n\(warmupContext)")
-        statusMessage = coverage.missing == 0
-            ? "🔥 Warm-up tamam: cache doğrulandı \(coverage.cached)/\(coverage.total)."
-            : "⚠️ Warm-up kısmi: cache \(coverage.cached)/\(coverage.total), eksik \(coverage.missing)."
-        publishSnapshot()
-        return statusMessage
-    }
-
     nonisolated static func userDefaultsBool(_ key: String, defaultValue: Bool) -> Bool {
         let defaults = UserDefaults.standard
         guard defaults.object(forKey: key) != nil else { return defaultValue }
@@ -408,8 +638,9 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
         guard !isBusy else {
             throw V2RuntimeCommandError.unsupportedCommand("concurrent-chat")
         }
-
         isBusy = true
+
+        let selection = await selectionProvider()
         statusMessage = "Thinking..."
         messages.append(ChatMessage(text: query, isUser: true, type: .text))
         let assistantID = UUID()
@@ -428,6 +659,7 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
         let conversationID = askConversationID
         let sessionID = ModelSessionID(rawValue: UUID().uuidString)
         activeAskSessionID = sessionID
+        activeAskSelection = selection
         let hadAttachmentContext = await stageAttachmentContextIfNeeded(conversationID: conversationID)
         if hadAttachmentContext {
             attachedFileData = nil
@@ -441,7 +673,7 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
                 sessionID: sessionID,
                 conversationID: conversationID,
                 text: query,
-                modelID: modelIDProvider(),
+                selection: selection,
                 activeGoalID: nil
             )
             let stream = await requestCoordinator.stream(request)
@@ -487,6 +719,7 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
             await attachmentContextProvider.clearAttachments(conversationID: conversationID)
             if activeAskSessionID == sessionID {
                 activeAskSessionID = nil
+                activeAskSelection = nil
             }
             isBusy = false
             statusMessage = "Ready"
@@ -496,6 +729,7 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
             await attachmentContextProvider.clearAttachments(conversationID: conversationID)
             if activeAskSessionID == sessionID {
                 activeAskSessionID = nil
+                activeAskSelection = nil
             }
             isBusy = false
             activeTask = nil
@@ -856,19 +1090,49 @@ final class V2ShellRuntimeController: RuntimeCommandControlling, ShellFeatureCon
         }
     }
 
+    private static func isTerminalAgentLifecycle(_ lifecycle: AgentLifecycle) -> Bool {
+        switch lifecycle {
+        case .completed, .cancelled, .blocked, .failed, .manualResolutionRequired:
+            return true
+        case .created, .planning, .ready, .executing, .observing, .verifying:
+            return false
+        }
+    }
+
+    private func publishCurrentAgentState() async {
+        guard let agentRuntime else { return }
+        let state = await agentRuntime.snapshot()
+        guard let session = state.session else { return }
+        publishAgentState(
+            session: session,
+            isPaused: state.isPaused,
+            mutationExecutionActive: state.mutationExecutionActive
+        )
+    }
+
+    private func publishAgentState(
+        session: AgentSessionSnapshot,
+        isPaused: Bool,
+        mutationExecutionActive: Bool
+    ) {
+        onAgentStateChanged?(
+            TaskRuntimeProjectionSnapshot(
+                goalID: session.goalID,
+                statusText: session.lifecycle.rawValue,
+                sessionID: session.id,
+                lifecycle: session.lifecycle,
+                isPaused: isPaused,
+                mutationCapableExecutionActive: mutationExecutionActive && !isPaused
+            )
+        )
+    }
+
     private func publishSnapshot() {
-        let provider = AIModelNames.currentProvider()
-        let model = AIModelNames.reasoning(forProvider: provider)
         shellViewModel?.apply(
             ShellProjectionSnapshot(
                 messages: messages,
                 isBusy: isBusy,
                 statusMessage: statusMessage,
-                currentModelDisplay: "\(provider.displayName) · \(model)",
-                contextUsage: ContextUsage(
-                    usedTokens: intelligenceService.contextTokenEstimate,
-                    windowTokens: AIModelNames.contextWindow(forProvider: provider, model: AIModelNames.reasoning)
-                ),
                 isClipboardActive: isClipboardActive,
                 isListeningActive: isListeningActive,
                 liveVoicePreview: liveVoicePreview,

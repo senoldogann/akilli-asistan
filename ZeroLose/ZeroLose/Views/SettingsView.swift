@@ -1,1600 +1,532 @@
 import SwiftUI
 import AppKit
-import PDFKit
-import UniformTypeIdentifiers
-import CoreGraphics
-import AVFoundation
-import ApplicationServices
-import os
 
 struct SettingsView: View {
     @Binding var isPresented: Bool
     @Bindable var viewModel: SettingsViewModel
-    
-    @AppStorage("fontSize") private var fontSize: Double = 14.0
-    @AppStorage("fontDesign") private var fontDesignObj: String = "monospaced"
-    @AppStorage("windowWidth") private var windowWidth: Double = 450.0
-    @AppStorage("windowHeight") private var windowHeight: Double = 400.0
-    @AppStorage("windowOpacity") private var windowOpacity: Double = 1.0
-    @AppStorage("autoAnalyze") private var autoAnalyze: Bool = true
-    @AppStorage("useExternalAudio") private var useExternalAudio: Bool = true
-    @AppStorage("stealthModeEnabled") private var stealthMode: Bool = false
-    @AppStorage("audioLanguage") private var audioLanguage: String = "auto"
-    @AppStorage("streamingMode") private var streamingMode: String = "streaming"
-    @AppStorage("streamingSpeed") private var streamingSpeed: String = "normal"
-    @AppStorage("userPersonaContext") private var userPersonaContext: String = ""
-    @AppStorage("activeJobDescription") private var activeJobDescription: String = ""
-    @AppStorage("teleprompterText") private var teleprompterText: String = ""
+    @Bindable var providerViewModel: ProviderViewModel
+
+    @State private var selectedDomain: SettingsDomain? = .providers
+    @State private var tavilyKeyInput = ""
+    @State private var groqKeyInput = ""
+    @State private var isClearingMemory = false
+
+    @AppStorage("fontSize") private var fontSize: Double = 14
+    @AppStorage("fontDesign") private var fontDesign: String = "monospaced"
+    @AppStorage("windowWidth") private var windowWidth: Double = 450
+    @AppStorage("windowHeight") private var windowHeight: Double = 400
+    @AppStorage("windowOpacity") private var windowOpacity: Double = 1
     @AppStorage("selectedThemeName") private var selectedTheme: String = "Red"
-    @AppStorage("llm_provider") private var llmProvider: String = LLMProvider.ollama.rawValue
-    
-    // API Anahtarları
-    @State private var openAIKey: String = ""
-    @State private var deepSeekKey: String = ""
-    @State private var openCodeZenKey: String = ""
-    @State private var openCodeGoKey: String = ""
-    @State private var ollamaKey: String = ""
-    @State private var groqKey: String = ""
-    @State private var tavilyKey: String = ""
-    @State private var showKeys: Bool = false
-    @State private var isLoadingAPIKeys: Bool = false
-    @State private var memoryChunkCount: Int = 0
-    @State private var isClearingMemory: Bool = false
-    @State private var memoryStatus: String = ""
-    @State private var selectedTab: SettingsTab = .general
-    @State private var isDraggingOverCV = false
-    @State private var isDraggingOverJD = false
-    @State private var openaiModels: [String] = []
-    @State private var deepseekModels: [String] = []
-    @State private var openCodeZenModels: [String] = []
-    @State private var openCodeGoModels: [String] = []
-    @State private var ollamaModels: [String] = []
-    
-    @ObservedObject private var hotkeyManager = HotkeyManager.shared
-    private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.zerolose", category: "SettingsView")
-    
+    @AppStorage("autoAnalyze") private var autoAnalyze = true
+    @AppStorage("stealthModeEnabled") private var stealthMode = false
+    @AppStorage("useExternalAudio") private var useExternalAudio = true
+    @AppStorage("audioLanguage") private var audioLanguage = "auto"
+    @AppStorage("streamingMode") private var streamingMode = "streaming"
+    @AppStorage("streamingSpeed") private var streamingSpeed = "normal"
+
     var body: some View {
-        VStack(spacing: 0) {
-            // Başlık
-            settingsHeader
-                .padding(.horizontal, 24)
-                .padding(.top, 20)
-                .padding(.bottom, 14)
-            
-            // Sekme Seçici
-            tabSelectorBar
-                .padding(.horizontal, 24)
-                .padding(.bottom, 12)
-            
-            Divider()
-                .overlay(Color.glassStroke)
-            
-            // Kaydırılabilir İçerik
-            ScrollView {
-                VStack(spacing: 24) {
-                    switch selectedTab {
-                    case .general:
-                        generalTabView
-                    case .api:
-                        apiTabView
-                    case .context:
-                        contextTabView
-                    case .system:
-                        systemTabView
-                    case .memory:
-                        memoryTabView
-                    }
-                }
-                .padding(24)
+        NavigationSplitView {
+            List(SettingsDomain.allCases, selection: $selectedDomain) { domain in
+                Label(domain.rawValue, systemImage: domain.systemImage)
+                    .tag(Optional(domain))
             }
+            .navigationTitle("Settings")
+            .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 220)
+        } detail: {
+            VStack(spacing: 0) {
+                detailHeader
+                Divider()
+                ScrollView {
+                    selectedSection
+                        .frame(maxWidth: 760, alignment: .topLeading)
+                        .padding(24)
+                }
+            }
+            .background(Color(nsColor: .windowBackgroundColor))
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background {
-            // Semi-translucent overlay to combine with window-level blur
-            Color.black.opacity(0.15)
-                .ignoresSafeArea()
-        }
-        .preferredColorScheme(.dark)
-        .onAppear {
-            refreshMemoryState()
-            WindowManager.shared.updateWindowOpacity(windowOpacity)
-        }
-        .onChange(of: selectedTheme) { _, newValue in
-            ThemeStore.shared.apply(newValue)
-        }
-        .onChange(of: windowWidth) { _, newValue in
-            WindowManager.shared.updateMainWindowSize(width: newValue, height: windowHeight)
-        }
-        .onChange(of: windowHeight) { _, newValue in
-            WindowManager.shared.updateMainWindowSize(width: windowWidth, height: newValue)
-        }
-        .onChange(of: windowOpacity) { _, newValue in
-            WindowManager.shared.updateWindowOpacity(newValue)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .vectorStoreDidChange)) { _ in
-            refreshMemoryState()
+        .frame(minWidth: 700, minHeight: 620)
+        .task {
+            await providerViewModel.refresh()
+            _ = await viewModel.reloadIntegrations()
+            await viewModel.refreshMemoryState()
         }
     }
-    
+
+    private var detailHeader: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(selectedDomain?.rawValue ?? SettingsDomain.providers.rawValue)
+                    .font(.title2.weight(.semibold))
+                Text("ZeroLose runtime configuration")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Done") { isPresented = false }
+                .keyboardShortcut(.cancelAction)
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 14)
+    }
+
+    @ViewBuilder
+    private var selectedSection: some View {
+        switch selectedDomain ?? .providers {
+        case .providers: providersSection
+        case .tools: toolsSection
+        case .runtime: runtimeSection
+        case .memory: memorySection
+        case .voice: voiceSection
+        case .appearance: appearanceSection
+        case .privacy: privacyDiagnosticsSection
+        }
+    }
+
+    private var providersSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SettingsCard(
+                title: "Providers",
+                subtitle: "Registered V2 model providers and the authoritative model selection."
+            ) {
+                ProviderSelectorView(viewModel: providerViewModel)
+
+                Divider()
+
+                ForEach(providerViewModel.snapshot.providers) { provider in
+                    VStack(alignment: .leading, spacing: 7) {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(provider.displayName)
+                                    .font(.headline)
+                                Text(provider.id.rawValue)
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Text(provider.availability.rawValue)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(providerStatusColor(provider.availability))
+                        }
+
+                        if provider.models.isEmpty {
+                            Text(provider.modelDiscoveryState == .failed ? "Model discovery failed." : "No discovered models.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text(provider.models.map(\.displayName).joined(separator: ", "))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                    Divider()
+                }
+            }
+
+            SettingsCard(
+                title: "OpenAI API Credential",
+                subtitle: "Stored in Keychain. The saved secret is never read back into the interface."
+            ) {
+                HStack {
+                    Label(
+                        providerViewModel.openAIKeyConfigured ? "Configured" : "Not configured",
+                        systemImage: providerViewModel.openAIKeyConfigured ? "checkmark.circle.fill" : "circle"
+                    )
+                    .foregroundStyle(providerViewModel.openAIKeyConfigured ? Color.green : Color.secondary)
+                    Spacer()
+                }
+
+                SecureField("Paste API key", text: $providerViewModel.openAIAPIKeyInput)
+                    .textFieldStyle(.roundedBorder)
+
+                HStack {
+                    Button("Save") {
+                        let value = providerViewModel.openAIAPIKeyInput
+                        Task { await providerViewModel.saveOpenAIAPIKey(value) }
+                    }
+                    .disabled(providerViewModel.openAIAPIKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                    Button("Remove", role: .destructive) {
+                        Task { await providerViewModel.removeOpenAIAPIKey() }
+                    }
+                    .disabled(!providerViewModel.openAIKeyConfigured)
+
+                    Spacer()
+                    if let error = providerViewModel.errorMessage {
+                        Text(error)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+        }
+    }
+
+    private var toolsSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SettingsCard(
+                title: "Tools",
+                subtitle: "Credentials used by tool integrations are separate from model providers."
+            ) {
+                integrationCredentialRow(
+                    title: "Tavily Web Search",
+                    description: "Optional web-search integration credential.",
+                    credential: .tavily,
+                    input: $tavilyKeyInput
+                )
+            }
+        }
+    }
+
+    private var runtimeSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SettingsCard(
+                title: "Runtime",
+                subtitle: "Authority and execution behavior for V2 commands."
+            ) {
+                Picker("Authority mode", selection: authorityModeBinding) {
+                    Text("Manual approval").tag(AuthorityMode.manual)
+                    Text("Auto approval").tag(AuthorityMode.auto)
+                    Text("Autonomous").tag(AuthorityMode.autonomous)
+                }
+                .pickerStyle(.segmented)
+
+                Toggle("Automatically analyze relevant screen context", isOn: $autoAnalyze)
+
+                HStack {
+                    Text("Current provider")
+                    Spacer()
+                    Text(providerViewModel.selectedProvider?.displayName ?? "Unavailable")
+                        .foregroundStyle(.secondary)
+                }
+                HStack {
+                    Text("Chat readiness")
+                    Spacer()
+                    readinessLabel(providerViewModel.canUseChat)
+                }
+                HStack {
+                    Text("Agent readiness")
+                    Spacer()
+                    readinessLabel(providerViewModel.canUseAgent)
+                }
+            }
+        }
+    }
+
+    private var memorySection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SettingsCard(
+                title: "Memory",
+                subtitle: "Inspect and clear persisted semantic memory state."
+            ) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Indexed chunks")
+                            .font(.headline)
+                        Text(viewModel.memoryStatus.isEmpty ? "Memory status not loaded." : viewModel.memoryStatus)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Text("\(viewModel.memoryChunkCount)")
+                        .font(.title3.monospacedDigit().weight(.semibold))
+                }
+
+                HStack {
+                    Button("Refresh") {
+                        Task { await viewModel.refreshMemoryState() }
+                    }
+                    Button("Clear Memory", role: .destructive) {
+                        guard !isClearingMemory else { return }
+                        isClearingMemory = true
+                        Task { @MainActor in
+                            await viewModel.clearMemory()
+                            isClearingMemory = false
+                        }
+                    }
+                    .disabled(isClearingMemory)
+                    Spacer()
+                }
+            }
+        }
+    }
+
+    private var voiceSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SettingsCard(
+                title: "Voice",
+                subtitle: "Transcription and listening configuration."
+            ) {
+                integrationCredentialRow(
+                    title: "Groq Transcription",
+                    description: "Optional credential for external speech transcription.",
+                    credential: .groq,
+                    input: $groqKeyInput
+                )
+
+                Divider()
+
+                Toggle("Use external audio transcription when available", isOn: $useExternalAudio)
+
+                Picker("Audio language", selection: $audioLanguage) {
+                    Text("Automatic").tag("auto")
+                    Text("English").tag("en")
+                    Text("Turkish").tag("tr")
+                    Text("Finnish").tag("fi")
+                }
+
+                Picker("Streaming", selection: $streamingMode) {
+                    Text("Streaming").tag("streaming")
+                    Text("Buffered").tag("buffered")
+                }
+
+                Picker("Response pace", selection: $streamingSpeed) {
+                    Text("Compact").tag("fast")
+                    Text("Normal").tag("normal")
+                    Text("Deliberate").tag("slow")
+                }
+            }
+        }
+    }
+
+    private var appearanceSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SettingsCard(
+                title: "Appearance",
+                subtitle: "Main window typography, dimensions, opacity, and accent theme."
+            ) {
+                Picker("Font design", selection: $fontDesign) {
+                    Text("Monospaced").tag("monospaced")
+                    Text("Rounded").tag("rounded")
+                    Text("Default").tag("default")
+                    Text("Serif").tag("serif")
+                }
+
+                valueSlider(title: "Font size", value: $fontSize, range: 10...24, suffix: " pt")
+                valueSlider(title: "Window width", value: $windowWidth, range: 350...800, suffix: " pt")
+                    .onChange(of: windowWidth) { _, _ in applyWindowGeometry() }
+                valueSlider(title: "Window height", value: $windowHeight, range: 300...1000, suffix: " pt")
+                    .onChange(of: windowHeight) { _, _ in applyWindowGeometry() }
+                valueSlider(title: "Window opacity", value: $windowOpacity, range: 0.35...1, suffix: "")
+                    .onChange(of: windowOpacity) { _, value in
+                        WindowManager.shared.updateWindowOpacity(value)
+                    }
+
+                Picker("Accent theme", selection: $selectedTheme) {
+                    ForEach(["Red", "Blue", "Green", "Purple", "Orange"], id: \.self) { theme in
+                        Text(theme).tag(theme)
+                    }
+                }
+            }
+        }
+    }
+
+    private var privacyDiagnosticsSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SettingsCard(
+                title: "Privacy & Diagnostics",
+                subtitle: "Screen visibility, macOS permissions, and presentation-safe runtime state."
+            ) {
+                Toggle("Hide ZeroLose windows from screen capture", isOn: $stealthMode)
+                    .onChange(of: stealthMode) { _, enabled in
+                        WindowManager.shared.updateSharingType(stealth: enabled)
+                    }
+
+                HStack {
+                    Button("Screen Recording") { openPrivacyPane("Privacy_ScreenCapture") }
+                    Button("Microphone") { openPrivacyPane("Privacy_Microphone") }
+                    Button("Accessibility") { openPrivacyPane("Privacy_Accessibility") }
+                }
+
+                Divider()
+
+                diagnosticRow("Provider revision", value: String(providerViewModel.snapshot.selection.revision))
+                diagnosticRow("Selected provider", value: providerViewModel.snapshot.selection.providerID.rawValue)
+                diagnosticRow("Selected model", value: providerViewModel.snapshot.selection.modelID)
+                diagnosticRow("Tavily configured", value: yesNo(viewModel.isIntegrationConfigured(.tavily)))
+                diagnosticRow("Groq configured", value: yesNo(viewModel.isIntegrationConfigured(.groq)))
+            }
+        }
+    }
+
     private var authorityModeBinding: Binding<AuthorityMode> {
         Binding(
             get: { viewModel.authorityMode },
-            set: { newValue in
-                Task { @MainActor in
-                    try? await viewModel.setAuthorityMode(newValue)
+            set: { mode in
+                Task {
+                    do {
+                        try await viewModel.setAuthorityMode(mode)
+                    } catch {
+                        // Runtime projections remain authoritative; failed commands
+                        // simply leave the current projected mode unchanged.
+                    }
                 }
             }
         )
     }
 
-    // MARK: - Sekme Çubuğu Bileşenleri
-    
-    private var tabSelectorBar: some View {
-        HStack(spacing: 8) {
-            ForEach(SettingsTab.allCases) { tab in
-                Button(action: {
-                    withAnimation(.spring(response: 0.28, dampingFraction: 0.75)) {
-                        selectedTab = tab
-                    }
-                }) {
-                    HStack(spacing: 6) {
-                        Image(systemName: tab.icon)
-                            .font(.system(size: 11, weight: .bold))
-                        Text(tab.rawValue)
-                            .font(.system(size: 11, weight: .semibold, design: .rounded))
-                    }
-                    .padding(.vertical, 7)
-                    .padding(.horizontal, 12)
-                    .background(selectedTab == tab ? Color.brandPrimary.opacity(0.18) : Color.glassFill)
-                    .foregroundColor(selectedTab == tab ? .white : Color.textSecondary)
-                    .cornerRadius(10)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10)
-                            .strokeBorder(selectedTab == tab ? Color.brandPrimary.opacity(0.4) : Color.glassStroke, lineWidth: 0.8)
-                    )
-                }
-                .buttonStyle(.plain)
-                .pointerCursor()
-            }
-        }
-    }
-    
     @ViewBuilder
-    private var generalTabView: some View {
-        HStack(alignment: .top, spacing: 20) {
-            appearanceSection
-                .frame(maxWidth: .infinity)
-            typographySection
-                .frame(maxWidth: .infinity)
-        }
-        windowSection
-    }
-    
-    @ViewBuilder
-    private var apiTabView: some View {
-        apiKeysSection
-    }
-    
-    @ViewBuilder
-    private var contextTabView: some View {
-        activeRoleSection
-        personaSection
-        storedContextSection
-    }
-    
-    @ViewBuilder
-    private var systemTabView: some View {
-        hotkeyStatusSection
-        permissionStatusSection
-        featuresSection
-    }
-    
-    @ViewBuilder
-    private var memoryTabView: some View {
-        memorySection
-    }
-    
-    // MARK: - Başlık
-    private var settingsHeader: some View {
-        HStack {
-            ZeroLoseIcon(type: .gear, color: .brandPrimary, size: 24)
-            Text("Settings")
-                .font(.system(size: 20, weight: .bold, design: .rounded))
-                .foregroundColor(.white)
-            
-            Spacer()
-            
-            // Kapat Düğmesi
-            Button(action: { withAnimation { isPresented = false } }) {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 22))
-                    .foregroundColor(Color.textSecondary)
-            }
-            .buttonStyle(.interactive)
-            .pointerCursor()
-        }
-    }
-    
-    // MARK: - Typography Section
-    private var typographySection: some View {
-        SettingsSection(title: "Typography", icon: .sparkles) {
-            VStack(spacing: 16) {
-                // Yazı Boyutu
-                SettingsRow(label: "Font Size", value: "\(Int(fontSize))pt") {
-                    Slider(value: $fontSize, in: 10...32, step: 1)
-                        .tint(.brandPrimary)
-                }
-                
-                // Yazı Tipi Tasarımı
-                HStack {
-                    Text("Font Style")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(Color.textPrimary)
-                    Spacer()
-                    Picker("", selection: $fontDesignObj) {
-                        Text("Mono").tag("monospaced")
-                        Text("System").tag("default")
-                        Text("Serif").tag("serif")
-                        Text("Rounded").tag("rounded")
-                    }
-                    .pickerStyle(.menu)
-                    .labelsHidden()
-                    .frame(width: 110)
-                    .tint(.brandPrimary)
-                }
-            }
-        }
-    }
-    
-    // MARK: - Persona Section
-    private var personaSection: some View {
-        SettingsSection(title: "Persona & Context (CV)", icon: .brain) {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Text("Paste or drop your CV / Experience Summary here (PDF/TXT supported). AI personalizes answers based on this.")
-                        .font(.system(size: 11))
-                        .foregroundColor(Color.textSecondary)
-                        .lineLimit(2)
-                    
-                    Spacer()
-                    
-                    // PDF/Metin İçe Aktar Düğmesi
-                    Button(action: importPersonaFile) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "square.and.arrow.down")
-                            Text("Import PDF/TXT")
-                        }
-                        .font(.system(size: 10, weight: .medium))
-                        .padding(.vertical, 5)
-                        .padding(.horizontal, 10)
-                        .background(Color.glassFill)
-                        .cornerRadius(6)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 6)
-                                .strokeBorder(Color.glassStroke, lineWidth: 0.5)
-                        )
-                    }
-                    .buttonStyle(.interactive)
-                    .pointerCursor()
-                }
-                
-                TextEditor(text: $userPersonaContext)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundColor(Color.textPrimary)
-                    .scrollContentBackground(.hidden)
-                    .padding(8)
-                    .background(Color.black.opacity(0.18))
-                    .cornerRadius(8)
-                    .frame(height: 100)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8)
-                            .strokeBorder(isDraggingOverCV ? Color.brandPrimary : Color.glassStroke, lineWidth: isDraggingOverCV ? 1.5 : 0.8)
-                    )
-            }
-            .background {
-                if isDraggingOverCV {
-                    RoundedRectangle(cornerRadius: 10)
-                        .fill(Color.brandPrimary.opacity(0.08))
-                }
-            }
-            .onDrop(of: [.fileURL], isTargeted: $isDraggingOverCV) { providers in
-                handleCVDrop(providers)
-            }
-        }
-    }
-
-    private var activeRoleSection: some View {
-        let preview = ActiveRoleProfileService.previewSummary(for: activeJobDescription)
-
-        return SettingsSection(title: "Active Interview Role", icon: .book) {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Text("Paste or drop the job description PDF/TXT file here. AI uses it to ground answers.")
-                        .font(.system(size: 11))
-                        .foregroundColor(Color.textSecondary)
-                        .lineLimit(2)
-
-                    Spacer()
-
-                    Button(action: importActiveRoleFile) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "doc.text.fill")
-                            Text("Import JD")
-                        }
-                        .font(.system(size: 10, weight: .medium))
-                        .padding(.vertical, 5)
-                        .padding(.horizontal, 10)
-                        .background(Color.glassFill)
-                        .cornerRadius(6)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 6)
-                                .strokeBorder(Color.glassStroke, lineWidth: 0.5)
-                        )
-                    }
-                    .buttonStyle(.interactive)
-                    .pointerCursor()
-                }
-
-                TextEditor(text: $activeJobDescription)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundColor(Color.textPrimary)
-                    .scrollContentBackground(.hidden)
-                    .padding(8)
-                    .background(Color.black.opacity(0.18))
-                    .cornerRadius(8)
-                    .frame(height: 110)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8)
-                            .strokeBorder(isDraggingOverJD ? Color.brandPrimary : Color.glassStroke, lineWidth: isDraggingOverJD ? 1.5 : 0.8)
-                    )
-
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Parsed Role Pack")
-                        .font(.system(size: 11, weight: .semibold, design: .rounded))
-                        .foregroundColor(.orange.opacity(0.9))
-
-                    Text(preview)
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.75))
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(10)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.glassFill)
-                        .cornerRadius(8)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8)
-                                .strokeBorder(Color.orange.opacity(0.16), lineWidth: 0.8)
-                        )
-                }
-            }
-            .background {
-                if isDraggingOverJD {
-                    RoundedRectangle(cornerRadius: 10)
-                        .fill(Color.brandPrimary.opacity(0.08))
-                }
-            }
-            .onDrop(of: [.fileURL], isTargeted: $isDraggingOverJD) { providers in
-                handleJDDrop(providers)
-            }
-        }
-    }
-    
-    // MARK: - Memory Section
-    private var memorySection: some View {
-        SettingsSection(title: "Memory (RAG)", icon: .brain) {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("AI remembers PDFs and conversations stored in the local vector database.")
-                    .font(.system(size: 11))
-                    .foregroundColor(Color.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                
-                HStack {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Indexed Documents")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundColor(.white)
-                        Text("PDFs, chat history chunks")
-                            .font(.system(size: 11))
-                            .foregroundColor(Color.textSecondary)
-                    }
-                    
-                    Spacer()
-                    
-                    // Belge sayısı rozeti
-                    Text("\(memoryChunkCount) chunks")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(memoryChunkCount > 0 ? .green : .orange)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background((memoryChunkCount > 0 ? Color.green : Color.orange).opacity(0.12))
-                        .cornerRadius(6)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 6)
-                                .strokeBorder((memoryChunkCount > 0 ? Color.green : Color.orange).opacity(0.3), lineWidth: 0.5)
-                        )
-                }
-                
-                if !memoryStatus.isEmpty {
-                    Text(memoryStatus)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(.white.opacity(0.75))
-                }
-                
-                Divider()
-                    .overlay(Color.glassStroke)
-                
-                // Belleği Temizle Düğmesi
-                Button(action: clearMemory) {
-                    HStack {
-                        Image(systemName: "trash")
-                        Text(isClearingMemory ? "Clearing..." : "Clear All Memory")
-                    }
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(.red.opacity(0.9))
-                    .padding(.vertical, 8)
-                    .padding(.horizontal, 16)
-                    .frame(maxWidth: .infinity)
-                    .background(Color.red.opacity(0.1))
-                    .cornerRadius(8)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8)
-                            .strokeBorder(Color.red.opacity(0.3), lineWidth: 0.8)
-                    )
-                }
-                .disabled(isClearingMemory)
-                .buttonStyle(.interactive)
-                .pointerCursor()
-            }
-        }
-    }
-
-    private var storedContextSection: some View {
-        SettingsSection(title: "Stored Context", icon: .brain) {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Persona, active role text, and interview notes are stored locally and survive restarts.")
-                    .font(.system(size: 11))
-                    .foregroundColor(Color.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                HStack(spacing: 10) {
-                    contextClearButton(
-                        title: "Clear Persona",
-                        isEnabled: !userPersonaContext.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                        action: { userPersonaContext = "" }
-                    )
-                    contextClearButton(
-                        title: "Clear Role",
-                        isEnabled: !activeJobDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                        action: { activeJobDescription = "" }
-                    )
-                }
-
-                contextClearButton(
-                    title: "Clear Interview Notes",
-                    isEnabled: !teleprompterText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                    action: { teleprompterText = "" }
-                )
-            }
-        }
-    }
-
-    private func contextClearButton(
+    private func integrationCredentialRow(
         title: String,
-        isEnabled: Bool,
-        action: @escaping () -> Void
+        description: String,
+        credential: IntegrationCredential,
+        input: Binding<String>
     ) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundColor(isEnabled ? .orange.opacity(0.9) : .white.opacity(0.3))
-                .padding(.vertical, 8)
-                .frame(maxWidth: .infinity)
-                .background(isEnabled ? Color.orange.opacity(0.08) : Color.white.opacity(0.03))
-                .cornerRadius(8)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .strokeBorder(isEnabled ? Color.orange.opacity(0.28) : Color.white.opacity(0.08), lineWidth: 0.8)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(.headline)
+                    Text(description)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Label(
+                    viewModel.isIntegrationConfigured(credential) ? "Configured" : "Not configured",
+                    systemImage: viewModel.isIntegrationConfigured(credential) ? "checkmark.circle.fill" : "circle"
                 )
-        }
-        .disabled(!isEnabled)
-        .buttonStyle(.interactive)
-        .pointerCursor()
-    }
-    
-    private func clearMemory() {
-        guard !isClearingMemory else { return }
-        isClearingMemory = true
-        memoryStatus = "Clearing vector database and session context..."
-
-        Task { @MainActor in
-            await viewModel.clearMemory()
-            memoryChunkCount = viewModel.memoryChunkCount
-            memoryStatus = viewModel.memoryStatus
-            isClearingMemory = false
-        }
-    }
-
-    // MARK: - Window Section
-    private var windowSection: some View {
-        SettingsSection(title: "Window Settings", icon: .gear) {
-            VStack(spacing: 16) {
-                SettingsRow(label: "Width", value: "\(Int(windowWidth))px") {
-                    Slider(value: $windowWidth, in: 350...800, step: 10)
-                        .tint(.brandPrimary)
-                }
-                
-                SettingsRow(label: "Height", value: "\(Int(windowHeight))px") {
-                    Slider(value: $windowHeight, in: 300...1000, step: 10)
-                        .tint(.brandPrimary)
-                }
-                
-                SettingsRow(label: "Opacity", value: "\(Int(windowOpacity * 100))%") {
-                    Slider(value: $windowOpacity, in: 0.35...1.0, step: 0.01)
-                        .tint(.brandPrimary)
-                }
-                
-                Button(action: {
-                    withAnimation(.spring(response: 0.3)) {
-                        windowWidth = 450
-                        windowHeight = 400
-                        windowOpacity = 1.0
-                    }
-                }) {
-                    HStack {
-                        Image(systemName: "arrow.counterclockwise")
-                        Text("Restore Defaults")
-                    }
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(.white.opacity(0.8))
-                    .padding(.vertical, 6)
-                    .padding(.horizontal, 14)
-                    .background(Color.glassFill)
-                    .cornerRadius(14)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 14)
-                            .strokeBorder(Color.glassStroke, lineWidth: 0.5)
-                    )
-                }
-                .buttonStyle(.interactive)
-                .pointerCursor()
+                .font(.caption)
+                .foregroundStyle(viewModel.isIntegrationConfigured(credential) ? Color.green : Color.secondary)
             }
-        }
-    }
-    
-    // MARK: - Features Section
-    private var featuresSection: some View {
-        SettingsSection(title: "Features & Integrations", icon: .eye) {
-            VStack(spacing: 16) {
-                // Otomatik Analiz Aç/Kapa
-                SettingsToggle(
-                    title: "Auto-Analyze Screenshots",
-                    subtitle: "Process new screenshots automatically",
-                    isOn: $autoAnalyze,
-                    accentColor: .brandPrimary
-                )
-                
-                Divider()
-                    .overlay(Color.glassStroke)
-                
-                // Stealth Mode Toggle
-                SettingsToggle(
-                    title: "Stealth Mode",
-                    subtitle: "Hide from Dock & App Switcher (⌘B)",
-                    isOn: $stealthMode,
-                    accentColor: .red
-                )
-                .onChange(of: stealthMode) { _, newValue in
-                    applyStealthMode(newValue)
-                    WindowManager.shared.updateSharingType(stealth: newValue)
-                }
-                
-                Divider()
-                    .overlay(Color.glassStroke)
-                
-                // Ses Dili Seçici
-                HStack {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Audio Language")
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundColor(.white)
-                        Text("Guided transcription for better accuracy")
-                            .font(.system(size: 12))
-                            .foregroundColor(Color.textSecondary)
-                    }
-                    Spacer()
-                Picker("", selection: $audioLanguage) {
-                        Text("Auto Detect").tag("auto")
-                        Text("English").tag("en")
-                        Text("Finnish").tag("fi")
-                        Text("Turkish").tag("tr")
-                    }
-                    .pickerStyle(.menu)
-                    .labelsHidden()
-                    .frame(width: 110)
-                    .tint(.brandPrimary)
-                }
 
-                Divider()
-                    .overlay(Color.glassStroke)
+            SecureField("Paste credential", text: input)
+                .textFieldStyle(.roundedBorder)
 
-                // Yanıt Gösterim Modu (Streaming vs Direkt)
-                HStack {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Response Display")
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundColor(.white)
-                        Text("Direct: cevabı anında tam göster • Streaming: karakter karakter yaz")
-                            .font(.system(size: 12))
-                            .foregroundColor(Color.textSecondary)
-                    }
-                    Spacer()
-                    Picker("", selection: $streamingMode) {
-                        Text("Streaming").tag("streaming")
-                        Text("Direct").tag("direct")
-                    }
-                    .pickerStyle(.menu)
-                    .labelsHidden()
-                    .frame(width: 110)
-                    .tint(.brandPrimary)
+            HStack {
+                Button("Save") {
+                    let value = input.wrappedValue
+                    input.wrappedValue = ""
+                    Task { await viewModel.saveIntegrationCredential(value, for: credential) }
                 }
+                .disabled(input.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
-                Divider()
-                    .overlay(Color.glassStroke)
-
-                // Streaming Hızı
-                HStack {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Streaming Speed")
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundColor(.white)
-                        Text("Yanıt yazma animasyonunun hızı")
-                            .font(.system(size: 12))
-                            .foregroundColor(Color.textSecondary)
-                    }
-                    Spacer()
-                    Picker("", selection: $streamingSpeed) {
-                        Text("Yavaş").tag("slow")
-                        Text("Normal").tag("normal")
-                        Text("Hızlı").tag("fast")
-                    }
-                    .pickerStyle(.menu)
-                    .labelsHidden()
-                    .frame(width: 110)
-                    .tint(.brandPrimary)
+                Button("Remove", role: .destructive) {
+                    input.wrappedValue = ""
+                    Task { await viewModel.removeIntegrationCredential(credential) }
                 }
-
-                Divider()
-                    .overlay(Color.glassStroke)
-
-                // Command Approval Mode
-                HStack {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Command Approval")
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundColor(.white)
-                        Text("How to handle file/terminal commands the assistant runs")
-                            .font(.system(size: 12))
-                            .foregroundColor(Color.textSecondary)
-                    }
-                    Spacer()
-                    Picker("", selection: authorityModeBinding) {
-                        Text("Onay iste").tag(AuthorityMode.manual)
-                        Text("Benim için onayla").tag(AuthorityMode.auto)
-                        Text("Otonom").tag(AuthorityMode.autonomous)
-                    }
-                    .pickerStyle(.menu)
-                    .labelsHidden()
-                    .frame(width: 150)
-                    .tint(.brandPrimary)
-                }
-                
-                Divider()
-                    .overlay(Color.glassStroke)
-                
-                // Yankısız Ses Aç/Kapa
-                SettingsToggle(
-                    title: "No-Echo Mode",
-                    subtitle: useExternalAudio ? "🎤 Microphone only" : "🔊 Mic + Digital Meeting Capture",
-                    isOn: $useExternalAudio,
-                    accentColor: .cyan
-                )
-                
-                Divider()
-                    .overlay(Color.glassStroke)
-                
-                // Yakalama Klasörünü Aç Düğmesi
-                HStack {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Screen Captures")
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundColor(.white)
-                        Text("Access locally saved screen analytics")
-                            .font(.system(size: 12))
-                            .foregroundColor(Color.textSecondary)
-                    }
-                    Spacer()
-                    Button(action: openCapturesFolder) {
-                        HStack(spacing: 6) {
-                            Image(systemName: "folder")
-                            Text("Open Folder")
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .background(Color.glassFill)
-                        .cornerRadius(8)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8)
-                                .strokeBorder(Color.glassStroke, lineWidth: 0.5)
-                        )
-                    }
-                    .buttonStyle(.interactive)
-                    .pointerCursor()
-                }
-            }
-        }
-    }
-    
-    // MARK: - Appearance Section
-    private var appearanceSection: some View {
-        SettingsSection(title: "Appearance", icon: .sparkles) {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Theme Color")
-                    .foregroundColor(Color.textPrimary)
-                    .font(.system(size: 13, weight: .medium))
-                
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 40))], spacing: 10) {
-                    ForEach(["Red", "Orange", "Blue", "Green", "Purple", "Graphite"], id: \.self) { theme in
-                        ZStack {
-                            Circle()
-                                .fill(colorForTheme(theme))
-                                .frame(width: 30, height: 30)
-                                .onTapGesture {
-                                    withAnimation {
-                                        selectedTheme = theme
-                                    }
-                                }
-                            
-                            if selectedTheme == theme {
-                                Image(systemName: "checkmark")
-                                    .foregroundColor(.white)
-                                    .font(.system(size: 13, weight: .bold))
-                            }
-                        }
-                        .pointerCursor()
-                    }
-                }
-            }
-        }
-    }
-    
-    private func colorForTheme(_ name: String) -> Color {
-        switch name {
-        case "Red":      return Color(red: 242/255, green: 78/255, blue: 78/255)
-        case "Orange":   return Color.orange
-        case "Blue":     return Color(red: 0.2, green: 0.6, blue: 1.0)
-        case "Purple":   return Color(red: 0.7, green: 0.3, blue: 1.0)
-        case "Green":    return Color(red: 0.2, green: 0.85, blue: 0.5)
-        case "Graphite": return Color(white: 0.5)
-        default:         return Color(red: 242/255, green: 78/255, blue: 78/255)
-        }
-    }
-
-    // MARK: - API Keys Section
-    private var apiKeysSection: some View {
-        SettingsSection(title: "API Keys", icon: .gear) {
-            VStack(alignment: .leading, spacing: 16) {
-                // Göster/Gizle Aç/Kapa
-                HStack {
-                    Text(showKeys ? "Hide Keys" : "Show Keys")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(Color.textSecondary)
-                    Spacer()
-                    Button(action: { showKeys.toggle() }) {
-                        Image(systemName: showKeys ? "eye.slash" : "eye")
-                            .foregroundColor(.brandPrimary)
-                            .font(.system(size: 14))
-                    }
-                    .buttonStyle(.interactive)
-                }
-                
-                Divider()
-                    .overlay(Color.glassStroke)
-
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text("OpenAI Key (Preferred)")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundColor(.white.opacity(0.85))
-                        Spacer()
-                        if viewModel.isCredentialValid(for: .openAI) {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundColor(.green)
-                                .font(.system(size: 12))
-                        }
-                    }
-                    Text("Primary provider for live technical interview fallback and low-latency coding answers.")
-                        .font(.system(size: 10))
-                        .foregroundColor(Color.textSecondary)
-
-                    if showKeys {
-                        TextField("OpenAI API Key", text: $openAIKey)
-                            .textFieldStyle(.plain)
-                            .padding(8)
-                            .background(Color.black.opacity(0.18))
-                            .cornerRadius(6)
-                            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.8))
-                            .onChange(of: openAIKey) { persistCredential(.openAI, value: openAIKey, refreshModels: true) }
-                    } else {
-                        SecureField("OpenAI API Key", text: $openAIKey)
-                            .textFieldStyle(.plain)
-                            .padding(8)
-                            .background(Color.black.opacity(0.18))
-                            .cornerRadius(6)
-                            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.8))
-                            .onChange(of: openAIKey) { persistCredential(.openAI, value: openAIKey, refreshModels: true) }
-                    }
-                }
-
-                // DeepSeek Anahtarı
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text("DeepSeek Key")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundColor(.white.opacity(0.85))
-                        Spacer()
-                        if viewModel.isCredentialValid(for: .deepSeek) {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundColor(.green)
-                                .font(.system(size: 12))
-                        }
-                    }
-                    Text("DeepSeek reasoning model via api.deepseek.com. Enables per-message collapsible thinking traces.")
-                        .font(.system(size: 10))
-                        .foregroundColor(Color.textSecondary)
-                    if showKeys {
-                        TextField("DeepSeek API Key", text: $deepSeekKey)
-                            .textFieldStyle(.plain)
-                            .padding(8)
-                            .background(Color.black.opacity(0.18))
-                            .cornerRadius(6)
-                            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.8))
-                            .onChange(of: deepSeekKey) { persistCredential(.deepSeek, value: deepSeekKey, refreshModels: true) }
-                    } else {
-                        SecureField("DeepSeek API Key", text: $deepSeekKey)
-                            .textFieldStyle(.plain)
-                            .padding(8)
-                            .background(Color.black.opacity(0.18))
-                            .cornerRadius(6)
-                            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.8))
-                            .onChange(of: deepSeekKey) { persistCredential(.deepSeek, value: deepSeekKey, refreshModels: true) }
-                    }
-                }
-                
-                // OpenCode Zen Anahtarı
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text("OpenCode Zen Key")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundColor(.white.opacity(0.85))
-                        Spacer()
-                        if viewModel.isCredentialValid(for: .openCodeZen) {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundColor(.green)
-                                .font(.system(size: 12))
-                        }
-                    }
-                    Text("Tested OpenCode models via https://opencode.ai/zen/v1. Uses the same DeepSeek models and thinking traces.")
-                        .font(.system(size: 10))
-                        .foregroundColor(Color.textSecondary)
-                    if showKeys {
-                        TextField("OpenCode Zen API Key", text: $openCodeZenKey)
-                            .textFieldStyle(.plain)
-                            .padding(8)
-                            .background(Color.black.opacity(0.18))
-                            .cornerRadius(6)
-                            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.8))
-                            .onChange(of: openCodeZenKey) { persistCredential(.openCodeZen, value: openCodeZenKey, refreshModels: true) }
-                    } else {
-                        SecureField("OpenCode Zen API Key", text: $openCodeZenKey)
-                            .textFieldStyle(.plain)
-                            .padding(8)
-                            .background(Color.black.opacity(0.18))
-                            .cornerRadius(6)
-                            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.8))
-                            .onChange(of: openCodeZenKey) { persistCredential(.openCodeZen, value: openCodeZenKey, refreshModels: true) }
-                    }
-                }
-                
-                // OpenCode Go Anahtarı
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text("OpenCode Go Key")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundColor(.white.opacity(0.85))
-                        Spacer()
-                        if viewModel.isCredentialValid(for: .openCodeGo) {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundColor(.green)
-                                .font(.system(size: 12))
-                        }
-                    }
-                    Text("Low-cost OpenCode Go subscription models via https://opencode.ai/zen/go/v1.")
-                        .font(.system(size: 10))
-                        .foregroundColor(Color.textSecondary)
-                    if showKeys {
-                        TextField("OpenCode Go API Key", text: $openCodeGoKey)
-                            .textFieldStyle(.plain)
-                            .padding(8)
-                            .background(Color.black.opacity(0.18))
-                            .cornerRadius(6)
-                            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.8))
-                            .onChange(of: openCodeGoKey) { persistCredential(.openCodeGo, value: openCodeGoKey, refreshModels: true) }
-                    } else {
-                        SecureField("OpenCode Go API Key", text: $openCodeGoKey)
-                            .textFieldStyle(.plain)
-                            .padding(8)
-                            .background(Color.black.opacity(0.18))
-                            .cornerRadius(6)
-                            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.8))
-                            .onChange(of: openCodeGoKey) { persistCredential(.openCodeGo, value: openCodeGoKey, refreshModels: true) }
-                    }
-                }
-                
-                // Ollama Anahtarı
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text("Ollama Cloud Key (Fallback)")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundColor(.white.opacity(0.85))
-                        Spacer()
-                        if viewModel.isCredentialValid(for: .ollama) {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundColor(.green)
-                                .font(.system(size: 12))
-                        }
-                    }
-                    Text("Optional fallback if OpenAI key is not available. Local embeddings continue to work without this key.")
-                        .font(.system(size: 10))
-                        .foregroundColor(Color.textSecondary)
-                    if showKeys {
-                        TextField("Ollama API Key", text: $ollamaKey)
-                            .textFieldStyle(.plain)
-                            .padding(8)
-                            .background(Color.black.opacity(0.18))
-                            .cornerRadius(6)
-                            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.8))
-                            .onChange(of: ollamaKey) { persistCredential(.ollama, value: ollamaKey, refreshModels: true) }
-                    } else {
-                        SecureField("Ollama API Key", text: $ollamaKey)
-                            .textFieldStyle(.plain)
-                            .padding(8)
-                            .background(Color.black.opacity(0.18))
-                            .cornerRadius(6)
-                            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.8))
-                            .onChange(of: ollamaKey) { persistCredential(.ollama, value: ollamaKey, refreshModels: true) }
-                    }
-                }
-                
-                // Groq Anahtarı
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text("Groq Key")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundColor(.white.opacity(0.85))
-                        Spacer()
-                        if viewModel.isCredentialValid(for: .groq) {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundColor(.green)
-                                .font(.system(size: 12))
-                        }
-                    }
-                    if showKeys {
-                        TextField("Groq API Key", text: $groqKey)
-                            .textFieldStyle(.plain)
-                            .padding(8)
-                            .background(Color.black.opacity(0.18))
-                            .cornerRadius(6)
-                            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.8))
-                            .onChange(of: groqKey) { persistCredential(.groq, value: groqKey) }
-                    } else {
-                        SecureField("Groq API Key", text: $groqKey)
-                            .textFieldStyle(.plain)
-                            .padding(8)
-                            .background(Color.black.opacity(0.18))
-                            .cornerRadius(6)
-                            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.8))
-                            .onChange(of: groqKey) { persistCredential(.groq, value: groqKey) }
-                    }
-                }
-                
-                // Tavily Anahtarı
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text("Tavily Key")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundColor(.white.opacity(0.85))
-                        Spacer()
-                        if viewModel.isCredentialValid(for: .tavily) {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundColor(.green)
-                                .font(.system(size: 12))
-                        }
-                    }
-                    if showKeys {
-                        TextField("Tavily API Key", text: $tavilyKey)
-                            .textFieldStyle(.plain)
-                            .padding(8)
-                            .background(Color.black.opacity(0.18))
-                            .cornerRadius(6)
-                            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.8))
-                            .onChange(of: tavilyKey) { persistCredential(.tavily, value: tavilyKey) }
-                    } else {
-                        SecureField("Tavily API Key", text: $tavilyKey)
-                            .textFieldStyle(.plain)
-                            .padding(8)
-                            .background(Color.black.opacity(0.18))
-                            .cornerRadius(6)
-                            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.8))
-                            .onChange(of: tavilyKey) { persistCredential(.tavily, value: tavilyKey) }
-                    }
-                }
-                
-                Divider()
-                    .overlay(Color.glassStroke)
-                
-                // Model Configuration Override
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack(spacing: 6) {
-                        ZeroLoseIcon(type: .sparkles, color: .brandPrimary, size: 14)
-                        Text("Model Selection & Customization")
-                            .font(.system(size: 12, weight: .bold, design: .rounded))
-                            .foregroundColor(.white)
-                    }
-                    
-                    Text("Select which models to target for each LLM query type. ZeroLose will use these when the corresponding provider keys are valid.")
-                        .font(.system(size: 10))
-                        .foregroundColor(Color.textSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    // Active provider picker (persisted; AIModelNames reads "llm_provider")
-                    HStack {
-                        Text("Active Provider")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundColor(.white.opacity(0.85))
-                        Spacer()
-                        Picker("", selection: $llmProvider) {
-                            ForEach(LLMProvider.allCases, id: \.rawValue) { provider in
-                                Text(provider.displayName).tag(provider.rawValue)
-                            }
-                        }
-                        .pickerStyle(.menu)
-                        .frame(width: 140)
-                        .onChange(of: llmProvider) { _, _ in fetchModels() }
-                    }
-                    .padding(.top, 2)
-                    
-                    VStack(spacing: 8) {
-                        switch LLMProvider(rawValue: llmProvider) ?? .ollama {
-                        case .openAI:
-                            let opts = openaiModels.isEmpty ? ["gpt-5-mini", "gpt-4o", "gpt-4o-mini"] : openaiModels
-                            modelSelectorRow(label: "OpenAI Fast Model", key: "customOpenAIFastModel", options: opts)
-                            modelSelectorRow(label: "OpenAI Vision Model", key: "customOpenAIVisionModel", options: opts)
-                            modelSelectorRow(label: "OpenAI Reasoning Model", key: "customOpenAIReasoningModel", options: opts)
-                            modelSelectorRow(label: "OpenAI Coding Model", key: "customOpenAICodingModel", options: opts)
-                        case .deepSeek:
-                            let opts = deepseekModels.isEmpty ? ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"] : deepseekModels
-                            modelSelectorRow(label: "DeepSeek Fast Model", key: "customDeepSeekFastModel", options: opts)
-                            modelSelectorRow(label: "DeepSeek Vision Model", key: "customDeepSeekVisionModel", options: opts)
-                            modelSelectorRow(label: "DeepSeek Reasoning Model", key: "customDeepSeekReasoningModel", options: opts)
-                            modelSelectorRow(label: "DeepSeek Coding Model", key: "customDeepSeekCodingModel", options: opts)
-                        case .openCodeZen:
-                            let opts = openCodeZenModels.isEmpty ? ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"] : openCodeZenModels
-                            modelSelectorRow(label: "OpenCode Zen Fast Model", key: "customOpenCodeZenFastModel", options: opts)
-                            modelSelectorRow(label: "OpenCode Zen Vision Model", key: "customOpenCodeZenVisionModel", options: opts)
-                            modelSelectorRow(label: "OpenCode Zen Reasoning Model", key: "customOpenCodeZenReasoningModel", options: opts)
-                            modelSelectorRow(label: "OpenCode Zen Coding Model", key: "customOpenCodeZenCodingModel", options: opts)
-                        case .openCodeGo:
-                            let opts = openCodeGoModels.isEmpty ? ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"] : openCodeGoModels
-                            modelSelectorRow(label: "OpenCode Go Fast Model", key: "customOpenCodeGoFastModel", options: opts)
-                            modelSelectorRow(label: "OpenCode Go Vision Model", key: "customOpenCodeGoVisionModel", options: opts)
-                            modelSelectorRow(label: "OpenCode Go Reasoning Model", key: "customOpenCodeGoReasoningModel", options: opts)
-                            modelSelectorRow(label: "OpenCode Go Coding Model", key: "customOpenCodeGoCodingModel", options: opts)
-                        case .ollama:
-                            let opts = ollamaModels.isEmpty ? ["qwen2.5:7b-cloud", "gemma2:9b-cloud", "llama3.1:8b-cloud", "qwen2.5-coder:7b-cloud", "gpt-oss:120b", "nemotron-3-ultra"] : ollamaModels
-                            modelSelectorRow(label: "Ollama Fast Model", key: "customOllamaFastModel", options: opts)
-                            modelSelectorRow(label: "Ollama Vision Model", key: "customOllamaVisionModel", options: opts)
-                            modelSelectorRow(label: "Ollama Reasoning Model", key: "customOllamaReasoningModel", options: opts)
-                            modelSelectorRow(label: "Ollama Coding Model", key: "customOllamaCodingModel", options: opts)
-                        }
-                    }
-                    .padding(10)
-                    .background(Color.black.opacity(0.18))
-                    .cornerRadius(8)
-                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.glassStroke, lineWidth: 0.8))
-                }
-                
-                Divider()
-                    .overlay(Color.glassStroke)
-                
-                // Anahtarları Temizle Düğmesi
-                Button(action: { resetAPIKeys() }) {
-                    HStack {
-                        Image(systemName: "trash")
-                        Text("Clear Saved Keys")
-                    }
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(.white.opacity(0.85))
-                    .padding(.vertical, 6)
-                    .padding(.horizontal, 12)
-                    .background(Color.glassFill)
-                    .cornerRadius(6)
-                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.glassStroke, lineWidth: 0.5))
-                }
-                .buttonStyle(.interactive)
-                .pointerCursor()
-            }
-        }
-        .onAppear { loadAPIKeys() }
-    }
-    
-    private func loadAPIKeys() {
-        guard !isLoadingAPIKeys else { return }
-        isLoadingAPIKeys = true
-        Task { @MainActor in
-            let snapshot = await viewModel.reloadCredentials()
-            openAIKey = snapshot.values[.openAI] ?? ""
-            deepSeekKey = snapshot.values[.deepSeek] ?? ""
-            openCodeZenKey = snapshot.values[.openCodeZen] ?? ""
-            openCodeGoKey = snapshot.values[.openCodeGo] ?? ""
-            ollamaKey = snapshot.values[.ollama] ?? ""
-            groqKey = snapshot.values[.groq] ?? ""
-            tavilyKey = snapshot.values[.tavily] ?? ""
-            syncModelLists(from: snapshot)
-            isLoadingAPIKeys = false
-            fetchModels()
-        }
-    }
-
-    private func persistCredential(
-        _ provider: CredentialProvider,
-        value: String,
-        refreshModels: Bool = false
-    ) {
-        guard !isLoadingAPIKeys else { return }
-        Task { @MainActor in
-            await viewModel.updateCredential(value, for: provider)
-            if refreshModels {
-                _ = await viewModel.refreshModels(for: provider)
-            }
-            syncModelLists(from: viewModel.credentialSnapshot)
-        }
-    }
-
-    private func resetAPIKeys() {
-        Task { @MainActor in
-            isLoadingAPIKeys = true
-            let snapshot = await viewModel.resetCredentials()
-            openAIKey = snapshot.values[.openAI] ?? ""
-            deepSeekKey = snapshot.values[.deepSeek] ?? ""
-            openCodeZenKey = snapshot.values[.openCodeZen] ?? ""
-            openCodeGoKey = snapshot.values[.openCodeGo] ?? ""
-            ollamaKey = snapshot.values[.ollama] ?? ""
-            groqKey = snapshot.values[.groq] ?? ""
-            tavilyKey = snapshot.values[.tavily] ?? ""
-            syncModelLists(from: snapshot)
-            isLoadingAPIKeys = false
-        }
-    }
-
-    private func fetchModels() {
-        Task { @MainActor in
-            for provider in [CredentialProvider.openAI, .deepSeek, .openCodeZen, .openCodeGo, .ollama] {
-                _ = await viewModel.refreshModels(for: provider)
-            }
-            syncModelLists(from: viewModel.credentialSnapshot)
-        }
-    }
-
-    private func syncModelLists(from snapshot: CredentialSettingsSnapshot) {
-        openaiModels = snapshot.models[.openAI] ?? []
-        deepseekModels = snapshot.models[.deepSeek] ?? []
-        openCodeZenModels = snapshot.models[.openCodeZen] ?? []
-        openCodeGoModels = snapshot.models[.openCodeGo] ?? []
-        ollamaModels = snapshot.models[.ollama] ?? []
-    }
-
-    // MARK: - Hotkey Status Section
-    @ViewBuilder
-    private var hotkeyStatusSection: some View {
-        if !hotkeyManager.isPermissionGranted {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundColor(.orange)
-                    Text("Cmd+B Shortcut Inactive")
-                        .font(.system(size: 13, weight: .bold, design: .rounded))
-                        .foregroundColor(.white)
-                }
-                
-                Text("Global hotkey could not be registered. This usually means Cmd+B is already captured by another app or shortcut tool.")
-                    .font(.system(size: 11))
-                    .foregroundColor(Color.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                
-                Button(action: {
-                    hotkeyManager.start()
-                }) {
-                    Text("Retry Cmd+B Registration")
-                        .font(.system(size: 11, weight: .semibold))
-                        .padding(.vertical, 6)
-                        .padding(.horizontal, 12)
-                        .background(Color.orange)
-                        .foregroundColor(.white)
-                        .cornerRadius(6)
-                }
-                .buttonStyle(.interactive)
-                .pointerCursor()
-            }
-            .padding(16)
-            .background(Color.orange.opacity(0.1))
-            .cornerRadius(12)
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.orange.opacity(0.3), lineWidth: 0.8))
-        }
-    }
-
-    // MARK: - Permission Status Section
-    @ViewBuilder
-    private var permissionStatusSection: some View {
-        SettingsSection(title: "Privacy Permissions", icon: .eye) {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("ZeroLose needs these macOS permissions to capture interviews. Open System Settings and grant any missing ones.")
-                    .font(.system(size: 11))
-                    .foregroundColor(Color.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                permissionRow(
-                    title: "Screen Recording",
-                    granted: CGPreflightScreenCaptureAccess(),
-                    detail: "Required for meeting audio + on-screen analysis.",
-                    pane: "Privacy_Security_ScreenCapture_TCC"
-                )
-                permissionRow(
-                    title: "Microphone",
-                    granted: AVCaptureDevice.authorizationStatus(for: .audio) == .authorized,
-                    detail: "Required for live voice / interview listening.",
-                    pane: "Privacy_Security_Microphone_TCC"
-                )
-                permissionRow(
-                    title: "Accessibility",
-                    granted: AXIsProcessTrusted(),
-                    detail: "Required for global hotkey + Computer Use (element click/type/scroll).",
-                    pane: "Privacy_Security_Accessibility_TCC"
-                )
+                .disabled(!viewModel.isIntegrationConfigured(credential))
+                Spacer()
             }
         }
     }
 
-    @ViewBuilder
-    private func permissionRow(
+    private func readinessLabel(_ ready: Bool) -> some View {
+        Label(ready ? "Ready" : "Unavailable", systemImage: ready ? "checkmark.circle.fill" : "exclamationmark.circle")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(ready ? Color.green : Color.secondary)
+    }
+
+    private func providerStatusColor(_ availability: ProviderAvailability) -> Color {
+        switch availability {
+        case .ready, .detected: return .green
+        case .loginRequired, .configurationRequired: return .orange
+        case .notInstalled, .unavailable, .unsupportedVersion: return .secondary
+        }
+    }
+
+    private func valueSlider(
         title: String,
-        granted: Bool,
-        detail: String,
-        pane: String
+        value: Binding<Double>,
+        range: ClosedRange<Double>,
+        suffix: String
     ) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: granted ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                .foregroundColor(granted ? .green : .orange)
-                .font(.system(size: 16))
-            VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
                 Text(title)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(.white.opacity(0.9))
-                Text(detail)
-                    .font(.system(size: 10))
-                    .foregroundColor(Color.textSecondary)
+                Spacer()
+                Text("\(value.wrappedValue, specifier: "%.0f")\(suffix)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
             }
-            Spacer(minLength: 0)
-            if !granted {
-                Button(action: {
-                    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)") {
-                        NSWorkspace.shared.open(url)
-                    }
-                }) {
-                    Text("Open Settings")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundColor(.brandPrimary)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(10)
-        .background(Color.black.opacity(0.14))
-        .cornerRadius(8)
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.glassStroke, lineWidth: 0.8))
-    }
-    
-    private func applyStealthMode(_ enabled: Bool) {
-        if enabled {
-            NSApp.setActivationPolicy(.accessory)
-        } else {
-            NSApp.setActivationPolicy(.regular)
-            NSApp.activate(ignoringOtherApps: true)
-        }
-    }
-    
-    private func refreshMemoryState() {
-        Task { @MainActor in
-            await viewModel.refreshMemoryState()
-            memoryChunkCount = viewModel.memoryChunkCount
-            memoryStatus = viewModel.memoryStatus
+            Slider(value: value, in: range)
         }
     }
 
-    // MARK: - File Import Logic
-    private func importPersonaFile() {
-        importTextFiles(
-            message: "Select CVs or Documents to import context",
-            prompt: "Import"
-        ) { importedText, fileName in
-            if !userPersonaContext.isEmpty {
-                userPersonaContext += "\n\n"
-            }
-            userPersonaContext += "--- Imported Context (\(fileName)) ---\n"
-            userPersonaContext += importedText
-        }
-    }
-
-    private func importActiveRoleFile() {
-        importTextFiles(
-            message: "Select a job description PDF or text file",
-            prompt: "Import Job Description"
-        ) { importedText, fileName in
-            logger.info("Imported active role file: \(fileName, privacy: .public)")
-            activeJobDescription = importedText.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-    }
-
-    private func importTextFiles(
-        message: String,
-        prompt: String,
-        append: (String, String) -> Void
-    ) {
-        let panel = NSOpenPanel()
-        panel.allowsMultipleSelection = true
-        panel.canChooseDirectories = false
-        panel.allowedContentTypes = [.pdf, .plainText, .text]
-        panel.message = message
-        panel.prompt = prompt
-        
-        if panel.runModal() == .OK {
-            for url in panel.urls {
-                if let text = extractText(from: url) {
-                    let cleanText = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if cleanText.isEmpty {
-                        append("[WARNING: No text extracted. This PDF might be a scanned image. Please convert to text/OCR first.]\n", url.lastPathComponent)
-                    } else {
-                        append(cleanText, url.lastPathComponent)
-                    }
-                }
-            }
-        }
-    }
-    
-    private func extractText(from url: URL) -> String? {
-        if url.pathExtension.lowercased() == "pdf" {
-            guard let pdfDocument = PDFDocument(url: url) else { return nil }
-            var fullText = ""
-            for i in 0..<pdfDocument.pageCount {
-                if let page = pdfDocument.page(at: i), let pageText = page.string {
-                    fullText += pageText + "\n"
-                }
-            }
-            return fullText.trimmingCharacters(in: .whitespacesAndNewlines)
-        } else {
-            return try? String(contentsOf: url, encoding: .utf8)
-        }
-    }
-    
-    private func openCapturesFolder() {
-        let fileManager = FileManager.default
-        guard let appSupportURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
-            return
-        }
-        
-        let capturesURL = appSupportURL.appendingPathComponent("ZeroLose/Captures", isDirectory: true)
-        if !fileManager.fileExists(atPath: capturesURL.path) {
-            try? fileManager.createDirectory(at: capturesURL, withIntermediateDirectories: true)
-        }
-        
-        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: capturesURL.path)
-    }
-    
-    private func handleCVDrop(_ providers: [NSItemProvider]) -> Bool {
-        guard let provider = providers.first else { return false }
-        
-        provider.loadDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { data, error in
-            guard let data = data,
-                  let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
-            
-            Task { @MainActor in
-                if let text = DocumentParserService.shared.extractText(from: url) {
-                    if !userPersonaContext.isEmpty {
-                        userPersonaContext += "\n\n"
-                    }
-                    userPersonaContext += "--- Imported Context (\(url.lastPathComponent)) ---\n"
-                    userPersonaContext += text
-                    self.logger.info("CV document drag-dropped and parsed: \(url.lastPathComponent)")
-                }
-            }
-        }
-        return true
-    }
-    
-    private func handleJDDrop(_ providers: [NSItemProvider]) -> Bool {
-        guard let provider = providers.first else { return false }
-        
-        provider.loadDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { data, error in
-            guard let data = data,
-                  let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
-            
-            Task { @MainActor in
-                if let text = DocumentParserService.shared.extractText(from: url) {
-                    activeJobDescription = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                    self.logger.info("JD document drag-dropped and parsed: \(url.lastPathComponent)")
-                }
-            }
-        }
-        return true
-    }
-    
-    private func modelSelectorRow(label: String, key: String, options: [String]) -> some View {
-        // Deterministik, boş olmayan bir seçenek listesi sağla. Kalıcı seçim
-        // her zaman başa eklenir, böylece async model listesi yüklenirken bile
-        // seçici mevcut değeri gösterir.
-        let saved = UserDefaults.standard.string(forKey: key) ?? ""
-        let pickerOptions = Self.mergedModelOptions(options, saved: saved)
-        let binding = Binding<String>(
-            get: { UserDefaults.standard.string(forKey: key) ?? pickerOptions.first ?? "" },
-            set: { UserDefaults.standard.set($0, forKey: key) }
-        )
-        
-        return HStack {
+    private func diagnosticRow(_ label: String, value: String) -> some View {
+        HStack {
             Text(label)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(.white.opacity(0.8))
             Spacer()
-            Picker("", selection: binding) {
-                ForEach(pickerOptions, id: \.self) { opt in
-                    Text(opt).tag(opt)
-                }
-            }
-            .pickerStyle(.menu)
-            .labelsHidden()
-            .frame(width: 200)
-            .tint(.brandPrimary)
+            Text(value)
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
         }
     }
 
-    private static func mergedModelOptions(_ options: [String], saved: String) -> [String] {
-        var merged = options
-        if !saved.isEmpty && !merged.contains(saved) {
-            merged.insert(saved, at: 0)
-        }
-        // Guarantee at least one stable option so the picker is never empty.
-        if merged.isEmpty {
-            merged = ["deepseek-v4-pro"]
-        }
-        return merged
+    private func applyWindowGeometry() {
+        WindowManager.shared.updateMainWindowSize(
+            width: windowWidth,
+            height: windowHeight
+        )
+    }
+
+    private func openPrivacyPane(_ anchor: String) {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(anchor)") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    private func yesNo(_ value: Bool) -> String {
+        value ? "Yes" : "No"
     }
 }
 
-// MARK: - Yeniden Kullanılabilir Bileşenler
+private enum SettingsDomain: String, CaseIterable, Identifiable {
+    case providers = "Providers"
+    case tools = "Tools"
+    case runtime = "Runtime"
+    case memory = "Memory"
+    case voice = "Voice"
+    case appearance = "Appearance"
+    case privacy = "Privacy & Diagnostics"
 
-struct SettingsSection<Content: View>: View {
+    var id: Self { self }
+
+    var systemImage: String {
+        switch self {
+        case .providers: return "cpu"
+        case .tools: return "wrench.and.screwdriver"
+        case .runtime: return "bolt.horizontal.circle"
+        case .memory: return "brain"
+        case .voice: return "waveform"
+        case .appearance: return "paintbrush"
+        case .privacy: return "lock.shield"
+        }
+    }
+}
+
+private struct SettingsCard<Content: View>: View {
     let title: String
-    let icon: ZeroLoseIcon.IconType
-    let content: Content
-    
-    init(title: String, icon: ZeroLoseIcon.IconType, @ViewBuilder content: () -> Content) {
+    let subtitle: String
+    @ViewBuilder let content: Content
+
+    init(
+        title: String,
+        subtitle: String,
+        @ViewBuilder content: () -> Content
+    ) {
         self.title = title
-        self.icon = icon
+        self.subtitle = subtitle
         self.content = content()
     }
-    
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            // Section Header
-            HStack(spacing: 8) {
-                ZeroLoseIcon(type: icon, color: .brandPrimary, size: 15)
+            VStack(alignment: .leading, spacing: 3) {
                 Text(title)
-                    .font(.system(size: 13, weight: .bold, design: .rounded))
-                    .foregroundColor(Color.textSecondary)
-            }
-            
-            // Section Content
-            VStack(spacing: 12) {
-                content
-            }
-            .padding(16)
-            .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(Color.glassFill)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .strokeBorder(Color.glassStroke, lineWidth: 0.8)
-                    )
-            )
-        }
-    }
-}
-
-struct SettingsRow<Content: View>: View {
-    let label: String
-    let value: String
-    let content: Content
-    
-    init(label: String, value: String, @ViewBuilder content: () -> Content) {
-        self.label = label
-        self.value = value
-        self.content = content()
-    }
-    
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(label)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(Color.textPrimary)
-                Spacer()
-                Text(value)
-                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                    .foregroundColor(.brandPrimary)
+                    .font(.title3.weight(.semibold))
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             content
         }
-    }
-}
-
-struct SettingsToggle: View {
-    let title: String
-    let subtitle: String
-    @Binding var isOn: Bool
-    let accentColor: Color
-    
-    var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(.white)
-                Text(subtitle)
-                    .font(.system(size: 11))
-                    .foregroundColor(Color.textSecondary)
-            }
-            Spacer()
-            Toggle("", isOn: $isOn)
-                .toggleStyle(.switch)
-                .tint(accentColor)
-        }
-    }
-}
-
-enum SettingsTab: String, CaseIterable, Identifiable {
-    case general = "General"
-    case api = "API Keys"
-    case context = "Context & JD"
-    case system = "Voice & System"
-    case memory = "Memory"
-    
-    var id: String { self.rawValue }
-    
-    var icon: String {
-        switch self {
-        case .general: return "slider.horizontal.3"
-        case .api: return "key.fill"
-        case .context: return "doc.text.fill"
-        case .system: return "cpu.fill"
-        case .memory: return "brain.fill"
-        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+        )
     }
 }

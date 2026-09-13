@@ -1,18 +1,10 @@
 import Foundation
 
-enum TaskExecutionResult: Sendable, Equatable {
+enum TaskExecutionResult: Sendable {
     case modelFinalText(String)
     case toolReceipt(ToolExecutionReceipt)
+    case toolVerification(ToolVerificationArtifact)
     case evidence([VerificationEvidence])
-
-    var verificationEvidence: [VerificationEvidence] {
-        switch self {
-        case .modelFinalText, .toolReceipt:
-            return []
-        case .evidence(let evidence):
-            return evidence
-        }
-    }
 }
 
 protocol TaskInvocationExecuting: Sendable {
@@ -69,7 +61,7 @@ actor TaskRuntime {
             current.lifecycle = .verifying
             let verification = await verifier.verify(
                 task: current,
-                evidence: executionResult.verificationEvidence
+                executionResult: executionResult
             )
 
             if cancellationRequested || Task.isCancelled {

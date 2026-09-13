@@ -1,107 +1,225 @@
-# Agent Handoff Notes — ZeroLose / Maestro
+# Agent Handoff Notes — ZeroLose V2 Provider Control Plane Cutover
 
 > **To the active agent working on this repo (Codex / Claude / OpenCode / Antigravity):**
-> These notes were written by an external reviewer (Hermes Agent) on 2026-08-25 after a full
-> audit: source review + real `xcodebuild` run + live test run. Read this before making changes.
+> These notes were originally written by an external reviewer on 2026-09-13 after a full audit of
+> `feat/zerolose-agent-runtime-composition` at commit `a4fcd69` — Tasks 1-6 of
+> `docs/superpowers/plans/2026-09-13-zerolose-v2-ui-control-plane-cutover.md`.
+> They are continuously updated with **verified** status. An item is only marked resolved when
+> implementation **and** local verification actually completed; anything else stays open.
+> All results below are from `/Users/dogan/Desktop/akilli-asistan` on 2026-09-13.
 
 ---
 
-## ✅ Verified Current State (2026-08-25)
+## Verification snapshot (2026-09-13, this session)
 
-- `xcodebuild build` (Debug): **SUCCEEDED**
-- Test suite: **was broken, now FIXED** — `ZeroLoseTests.swift:405-407` called
-  `MessageContent(text:isUser:)` but the init gained a required `thinking:` parameter.
-  Added `thinking: nil` to the three calls. **Re-run tests before continuing.**
-- `python3 scripts/verify_all.py`: **SUCCESS** (provider config, structure, deps, build)
-- `scan_results.json`: regenerated OK
-- The `ComputerUseService` (AX-first) + `AgentCapabilityRegistry` (23 tools) work is
-  **genuinely strong**: AXObserver invalidation, `passRetained` use-after-free guard,
-  3-tier click fallback (CGEvent → AXPress → AXClick), Retina 2× OCR point conversion,
-  post-action diff verification. Keep this direction.
+- `xcodebuild -project ZeroLose/ZeroLose.xcodeproj -scheme ZeroLose -destination 'platform=macOS,arch=arm64' test`
+  → **TEST SUCCEEDED**, 458 tests, 0 failures.
+- `xcodebuild ... -destination 'platform=macOS' test CODE_SIGNING_ALLOWED=NO` (the exact command
+  CI runs) → **TEST SUCCEEDED**, 458 tests, 0 failures.
+- `python3 scripts/verify_all.py` → **exit 0**: layout guard, legacy-demolition scan,
+  provider-fabric token scan, **provider-authority scan (new)**, **interview-demolition scan
+  (new)**, ExamPilot 196 tests, ExamPilot release build, ExamPilot CLI smoke, ZeroLose Debug
+  build, **and the full ZeroLose test suite (new)**.
+- Release build with ad-hoc signing
+  (`-configuration Release -derivedDataPath /tmp/zl_release_dd2 build CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual`):
+  **BUILD SUCCEEDED**, universal `x86_64 arm64`, `Identifier=com.senoldogan.ZeroLose`,
+  `codesign --verify --deep --strict` → *valid on disk / satisfies its Designated Requirement*.
 
----
+Published state: the work below is committed on
+`feat/zerolose-agent-runtime-composition` and pushed as **PR #28**
+(<https://github.com/senoldogann/akilli-asistan/pull/28>). The PR is **open and not merged** —
+merging through the PR is still pending explicit approval.
 
-## 🔴 Priority Fixes (do these next)
+Focused commits from this session (on top of the earlier branch work):
 
-1. **Swift 6 language mode is not clean.** Current build shows warnings that become
-   **errors** in Swift 6 mode:
-   - `ComputerUseService.swift:751-760` — `ComputerUseElement` is `@MainActor`-isolated
-     but conforms to `Equatable` used from `nonisolated` context (`diff(...)`,
-     `elementLines(...)`, OCR comparison). Fix: make the model types `Sendable` +
-     `Equatable` without MainActor isolation, or mark the conformance
-     `nonisolated` / move comparison off MainActor.
-   - `SettingsView.swift:1024` — deprecated `onChange(of:perform:)` → use two/zero-param
-     closure version.
-   - Project claims "Swift 6.0" in `ZeroLose/AGENTS.md` but compiles in Swift 5 mode.
-     Either migrate properly (see Apple's "Adopting strict concurrency" doc) or fix the
-     claim. Recommendation: enable `SWIFT_STRICT_CONCURRENCY=complete` first, burn down
-     warnings, then flip language mode — don't `@unchecked Sendable` your way out.
+| commit | subject |
+| --- | --- |
+| `f1a80a0` | fix: keep the V2 runtime container a composition root |
+| `fddc480` | fix: scope credential handles to their tool invocation |
+| `38a65a2` | fix: keep Keychain failures diagnosable without echoing secrets |
+| `b5edcf8` | refactor: remove the interview product surface |
+| `5b63449` | refactor: stop importing provider keys from local auth files |
+| `d7e60a5` | test: make the repository gate run ZeroLose tests and guard its boundaries |
+| `5b13ea8` | docs: record the verified cutover status and remaining blockers |
 
-2. **Structured tool calling instead of `[ACTION: {...}]` + regex.**
-   The current pipeline (model emits JSON inside brackets → `NSRegularExpression` parse →
-   `JSONSerialization`) is fragile: escape bugs, partial tags, hallucinated JSON. DeepSeek
-   (the configured provider) supports native **function calling / JSON Schema**. Migrate
-   the 23 `AgentCapability` entries to schema-driven tool calls. The capability registry is
-   already the single source of truth — emit the schema from it.
-
-3. **Move action execution out of the UI layer.**
-   `GhostViewModel.swift` (2940 lines) hosts the entire `handleActions` switch. Extract a
-   dedicated `AgentActionExecutor` service (protocol + implementation) that the ViewModel
-   calls. This is the biggest maintainability debt in the app right now.
-
-4. **Break the god classes (in priority order):**
-   - `IntelligenceService.process(...)` is **773 lines** (file: 2584 lines, 83 funcs).
-     Split into pipeline stages: normalize → decide (search? cache? vault? direct?) →
-     ground → generate → enforce-contract → post-process.
-   - `GhostViewModel` 2940 lines → split into focused extensions/view-models per feature
-     (chat, computer-use, tools, vault, mock-interview).
-   - `OllamaService` 1165 lines.
+Install smoke result: the Release bundle (ad-hoc signed, universal `x86_64 arm64`,
+`Identifier=com.senoldogan.ZeroLose`) was installed to `/Applications/ZeroLose.app`; the
+installed content digest (`bd24a7376d52b0b59f771906e332a70fbefb71d874da30b0555bcb1f1103d45d`)
+matched the built bundle byte-for-byte, and launch → quit → relaunch produced no crash reports.
+`/Applications/ZeroLose.app` did not exist before, so nothing was replaced.
+Noted during the smoke: the ad-hoc build logs a Keychain read status `-128` at startup (the
+login-keychain ACL does not include an ad-hoc signature), so previously stored keys may need to be
+re-entered once — pre-existing behaviour of unsigned/adhoc local builds, not a regression from
+these changes.
 
 ---
 
-## 🚀 For "Top-Tier Autonomy" (Hermes-level)
+## Fixed and verified in this session
 
-ZeroLose is already strong at **computer use**. To reach full agent autonomy:
+### ✅ NEW (was RED) — `UIBoundaryTests.testRuntimeContainerIsCompositionRootNotAUIExecutionBackdoor`
+This existing invariant test was **failing on the branch**, and nobody saw it because the
+repository gate only ran `xcodebuild build` (medium #4 below).
+Root cause: commit `9b52209` moved the live macOS observation source
+(`LiveMacOSComputerObservationSourceProvider` with `CGWindowList*` / `AXUIElement*`) into
+`V2/Application/ZeroLoseRuntimeContainer.swift`, which that test forbids.
 
-1. **Persistent memory** — cross-session facts about the user (preferences, learned
-   context). Currently only in-session conversation history exists. A simple
-   key-value/vector store per user (you already have `VectorStore` + embeddings!) would
-   give the agent durable memory for free.
-2. **Task planning / todo queue** — multi-step tasks need a plan object, progress
-   tracking, and status reporting back to the user. `docs/PLAN.md` is an empty template —
-   either fill it per task or implement a runtime plan structure.
-3. **Self-correction at the task level** — computer use has diff-verification, but the
-   general loop has no "if this approach failed twice, change strategy" mechanism. Add a
-   bounded retry + strategy-switch policy.
-4. **Sub-agent delegation** — for long tasks, spawn focused sub-tasks (web research,
-   file audit, test run) and merge results.
-5. **Scheduled tasks** — beyond recurring AppleScript; a real cron/timer surface.
-6. **Context/token budget management** — `trimConversationHistory` exists but there's no
-   summarization tier; summarize old turns instead of dropping them.
+Fix: extracted the provider verbatim to
+`V2/Computer/LiveMacOSComputerObservationSourceProvider.swift` (observation semantics and policy
+wiring untouched) and removed the then-unused `ApplicationServices` / `CoreGraphics` imports from
+the container. Verified by `UIBoundaryTests`, `AgentComputerCompositionTests`,
+`ArchitectureBoundaryTests`, `AgentComputerMutationBoundaryTests`, and the full suite.
 
-## ✅ Already Correct (don't regress)
+### ✅ Critical #1 — Emergency Stop / Chat Stop visibility gated by `workspaceMode`
+Already fixed before this session by commit `7f6c863`
+(`testEmergencyStopIsGatedIndependentlyOfWorkspaceMode`,
+`testChatStopRemainsReachableRegardlessOfWorkspaceMode`). Re-verified in `Views/ContentView.swift`:
+Emergency Stop is gated on `workspaceMode == .agent || taskRuntimeViewModel.canEmergencyStop`; the
+composer Stop button gates on `viewModel.isBusy` only.
 
-- Approval separation: read-only tools free / mutations require approval (`allowMutations`)
-- `AgentCapabilityRegistry` as single source of truth injected into the system prompt
-- Background-safe input: `CGEventPostToPid` — no focus stealing, no real cursor movement
-- SafetyGuard blacklist + Keychain secrets + allowlist shell commands
-- Maestro multi-provider sync (`scripts/sync_agents.py` + `scripts/verify_all.py`)
+### ✅ High #2a — `ProviderControlPlane` check-then-await-then-mutate reentrancy
+Already fixed by commit `81132a7` (serialized mutations + concurrent-call regression test).
 
-## 📚 Research References (verified 2026-08-25)
+### ✅ High #2b / #2c — `AgentCommandRuntime.submitUserGoal` / `processAsk` reentrancy
+Already fixed by commit `99a4470` (`isStartingRun` / `isBusy` claimed synchronously before the
+first `await`, with concurrent-call regression tests).
 
-- **Tactile: Giving Computer-Using Agents Hands and Feet** (arXiv 2607.14443) — academic
-  validation of exactly this architecture: accessibility-first operating ladder
-  (AX semantics → OCR-grounded coordinates → visual fallback), normalized coordinate
-  contract (screen points, not mixed retina pixels), verifiability/auditability as
-  first-class runtime properties. ZeroLose's ComputerUseService already matches most of
-  this — read it for the remaining gaps (e.g. MCP-style tool surface, audit logs).
-- **Apple: "Adopting strict concurrency in Swift 6 apps"** — migration path for the
-  warnings above: strict concurrency `complete` → fix warnings → flip language mode.
-- **Apple Xcode 27 Agent Skill / SwiftUI best practices** — worth adopting as a shared
-  skill for UI work (`ForEach` identity, `Equatable` short-circuit, etc.).
+### ✅ High #3 — boundary suites were only source-text scans
+`MainWorkspaceBoundaryTests.testMainWorkspaceAndSettingsShareOneProviderViewModelInstance` now
+constructs the real `ContentView` and `SettingsView` with one `ProviderViewModel` and asserts
+object identity (`===` and `ObjectIdentifier`), so a duplicated or recomputed provider state is
+caught structurally. The literal/text scans remain as a cheap secondary guard.
 
-## ⚠️ Environment Note
+### ✅ Medium #4 — `scripts/verify_all.py` never ran ZeroLose tests
+`verify_zerolose()` now runs an arch-aware concrete-destination `xcodebuild test` after the
+unsigned `generic/platform=macOS` build. This is the gate that would have caught the regression
+above; it is also asserted by `ProviderLegacyDemolitionTests`.
 
-- The machine is heavily loaded: Codex Router `ModelRouterTray` was at **~96% CPU**
-  (538+ min CPU time) during this audit; builds were killed once by the scheduler.
-  Consider pausing long-running router processes during heavy `xcodebuild` runs.
+### ✅ Medium #5 — "no CI for ZeroLose" was stale
+`.github/workflows/exampilot.yml` (job name `Repository`, runner `macos-26`) has run
+`Test ZeroLose` + `python3 scripts/verify_all.py` since commit `0e0b7ad` (present on `main`).
+The CI-equivalent command was re-run locally and passes. No new workflow was needed.
+
+### ✅ Medium #6 — credential-handle revoke path was dead code in production
+`ToolFabric.execute` issued credential handles per invocation but never invalidated them, so
+handles stayed valid after their invocation and accumulated in the broker.
+Fix: new `CredentialBroking.discardHandles(_:)` (handle-scoped; does **not** revoke the scope),
+implemented in `InMemoryCredentialBroker` + `KeychainCredentialBrokerAdapter`, called by
+`ToolFabric.execute` on both success and failure paths. `InMemoryCredentialBroker` also exposes
+`outstandingHandleCount` for the bounded-memory invariant.
+Tests (`ToolFabricTests`, `CredentialBrokerTests`): handle invalidated after success, invalidated
+after failure, scope stays available across repeated invocations, inventory returns to 0.
+
+### ✅ Task 7 (safe subset, verified) — interview product surface removed
+- Deleted: `Views/InterviewVaultView.swift`, `Views/MockInterviewView.swift`,
+  `Views/TeleprompterView.swift`, `Views/CheatSheetView.swift`, `Views/KeyboardDisguiseView.swift`,
+  `Services/MockInterviewService.swift`, `ViewModels/CheatSheetViewModel.swift`
+  (each proven to have zero production consumers outside the deletion set first).
+- Removed the Teleprompter window class/state/frame preferences/show/close/toggle/hooks from
+  `Services/WindowManager.swift`; `GhostWindow`, hotkey, opacity, sizing and Settings window
+  behaviour are untouched. Stored teleprompter defaults were **not** deleted (they are inert).
+- Removed `warmUpInterviewContext()` from `ShellFeatureControlling`, `ShellViewModel`, and
+  `V2ShellRuntimeController` (including its interview persona prompt and vault priming), and
+  dropped the now-unused `responseCacheService` dependency from the shell controller.
+- Rewrote `ZeroLose/README.md` and the `Info.plist` privacy strings so the product is described
+  as a general Chat/Agent assistant (no interview/meeting framing).
+- New permanent guard: `ZeroLoseTests/V2/InterviewDemolitionTests.swift` (deleted files absent,
+  zero production references to the removed tokens, ShellFeatureControlling still exposes all
+  general capabilities, Info.plist/README copy clean) plus the `verify_zerolose_interview_demolition()`
+  step in `scripts/verify_all.py`.
+
+**Task 7 is still OPEN.** The remaining closure is `IntelligenceService` (2 651 lines) and the
+services it pulls in (`OllamaService`, `ResponseCacheService`, `TextAnalysis`, `LLMPromptBuilder`,
+`VaultService`, `VaultSearchEngine`, `ActiveRoleProfileService`, `InterviewKnowledgeMatcher`,
+`Models/InterviewItem.swift`). Those are still reachable through two live general behaviours:
+- `V2ShellRuntimeController.processImage` (screen capture, attachment images, auto-screenshot)
+  → `IntelligenceService.process(query:imageData:…)`
+- `V2ShellRuntimeController.processText` (answer refinement) → same service
+
+Deleting them requires a **vision-capable V2 request**: `ModelMessage` currently carries only
+`content: String` (no image payload), while `ModelCapabilities.vision` already exists. That is a
+provider-contract migration (OpenAI API + CLI adapters) and its own task — do **not** delete the
+general screenshot/refine functionality to satisfy a symbol scan.
+
+### ✅ Task 8 (partial, verified) — legacy provider authority
+- Removed the automatic credential import: `Secrets.importOpenCodeKeysIfNeeded()` is gone
+  (function + `opencode_keys_autoimport_v1` flag) and is no longer called from
+  `ZeroLoseApp.applicationDidFinishLaunching`. Stored keys are untouched; `~/.local/share/opencode/auth.json`
+  is never read. Verified: zero production references to `importOpenCodeKeysIfNeeded`, `auth.json`,
+  `.local/share/opencode`.
+- New permanent guards: `ZeroLoseTests/V2/ProviderLegacyDemolitionTests.swift` — no legacy
+  authority token in the primary paths (`Views`, `V2/UI`, `V2/Application`, `V2/Providers`), the
+  legacy closure is pinned to exactly `Resources/Constants.swift`, `Services/DependencyContainer.swift`,
+  `Services/GroqService.swift`, `Services/IntelligenceService.swift`, `Services/OllamaService.swift`,
+  `llm_provider` is readable only by `Constants.swift` + `V2/Migration/SettingsMigrationCoordinator.swift`,
+  and the repository gate asserts both new guard functions.
+- `scripts/verify_all.py` gained `verify_zerolose_provider_authority()` (primary-path scan + app-launch
+  credential-import check).
+
+**Task 8 is still OPEN:** the remaining legacy authority is exactly the closure above
+(`AIModelNames.currentProvider()` reading `llm_provider`, `OllamaService` routing, `custom*Model`
+defaults), all reachable only through the `IntelligenceService` path. It unblocks together with the
+Task 7 remainder. `AIModelNames.whisper` in `GroqService` is the documented compatibility-only
+allowance for voice transcription until it is migrated separately.
+
+### ✅ Low #7 — dead state
+`isHistoryPresented` removed from `Views/ContentView.swift`.
+
+### ✅ Low #8 / #10 — Keychain error diagnostics
+`ProviderViewModel` now appends a non-secret diagnostic (`(Keychain status N)`, `(key rejected)`,
+`(no key stored)`) to credential errors instead of discarding the real error.
+`ProviderViewModelTests.testKeychainFailuresSurviveAsSafeDiagnosticsThroughTheRealAdapter` exercises
+the **real** `KeychainCredentialBrokerAdapter` on an isolated Keychain service: blank key rejected
+without a write, secret never echoed, real store/remove round trip, teardown removes the item.
+
+### ✅ Low #9 — accessibility class: investigated, deliberately **not** changed
+Attempted hardening to `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` and verified it: on this
+macOS the items are created in the legacy login keychain, where `kSecAttrAccessible` is neither
+applied nor returned by `SecItemCopyMatching` (verified with a real adapter store + attribute read;
+the returned attributes contain no `kSecAttrAccessible`). The change was reverted because it would
+have been an unverifiable claim. `CredentialBrokerTests.testRealKeychainAdapterDoesNotExposeDataProtectionAccessibilityClass`
+now pins the observed reality so the claim cannot be made again without evidence. Real hardening
+requires a `kSecUseDataProtectionKeychain` migration for **new** items plus an explicit plan for
+reading existing legacy items — its own task, and it must not silently make stored keys look missing.
+
+### ✅ Repo hygiene
+- An empty stray `.claude/` directory (created by external tooling, no files) was failing the
+  layout guard in `verify_all.py`; removed with `rmdir` (empty-only, so no user work could be lost).
+
+---
+
+## Still open
+
+### 🟠 Task 7 remainder — vision-capable V2 request, then delete the interview closure
+See above. Blocked on image payload support in the V2 provider contract; do not delete the general
+screenshot/refinement capabilities.
+
+### 🟠 Task 8 remainder — retire `LLMProvider` / `AIModelNames` / `OllamaService`
+Unblocks with the Task 7 remainder; the pinned closure in `ProviderLegacyDemolitionTests` shrinks
+as each file is migrated.
+
+### ✅ Task 9 — acceptance, install and launch smoke
+Done and verified: clean-state preflight, focused regression matrix, full repository gate, Release
+build from the exact committed HEAD with a valid ad-hoc signature, byte-identical install to
+`/Applications/ZeroLose.app`, and launch/relaunch smoke with no crash reports (evidence above).
+
+### 🟡 Task 10 — PR is open; merge and cleanup still pending
+PR #28 is open against `main` with head `5b13ea8` verified equal to the locally verified SHA and CI
+(`verify`) running the full repository gate. Remaining: wait for CI green on the exact head, merge
+through the PR, verify merged `main`, then prove branch/worktree cleanup safety and delete only
+merged/unused branches. **Merging and branch deletion still require explicit approval.**
+
+### 🟢 Low #12 — repo hygiene follow-up
+`.freebuff/` (client state from the Freebuff agent host, not user work) is untracked. Confirm the
+desired treatment (ignore or leave untracked) at the same time as the Task 10 cleanup.
+
+---
+
+## Suggested next order
+
+1. Get approval for: commit the verified working tree, then Task 9 install/launch smoke.
+2. Task 10 (push → PR → exact-head verify → merge → prove cleanup safety → delete merged branches).
+3. Task 7 + Task 8 remainder together, in one migration: image payload in `ModelRequest`/`ModelMessage`
+   → OpenAI API + CLI adapter support → move `processImage`/`processText` onto `RequestCoordinator`
+   → delete `IntelligenceService`, `OllamaService`, `ResponseCacheService`, `TextAnalysis`,
+   `LLMPromptBuilder`, the vault/role/matcher services and `Models/InterviewItem.swift`
+   → shrink the pinned legacy closure → re-run `python3 scripts/verify_all.py`.

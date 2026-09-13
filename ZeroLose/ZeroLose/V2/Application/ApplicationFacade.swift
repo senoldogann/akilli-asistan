@@ -8,9 +8,31 @@ protocol RuntimeCommandControlling: Sendable {
     func pauseGoal(_ goalID: GoalID) async throws
     func resumeGoal(_ goalID: GoalID) async throws
     func cancelGoal(_ goalID: GoalID) async throws
+    func pauseAgentSession(_ sessionID: AgentSessionID) async throws
+    func resumeAgentSession(_ sessionID: AgentSessionID) async throws
+    func cancelAgentSession(_ sessionID: AgentSessionID) async throws
+    func emergencyStop() async throws
     func approveInvocation(_ invocationID: InvocationID) async throws
     func denyInvocation(_ invocationID: InvocationID) async throws
     func changeAuthorityMode(_ mode: AuthorityMode) async throws
+}
+
+extension RuntimeCommandControlling {
+    func pauseAgentSession(_ sessionID: AgentSessionID) async throws {
+        throw V2RuntimeCommandError.unsupportedCommand("agent-pause:\(sessionID.rawValue)")
+    }
+
+    func resumeAgentSession(_ sessionID: AgentSessionID) async throws {
+        throw V2RuntimeCommandError.unsupportedCommand("agent-resume:\(sessionID.rawValue)")
+    }
+
+    func cancelAgentSession(_ sessionID: AgentSessionID) async throws {
+        throw V2RuntimeCommandError.unsupportedCommand("agent-cancel:\(sessionID.rawValue)")
+    }
+
+    func emergencyStop() async throws {
+        throw V2RuntimeCommandError.unsupportedCommand("agent-emergency-stop")
+    }
 }
 
 protocol ToolManagementControlling: Sendable {
@@ -50,6 +72,14 @@ actor ApplicationFacade {
             try await runtime.resumeGoal(goalID)
         case .cancelGoal(let goalID):
             try await runtime.cancelGoal(goalID)
+        case .pauseAgentSession(let sessionID):
+            try await runtime.pauseAgentSession(sessionID)
+        case .resumeAgentSession(let sessionID):
+            try await runtime.resumeAgentSession(sessionID)
+        case .cancelAgentSession(let sessionID):
+            try await runtime.cancelAgentSession(sessionID)
+        case .emergencyStop:
+            try await runtime.emergencyStop()
         case .approveInvocation(let invocationID):
             try await runtime.approveInvocation(invocationID)
         case .denyInvocation(let invocationID):

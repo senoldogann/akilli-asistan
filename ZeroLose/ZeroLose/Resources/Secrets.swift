@@ -19,7 +19,6 @@ struct Secrets: Sendable {
     nonisolated private static let deepSeekPreferenceStorage = "prefer_deepseek_provider"
     nonisolated private static let openCodeZenPreferenceStorage = "prefer_opencode_zen_provider"
     nonisolated private static let openCodeGoPreferenceStorage = "prefer_opencode_go_provider"
-    nonisolated private static let openCodeImportFlag = "opencode_keys_autoimport_v1"
 
     nonisolated private static let ollamaAccount = "ollama_api_key"
     nonisolated private static let groqAccount = "groq_api_key"
@@ -297,38 +296,6 @@ struct Secrets: Sendable {
         let status = SecItemDelete(query as CFDictionary)
         if status != errSecSuccess && status != errSecItemNotFound {
             logger.error("Failed to delete key from Keychain. Status: \(status, privacy: .public)")
-        }
-    }
-
-    // MARK: - OpenCode Local Import
-
-    /// Reads API keys from the local OpenCode config
-    /// (`~/.local/share/opencode/auth.json`) once and stores the OpenCode Go /
-    /// Zen keys into the ZeroLose Keychain. This lets a user who already logged
-    /// into OpenCode re-use their membership without re-pasting a key.
-    nonisolated static func importOpenCodeKeysIfNeeded() {
-        guard !UserDefaults.standard.bool(forKey: openCodeImportFlag) else { return }
-        defer {
-            UserDefaults.standard.set(true, forKey: openCodeImportFlag)
-        }
-
-        let fileURL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".local/share/opencode/auth.json")
-        guard let data = try? Data(contentsOf: fileURL) else { return }
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
-
-        let goKey = (json["opencode-go"] as? [String: Any])?["key"] as? String ?? ""
-        let zenKey = (json["opencode"] as? [String: Any])?["key"] as? String ?? ""
-
-        if !goKey.isEmpty, readKeychainValue(account: openCodeGoAccount)?.isEmpty ?? true {
-            writeKeychainValue(goKey, account: openCodeGoAccount)
-            UserDefaults.standard.set(true, forKey: openCodeGoPreferenceStorage)
-            logger.info("Imported OpenCode Go key from local auth.json.")
-        }
-        if !zenKey.isEmpty, readKeychainValue(account: openCodeZenAccount)?.isEmpty ?? true {
-            writeKeychainValue(zenKey, account: openCodeZenAccount)
-            UserDefaults.standard.set(true, forKey: openCodeZenPreferenceStorage)
-            logger.info("Imported OpenCode Zen key from local auth.json.")
         }
     }
 }

@@ -1,3 +1,5 @@
+import ComputerAgentMacOS
+import CryptoKit
 import Foundation
 
 @MainActor
@@ -7,6 +9,7 @@ final class ZeroLoseRuntimeContainer {
     let facade: ApplicationFacade
     let chatViewModel: ChatViewModel
     let shellViewModel: ShellViewModel
+    let providerViewModel: ProviderViewModel
     let settingsViewModel: SettingsViewModel
     let taskRuntimeViewModel: TaskRuntimeViewModel
     let approvalViewModel: ApprovalViewModel
@@ -19,6 +22,7 @@ final class ZeroLoseRuntimeContainer {
     private let runtimeController: V2ShellRuntimeController
     private let nativeToolRuntime: V2NativeToolRuntime
     private let modelProviderFabric: ModelProviderFabric
+    private let providerControlPlane: ProviderControlPlane
     private let settingsController: RuntimeSettingsDataController
     private let eventStore: SQLiteEventStore?
     private let eventRecorder: RuntimeEventRecorder?
@@ -35,8 +39,10 @@ final class ZeroLoseRuntimeContainer {
             .appendingPathComponent("Library/Application Support", isDirectory: true)
         let runtimeDirectory = applicationSupport
             .appendingPathComponent("ZeroLose/V2", isDirectory: true)
+        let runtimeDatabaseURL = runtimeDirectory.appendingPathComponent("runtime.sqlite3")
 
         var eventStore: SQLiteEventStore?
+        var checkpointStore: SQLiteCheckpointStore?
         var eventRecorder: RuntimeEventRecorder?
         var runtimeProjectionCoordinator: RuntimeProjectionCoordinator?
         var runtimeProjectionInitializationError: String?
@@ -46,14 +52,14 @@ final class ZeroLoseRuntimeContainer {
                 at: runtimeDirectory,
                 withIntermediateDirectories: true
             )
-            let store = try SQLiteEventStore(
-                databaseURL: runtimeDirectory.appendingPathComponent("runtime.sqlite3")
-            )
+            let store = try SQLiteEventStore(databaseURL: runtimeDatabaseURL)
+            let checkpoints = try SQLiteCheckpointStore(databaseURL: runtimeDatabaseURL)
             let recorder = RuntimeEventRecorder(
                 eventStore: store,
                 streamID: "runtime:main"
             )
             eventStore = store
+            checkpointStore = checkpoints
             eventRecorder = recorder
             runtimeProjectionCoordinator = RuntimeProjectionCoordinator(
                 eventStore: store,
@@ -85,27 +91,7 @@ final class ZeroLoseRuntimeContainer {
         let registry = ToolRegistry()
         let credentialBroker = KeychainCredentialBrokerAdapter()
 
-        let providerIDKey = "v2.modelProviderID"
-        let defaultModelIDKey = "v2.modelDefaultID"
         let defaults = UserDefaults.standard
-        let storedProviderID = defaults
-            .string(forKey: providerIDKey)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let selectedProviderRawValue: String
-        if let storedProviderID, !storedProviderID.isEmpty {
-            selectedProviderRawValue = storedProviderID
-        } else {
-            selectedProviderRawValue = "codex"
-            defaults.set(selectedProviderRawValue, forKey: providerIDKey)
-        }
-        let selectedProviderID = ModelProviderID(rawValue: selectedProviderRawValue)
-
-        let storedDefaultModelID = defaults
-            .string(forKey: defaultModelIDKey)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if storedDefaultModelID?.isEmpty != false {
-            defaults.set("default", forKey: defaultModelIDKey)
-        }
 
         let cliLocator = CLIExecutableLocator()
         let cliRunner = CLIProcessRunner()
@@ -119,7 +105,18 @@ final class ZeroLoseRuntimeContainer {
         )
         let modelProviderFabric = ModelProviderFabric(
             providers: [codexProvider, claudeProvider, openCodeProvider, antigravityProvider, openAIProvider],
-            selectedProviderID: selectedProviderID
+            selectedProviderID: ModelProviderID(rawValue: "codex")
+        )
+        let providerControlPlane = ProviderControlPlane(
+            fabric: modelProviderFabric,
+            persistence: UserDefaultsProviderSelectionStore(defaults: defaults)
+        )
+        let providerSettingsController = ProviderSettingsController(
+            openAIKeyStore: credentialBroker
+        )
+        let providerViewModel = ProviderViewModel(
+            controlPlane: providerControlPlane,
+            settingsController: providerSettingsController
         )
 
         let attachmentContextBuffer = AttachmentContextBuffer()
@@ -149,19 +146,108 @@ final class ZeroLoseRuntimeContainer {
             }
         )
         let builtinProvider = BuiltinToolProvider(executor: builtinExecutor)
+        let emergencyStopState = AgentEmergencyStopState()
+        let mutationExecutionState = AgentMutationExecutionState()
+        let toolComposition = AgentComputerToolComposition.make(
+            baseProviders: [builtinProvider],
+            baseDescriptors: V2BuiltinToolCatalog.descriptors,
+            observationSourceProvider: LiveMacOSComputerObservationSourceProvider.makeIfReady(),
+            shouldStop: { emergencyStopState.isStopped }
+        )
         let toolFabric = ToolFabric(
             registry: registry,
             policy: DefaultPolicyKernel(),
             credentialBroker: credentialBroker,
-            providers: [builtinProvider],
+            providers: toolComposition.providers,
             authorityMode: initialAuthority
         )
         let nativeToolRuntime = V2NativeToolRuntime(
             registry: registry,
             toolFabric: toolFabric,
             eventRecorder: eventRecorder,
-            initialDescriptors: V2BuiltinToolCatalog.descriptors
+            initialDescriptors: toolComposition.descriptors
         )
+
+        let agentRuntime: AgentCommandRuntime?
+        if let eventStore, let checkpointStore {
+            let agentBudget = RuntimeBudget(
+                limits: RuntimeBudgetLimits(
+                    maxWallClockSeconds: 300,
+                    maxModelCalls: 20,
+                    maxToolCalls: 50,
+                    maxRecoveryAttempts: 3,
+                    maxExternalSpend: 100,
+                    maxParallelTasks: 2,
+                    deadline: nil
+                )
+            )
+            let descriptorMap = Dictionary(
+                uniqueKeysWithValues: toolComposition.descriptors.map { ($0.id, $0) }
+            )
+            let planningRegistry = ToolRegistrySnapshot(
+                revision: UInt64(toolComposition.descriptors.count),
+                descriptors: descriptorMap
+            )
+            let taskExecutor = AgentToolInvocationExecutor(
+                registry: registry,
+                toolFabric: toolFabric,
+                mutationExecutionState: mutationExecutionState,
+                computerStateProvider: toolComposition.observationProvider,
+                computerCapturer: toolComposition.observationProvider == nil
+                    ? nil
+                    : ScreenCaptureKitComputerVerificationCapturer(),
+                shouldStop: { emergencyStopState.isStopped }
+            )
+            let taskRuntime = TaskRuntime(
+                executor: taskExecutor,
+                verifier: ProductionAgentTaskVerifier(),
+                budget: agentBudget
+            )
+            let scheduler = Scheduler(maxParallelReads: 2)
+            let goalVerifier = ProductionAgentGoalVerifier()
+            let planningContext = PlanningContext(
+                retrievedContext: ContextBundle(items: [], excluded: [], usedCharacters: 0),
+                registry: planningRegistry
+            )
+            let orchestratorBuilder = ClosureAgentOrchestratorBuilder { selection in
+                let status = await modelProviderFabric.status(for: selection.providerID)
+                guard status.availability == .ready || status.availability == .detected,
+                      await modelProviderFabric.modelSupports(
+                        .jsonOutput,
+                        modelID: selection.modelID,
+                        using: selection.providerID
+                      ) else {
+                    throw V2RuntimeCommandError.unsupportedCommand(
+                        "agent-structured-planning-unavailable"
+                    )
+                }
+
+                return AgentOrchestrator(
+                    planner: ModelPlanningAdapter(
+                        providerFabric: modelProviderFabric,
+                        selection: selection
+                    ),
+                    scheduler: scheduler,
+                    taskRuntime: taskRuntime,
+                    checkpointStore: checkpointStore,
+                    eventStore: eventStore,
+                    goalVerifier: goalVerifier,
+                    budget: agentBudget,
+                    planningContext: planningContext
+                )
+            }
+            agentRuntime = AgentCommandRuntime(
+                orchestratorBuilder: orchestratorBuilder,
+                selectionProvider: {
+                    await providerControlPlane.currentSelection()
+                },
+                emergencyStopState: emergencyStopState,
+                mutationExecutionActive: { mutationExecutionState.isActive }
+            )
+        } else {
+            agentRuntime = nil
+        }
+
         let runtimeController = V2ShellRuntimeController(
             intelligenceService: dependencies.intelligenceService,
             visionService: dependencies.visionService,
@@ -175,12 +261,10 @@ final class ZeroLoseRuntimeContainer {
             nativeToolRuntime: nativeToolRuntime,
             requestCoordinator: requestCoordinator,
             attachmentContextProvider: attachmentContextBuffer,
-            modelIDProvider: {
-                let configured = UserDefaults.standard
-                    .string(forKey: defaultModelIDKey)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                return configured?.isEmpty == false ? configured! : "default"
+            selectionProvider: {
+                await providerControlPlane.currentSelection()
             },
+            agentRuntime: agentRuntime,
             initialAuthorityMode: initialAuthority
         )
         let memoryController = UnavailableMemoryCommandController()
@@ -199,6 +283,7 @@ final class ZeroLoseRuntimeContainer {
         self.runtimeController = runtimeController
         self.nativeToolRuntime = nativeToolRuntime
         self.modelProviderFabric = modelProviderFabric
+        self.providerControlPlane = providerControlPlane
         self.settingsController = settingsController
         self.eventStore = eventStore
         self.eventRecorder = eventRecorder
@@ -208,8 +293,10 @@ final class ZeroLoseRuntimeContainer {
         self.facade = facade
         self.chatViewModel = ChatViewModel(commandSender: facade)
         self.shellViewModel = shellViewModel
+        self.providerViewModel = providerViewModel
         self.settingsViewModel = settingsViewModel
-        self.taskRuntimeViewModel = TaskRuntimeViewModel(commandSender: facade)
+        let taskRuntimeViewModel = TaskRuntimeViewModel(commandSender: facade)
+        self.taskRuntimeViewModel = taskRuntimeViewModel
         self.approvalViewModel = ApprovalViewModel(commandSender: facade)
         self.toolManagementViewModel = ToolManagementViewModel(commandSender: facade)
         self.memoryInspectorViewModel = MemoryInspectorViewModel(commandSender: facade)
@@ -218,7 +305,111 @@ final class ZeroLoseRuntimeContainer {
         runtimeController.onAuthorityModeChanged = { [weak settingsViewModel] mode in
             settingsViewModel?.apply(SettingsProjectionSnapshot(authorityMode: mode))
         }
+        runtimeController.onAgentStateChanged = { [weak taskRuntimeViewModel] snapshot in
+            taskRuntimeViewModel?.apply(snapshot)
+        }
         runtimeController.bind(to: shellViewModel)
+        Task {
+            await providerViewModel.refresh()
+        }
+    }
+}
+
+struct AgentComputerToolComposition {
+    let providers: [any ToolProviding]
+    let descriptors: [ToolDescriptor]
+    let observationProvider: MacOSComputerObservationProvider?
+
+    static func make(
+        baseProviders: [any ToolProviding],
+        baseDescriptors: [ToolDescriptor],
+        observationSourceProvider: (any MacOSComputerObservationSourceProviding)?,
+        shouldStop: @escaping () -> Bool
+    ) -> AgentComputerToolComposition {
+        guard let observationSourceProvider else {
+            return AgentComputerToolComposition(
+                providers: baseProviders,
+                descriptors: baseDescriptors,
+                observationProvider: nil
+            )
+        }
+
+        let observationProvider = MacOSComputerObservationProvider(
+            sourceProvider: observationSourceProvider
+        )
+        let mutationAdapter = MacOSComputerMutationAdapter(
+            stateProvider: observationProvider,
+            shouldStop: shouldStop
+        )
+        let computerProvider = ComputerToolProvider(gateway: mutationAdapter)
+
+        return AgentComputerToolComposition(
+            providers: baseProviders + [computerProvider],
+            descriptors: baseDescriptors + V2ComputerToolCatalog.descriptors,
+            observationProvider: observationProvider
+        )
+    }
+}
+
+enum V2ComputerToolCatalog {
+    static let descriptors: [ToolDescriptor] = [
+        makeDescriptor(
+            id: "computer.pointer.click",
+            inputSchemaJSON: Data(
+                #"{"type":"object","properties":{"stateVersion":{"type":"integer","minimum":0},"observationID":{"type":"string","minLength":1},"x":{"type":"number"},"y":{"type":"number"}},"required":["stateVersion","observationID","x","y"],"additionalProperties":false}"#.utf8
+            )
+        ),
+        makeDescriptor(
+            id: "computer.keyboard.type",
+            inputSchemaJSON: Data(
+                #"{"type":"object","properties":{"stateVersion":{"type":"integer","minimum":0},"observationID":{"type":"string","minLength":1},"text":{"type":"string"}},"required":["stateVersion","observationID","text"],"additionalProperties":false}"#.utf8
+            )
+        ),
+        makeDescriptor(
+            id: "computer.keyboard.press",
+            inputSchemaJSON: Data(
+                #"{"type":"object","properties":{"stateVersion":{"type":"integer","minimum":0},"observationID":{"type":"string","minLength":1},"key":{"type":"string","minLength":1}},"required":["stateVersion","observationID","key"],"additionalProperties":false}"#.utf8
+            )
+        ),
+        makeDescriptor(
+            id: "computer.scroll",
+            inputSchemaJSON: Data(
+                #"{"type":"object","properties":{"stateVersion":{"type":"integer","minimum":0},"observationID":{"type":"string","minLength":1},"amount":{"type":"integer","minimum":-1400,"maximum":1400}},"required":["stateVersion","observationID","amount"],"additionalProperties":false}"#.utf8
+            )
+        ),
+        makeDescriptor(
+            id: "computer.wait",
+            inputSchemaJSON: Data(
+                #"{"type":"object","properties":{"stateVersion":{"type":"integer","minimum":0},"observationID":{"type":"string","minLength":1},"milliseconds":{"type":"integer","minimum":0,"maximum":5000}},"required":["stateVersion","observationID","milliseconds"],"additionalProperties":false}"#.utf8
+            )
+        ),
+    ]
+
+    private static func makeDescriptor(
+        id: String,
+        inputSchemaJSON: Data
+    ) -> ToolDescriptor {
+        ToolDescriptor(
+            id: ToolID(rawValue: id),
+            providerID: "computer",
+            provenance: "zerolose:v2:computer:macos",
+            descriptorRevision: 1,
+            schemaDigest: digest(inputSchemaJSON),
+            inputSchemaJSON: inputSchemaJSON,
+            outputSchemaJSON: nil,
+            effectClass: .reversibleLocalMutation,
+            declaredRisk: .reversibleLocalMutation,
+            requiredCredentialScopes: [],
+            idempotency: .logicalOperationKeyRequired,
+            concurrencyClass: .mutation,
+            verificationContract: VerificationContract(kind: "fresh-computer-observation"),
+            enabled: true
+        )
+    }
+
+    private static func digest(_ input: Data) -> String {
+        let hash = SHA256.hash(data: input)
+        return "sha256:" + hash.map { String(format: "%02x", $0) }.joined()
     }
 }
 
@@ -292,67 +483,25 @@ private final class RuntimeSettingsDataController: SettingsDataControlling {
         self.dependencies = dependencies
     }
 
-    func credentialSnapshot() async -> CredentialSettingsSnapshot {
-        CredentialSettingsSnapshot(
-            values: [
-                .openAI: Secrets.openAIApiKey,
-                .deepSeek: Secrets.deepSeekApiKey,
-                .openCodeZen: Secrets.openCodeZenApiKey,
-                .openCodeGo: Secrets.openCodeGoApiKey,
-                .ollama: Secrets.ollamaApiKey,
-                .groq: Secrets.groqApiKey,
-                .tavily: Secrets.tavilyApiKey
-            ],
-            validity: [
-                .openAI: Secrets.isOpenAIKeyValid,
-                .deepSeek: Secrets.isDeepSeekKeyValid,
-                .openCodeZen: Secrets.isOpenCodeZenKeyValid,
-                .openCodeGo: Secrets.isOpenCodeGoKeyValid,
-                .ollama: Secrets.isOllamaKeyValid,
+    func integrationSnapshot() async -> IntegrationSettingsSnapshot {
+        IntegrationSettingsSnapshot(
+            configured: [
                 .groq: Secrets.isGroqKeyValid,
                 .tavily: Secrets.isTavilyKeyValid
-            ],
-            models: [
-                .openAI: OllamaService.cachedModels(for: CredentialProvider.openAI.rawValue),
-                .deepSeek: OllamaService.cachedModels(for: CredentialProvider.deepSeek.rawValue),
-                .openCodeZen: OllamaService.cachedModels(for: CredentialProvider.openCodeZen.rawValue),
-                .openCodeGo: OllamaService.cachedModels(for: CredentialProvider.openCodeGo.rawValue),
-                .ollama: OllamaService.cachedModels(for: CredentialProvider.ollama.rawValue)
             ]
         )
     }
 
-    func updateCredential(_ value: String, for provider: CredentialProvider) async {
-        switch provider {
-        case .openAI: Secrets.openAIApiKey = value
-        case .deepSeek: Secrets.deepSeekApiKey = value
-        case .openCodeZen: Secrets.openCodeZenApiKey = value
-        case .openCodeGo: Secrets.openCodeGoApiKey = value
-        case .ollama: Secrets.ollamaApiKey = value
-        case .groq: Secrets.groqApiKey = value
-        case .tavily: Secrets.tavilyApiKey = value
+    func updateIntegrationCredential(
+        _ value: String,
+        for credential: IntegrationCredential
+    ) async {
+        switch credential {
+        case .groq:
+            Secrets.groqApiKey = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        case .tavily:
+            Secrets.tavilyApiKey = value.trimmingCharacters(in: .whitespacesAndNewlines)
         }
-    }
-
-    func resetCredentials() async {
-        Secrets.resetToDefaults()
-    }
-
-    func refreshModels(for provider: CredentialProvider) async -> [String] {
-        let key: String
-        switch provider {
-        case .openAI: key = Secrets.openAIApiKey
-        case .deepSeek: key = Secrets.deepSeekApiKey
-        case .openCodeZen: key = Secrets.openCodeZenApiKey
-        case .openCodeGo: key = Secrets.openCodeGoApiKey
-        case .ollama: key = Secrets.ollamaApiKey
-        case .groq, .tavily: return []
-        }
-        guard !key.isEmpty else { return [] }
-        return await dependencies.ollamaService.fetchAvailableModels(
-            provider: provider.rawValue,
-            apiKey: key
-        )
     }
 
     func memoryCount() async throws -> Int {

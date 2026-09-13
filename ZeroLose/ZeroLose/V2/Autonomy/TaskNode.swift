@@ -1,5 +1,21 @@
 import Foundation
 
+struct PlannedToolInvocation: Codable, Equatable, Sendable {
+    let toolID: ToolID
+    let argumentsJSON: Data
+    let verificationExpectation: VerificationExpectation?
+
+    init(
+        toolID: ToolID,
+        argumentsJSON: Data,
+        verificationExpectation: VerificationExpectation? = nil
+    ) {
+        self.toolID = toolID
+        self.argumentsJSON = argumentsJSON
+        self.verificationExpectation = verificationExpectation
+    }
+}
+
 struct TaskNode: Codable, Equatable, Sendable {
     let id: TaskID
     let title: String
@@ -7,6 +23,7 @@ struct TaskNode: Codable, Equatable, Sendable {
     var lifecycle: TaskLifecycle
     var verificationEvidence: [VerificationEvidence]
     var concurrencyClass: ConcurrencyClass
+    var plannedInvocation: PlannedToolInvocation?
 
     init(
         id: TaskID,
@@ -14,7 +31,8 @@ struct TaskNode: Codable, Equatable, Sendable {
         dependencies: Set<TaskID> = [],
         lifecycle: TaskLifecycle = .created,
         verificationEvidence: [VerificationEvidence] = [],
-        concurrencyClass: ConcurrencyClass = .mutation
+        concurrencyClass: ConcurrencyClass = .mutation,
+        plannedInvocation: PlannedToolInvocation? = nil
     ) {
         self.id = id
         self.title = title
@@ -22,6 +40,7 @@ struct TaskNode: Codable, Equatable, Sendable {
         self.lifecycle = lifecycle
         self.verificationEvidence = verificationEvidence
         self.concurrencyClass = concurrencyClass
+        self.plannedInvocation = plannedInvocation
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -31,6 +50,7 @@ struct TaskNode: Codable, Equatable, Sendable {
         case lifecycle
         case verificationEvidence
         case concurrencyClass
+        case plannedInvocation
     }
 
     init(from decoder: Decoder) throws {
@@ -41,6 +61,10 @@ struct TaskNode: Codable, Equatable, Sendable {
         lifecycle = try container.decode(TaskLifecycle.self, forKey: .lifecycle)
         verificationEvidence = try container.decode([VerificationEvidence].self, forKey: .verificationEvidence)
         concurrencyClass = try container.decodeIfPresent(ConcurrencyClass.self, forKey: .concurrencyClass) ?? .mutation
+        plannedInvocation = try container.decodeIfPresent(
+            PlannedToolInvocation.self,
+            forKey: .plannedInvocation
+        )
     }
 
     func encode(to encoder: Encoder) throws {
@@ -51,6 +75,7 @@ struct TaskNode: Codable, Equatable, Sendable {
         try container.encode(lifecycle, forKey: .lifecycle)
         try container.encode(verificationEvidence, forKey: .verificationEvidence)
         try container.encode(concurrencyClass, forKey: .concurrencyClass)
+        try container.encodeIfPresent(plannedInvocation, forKey: .plannedInvocation)
     }
 }
 

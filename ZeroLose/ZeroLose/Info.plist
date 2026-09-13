@@ -27,10 +27,10 @@
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>ZeroLose needs access to the microphone to listen to meetings in real-time.</string>
+	<string>ZeroLose uses the microphone to transcribe your voice into chat messages.</string>
 	<key>NSScreenCaptureUsageDescription</key>
-	<string>ZeroLose needs screen recording access to capture system meeting audio and analyze on-screen content during interviews.</string>
+	<string>ZeroLose uses screen recording access to capture system audio for transcription and to analyze on-screen content when you ask it to.</string>
 	<key>NSAppleEventsUsageDescription</key>
-	<string>ZeroLose needs to control the screen.</string>
+	<string>ZeroLose uses Apple Events to read basic system status such as audio volume and output device settings.</string>
 </dict>
 </plist>

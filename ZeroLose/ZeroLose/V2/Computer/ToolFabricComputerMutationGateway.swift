@@ -6,8 +6,12 @@ protocol ToolFabricExecuting: Sendable {
 
 extension ToolFabric: ToolFabricExecuting {}
 
-protocol ComputerMutationStateProviding: Sendable {
+nonisolated protocol ComputerMutationStateProviding: Sendable {
     func currentComputerMutationState() async throws -> ComputerMutationState
+}
+
+nonisolated protocol ComputerMutationStateRefreshing: ComputerMutationStateProviding {
+    func refreshComputerMutationState() async throws -> ComputerMutationState
 }
 
 enum ToolFabricComputerMutationGatewayError: Error, Equatable {
@@ -17,13 +21,13 @@ enum ToolFabricComputerMutationGatewayError: Error, Equatable {
 struct ToolFabricComputerMutationGateway: Sendable {
     private let toolFabric: any ToolFabricExecuting
     private let registry: ToolRegistry
-    private let stateProvider: any ComputerMutationStateProviding
+    private let stateProvider: any ComputerMutationStateRefreshing
     private let mapper: ComputerActionToolMapper
 
     init(
         toolFabric: any ToolFabricExecuting,
         registry: ToolRegistry,
-        stateProvider: any ComputerMutationStateProviding,
+        stateProvider: any ComputerMutationStateRefreshing,
         mapper: ComputerActionToolMapper = ComputerActionToolMapper()
     ) {
         self.toolFabric = toolFabric
@@ -40,7 +44,7 @@ struct ToolFabricComputerMutationGateway: Sendable {
         receipts.reserveCapacity(actions.count)
 
         for (index, action) in actions.enumerated() {
-            let state = try await stateProvider.currentComputerMutationState()
+            let state = try await stateProvider.refreshComputerMutationState()
             let mapping = try mapper.map(action, state: state)
             let snapshot = await registry.snapshot()
 

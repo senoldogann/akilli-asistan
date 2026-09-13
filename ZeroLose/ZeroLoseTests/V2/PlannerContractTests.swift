@@ -46,11 +46,16 @@ final class PlannerContractTests: XCTestCase {
             remainingExternalSpend: 0,
             deadline: nil
         )
+        let context = PlanningContext(
+            retrievedContext: ContextBundle(items: [], excluded: [], usedCharacters: 0),
+            registry: ToolRegistrySnapshot(revision: 0, descriptors: [:])
+        )
 
         let proposal = try await planner.propose(
             goal: goal,
             graph: graph,
-            budgets: budgets
+            budgets: budgets,
+            context: context
         )
 
         XCTAssertTrue(proposal.addTasks.isEmpty)
@@ -88,7 +93,8 @@ private actor RecordingPlanner: Planning {
     func propose(
         goal: GoalSnapshot,
         graph: TaskGraphSnapshot,
-        budgets: RuntimeBudgetSnapshot
+        budgets: RuntimeBudgetSnapshot,
+        context: PlanningContext
     ) async throws -> PlanningProposal {
         calls += 1
         return PlanningProposal(
