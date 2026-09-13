@@ -119,6 +119,55 @@ final class ProviderViewModelTests: XCTestCase {
         XCTAssertFalse(String(reflecting: viewModel.snapshot).contains(secret))
     }
 
+    func testKeychainFailuresSurviveAsSafeDiagnosticsThroughTheRealAdapter() async throws {
+        let service = "com.zerolose.tests.provider-view-model.\(UUID().uuidString)"
+        let adapter = KeychainCredentialBrokerAdapter(openAIKeyService: service)
+        addTeardownBlock {
+            try? await adapter.remove()
+        }
+
+        let initiallyConfigured = await adapter.hasKey()
+        XCTAssertFalse(initiallyConfigured, "Isolated test service must start empty")
+
+        let provider = ProviderViewModelTestProvider(id: "openai-api", models: ["default"])
+        let viewModel = ProviderViewModel(
+            controlPlane: makeControlPlane(
+                providers: [provider],
+                providerID: "openai-api",
+                modelID: "default"
+            ),
+            settingsController: ProviderSettingsController(openAIKeyStore: adapter)
+        )
+
+        // Failure path through the real adapter: a whitespace-only key must be rejected
+        // with a diagnosable but secret-free message.
+        await viewModel.saveOpenAIAPIKey("   ")
+
+        let configuredAfterBlankSave = await adapter.hasKey()
+        XCTAssertFalse(configuredAfterBlankSave, "A blank key must never reach the Keychain")
+        XCTAssertEqual(
+            viewModel.errorMessage,
+            "Unable to save the OpenAI API key. (key rejected)"
+        )
+
+        // Success path through the real adapter, isolated to this test's Keychain service.
+        let secret = "sk-real-adapter-secret-\(UUID().uuidString)"
+        await viewModel.saveOpenAIAPIKey(secret)
+
+        let configuredAfterStore = await adapter.hasKey()
+        XCTAssertTrue(configuredAfterStore)
+        XCTAssertNil(viewModel.errorMessage)
+        XCTAssertTrue(viewModel.openAIKeyConfigured)
+        XCTAssertFalse(viewModel.errorMessage?.contains(secret) == true)
+        XCTAssertFalse(String(reflecting: viewModel.snapshot).contains(secret))
+
+        await viewModel.removeOpenAIAPIKey()
+        XCTAssertNil(viewModel.errorMessage)
+        let configuredAfterRemoval = await adapter.hasKey()
+        XCTAssertFalse(configuredAfterRemoval)
+        XCTAssertFalse(viewModel.openAIKeyConfigured)
+    }
+
     func testSavingAndRemovingKeyExposeOnlyConfiguredState() async {
         let provider = ProviderViewModelTestProvider(id: "openai-api", models: ["default"])
         let credentials = ProviderSettingsTestController(configured: false)

@@ -72,7 +72,7 @@ final class ProviderViewModel {
             await refresh()
         } catch {
             openAIKeyConfigured = await settingsController.isOpenAIKeyConfigured()
-            errorMessage = "Unable to save the OpenAI API key."
+            errorMessage = "Unable to save the OpenAI API key." + Self.diagnosticSuffix(for: error)
         }
     }
 
@@ -84,7 +84,22 @@ final class ProviderViewModel {
             await refresh()
         } catch {
             openAIKeyConfigured = await settingsController.isOpenAIKeyConfigured()
-            errorMessage = "Unable to remove the OpenAI API key."
+            errorMessage = "Unable to remove the OpenAI API key." + Self.diagnosticSuffix(for: error)
+        }
+    }
+
+    /// Non-secret diagnostic for a Keychain/key-store failure (for example an
+    /// `OSStatus` code) so real failures stay debuggable without ever echoing the
+    /// submitted key material.
+    private static func diagnosticSuffix(for error: Error) -> String {
+        guard let keyStoreError = error as? OpenAIKeyStoreError else { return "" }
+        switch keyStoreError {
+        case .keychainFailure(let status):
+            return " (Keychain status \(status))"
+        case .invalidKey:
+            return " (key rejected)"
+        case .missingKey:
+            return " (no key stored)"
         }
     }
 
